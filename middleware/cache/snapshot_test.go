@@ -162,7 +162,7 @@ func TestSnapshotAgesTheLeaseSeparately(t *testing.T) {
 		if _, err := loadSnapshot(dst, saveSnapshot(t, src, snapshotLZ4, saved), saved.Add(time.Second)); err != nil {
 			t.Fatal(err)
 		}
-		if e := storedEntry(dst, "a.test.", false); e == nil || e.hasCut() {
+		if e := storedEntry(dst, "a.test.", false); e == nil || !e.cutUntil.IsZero() {
 			t.Fatal("an answer without a lease came back with one, or not at all")
 		}
 	})

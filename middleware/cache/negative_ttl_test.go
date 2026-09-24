@@ -813,7 +813,7 @@ func TestClampRoundsLikeAHit(t *testing.T) {
 		}
 
 		entry := NewCacheEntryWithKey(build(), time.Hour, 0, 0)
-		entry.setCutUntil(time.Now().Add(lease))
+		entry.cutUntil = time.Now().Add(lease)
 		req := new(dns.Msg)
 		req.SetQuestion("rounding.example.", dns.TypeA)
 		served := entry.ToMsg(req)
@@ -836,7 +836,7 @@ func TestClampRoundsLikeAHit(t *testing.T) {
 		}
 
 		entry := NewCacheEntryWithKey(build(), time.Hour, 0, 0)
-		entry.setCutUntil(time.Now().Add(lease))
+		entry.cutUntil = time.Now().Add(lease)
 		req := new(dns.Msg)
 		req.SetQuestion("rounding.example.", dns.TypeA)
 		served := entry.ToMsg(req)

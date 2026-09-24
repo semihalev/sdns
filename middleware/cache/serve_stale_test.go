@@ -72,7 +72,7 @@ func seedStaleEntryWithRate(
 	entry.setRare(normalizeKeyScope(scope), entry.edeOption())
 	entry.setStoredAt(time.Now().Add(-time.Minute - staleFor))
 	if leaseRemaining != 0 {
-		entry.setCutUntil(time.Now().Add(leaseRemaining))
+		entry.cutUntil = time.Now().Add(leaseRemaining)
 	}
 	c.store.SetEntryWithKey(want.Hash(), entry, dnsutil.TypeSuccess)
 	return entry
@@ -435,9 +435,9 @@ func TestServeStaleCompletesCNAMEFromStaleTarget(t *testing.T) {
 			t.Fatalf("stale target lifetime was not folded into alias TTL: %d", ttl)
 		}
 	}
-	if cut, key := ch.Meta.Cut(); cut.IsZero() || cut.After(targetEntry.cutDeadline()) {
+	if cut, key := ch.Meta.Cut(); cut.IsZero() || cut.After(targetEntry.cutUntil) {
 		t.Fatalf("composed stale alias bound = (%v, %#x), must not outlive target (%v, %#x)",
-			cut, key, targetEntry.cutDeadline(), targetEntry.cutKey)
+			cut, key, targetEntry.cutUntil, targetEntry.cutKey)
 	}
 }
 
@@ -1036,8 +1036,7 @@ func TestBoundRequestToStaleLifetime(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			entry := &CacheEntry{cutKey: tt.cutKey}
-			entry.setCutUntil(tt.cutUntil)
+			entry := &CacheEntry{cutUntil: tt.cutUntil, cutKey: tt.cutKey}
 			var meta middleware.ResponseMeta
 			ctx := middleware.WithResponseMeta(context.Background(), &meta)
 			boundRequestToStaleLifetime(ctx, entry, now)

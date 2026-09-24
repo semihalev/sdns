@@ -160,7 +160,7 @@ func (c *Cache) staleResponseFromEntry(
 	}
 	// A zero cut is explicitly unbounded. A real delegation lease is a
 	// non-negotiable security ceiling: never revive an answer after it.
-	if entry.hasCut() && leaseRemaining <= 0 {
+	if !entry.cutUntil.IsZero() && leaseRemaining <= 0 {
 		return staleEntryResponse{}
 	}
 	if maxStale := c.config.ServeStaleMaxTTL; maxStale > 0 && -ttlRemaining > maxStale {
@@ -174,8 +174,8 @@ func (c *Cache) staleResponseFromEntry(
 
 	hardUntil := now.Add(staleAnswerTTL)
 	hardKey := uint64(0)
-	if cut := entry.cutDeadline(); entry.hasCut() && cut.Before(hardUntil) {
-		hardUntil, hardKey = cut, entry.cutKey
+	if !entry.cutUntil.IsZero() && entry.cutUntil.Before(hardUntil) {
+		hardUntil, hardKey = entry.cutUntil, entry.cutKey
 	}
 	// DNS TTLs have one-second granularity. Rounding a positive sub-second
 	// lease up would outlive the delegation; rounding down would emit TTL 0,
@@ -388,8 +388,8 @@ func boundRequestToStaleLifetime(ctx context.Context, entry *CacheEntry, now tim
 	}
 	hardUntil := now.Add(staleAnswerTTL)
 	hardKey := uint64(0)
-	if cut := entry.cutDeadline(); entry.hasCut() && cut.Before(hardUntil) {
-		hardUntil, hardKey = cut, entry.cutKey
+	if !entry.cutUntil.IsZero() && entry.cutUntil.Before(hardUntil) {
+		hardUntil, hardKey = entry.cutUntil, entry.cutKey
 	}
 	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
 		meta.BoundCutFor(hardUntil, hardKey)

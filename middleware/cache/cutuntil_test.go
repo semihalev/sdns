@@ -69,7 +69,7 @@ func TestCacheEntry_CutUntil(t *testing.T) {
 
 	// Cut shorter than the TTL: the cut wins.
 	e := NewCacheEntry(cutTestMsg("example.org.", dns.RcodeSuccess, 300), 300*time.Second, 0)
-	e.setCutUntil(time.Now().Add(2 * time.Second))
+	e.cutUntil = time.Now().Add(2 * time.Second)
 
 	if e.IsExpired() {
 		t.Fatal("entry must be valid before its cut deadline")
@@ -86,7 +86,7 @@ func TestCacheEntry_CutUntil(t *testing.T) {
 	}
 
 	// Past the cut: expired despite ~300s of TTL remaining.
-	e.setCutUntil(time.Now().Add(-time.Millisecond))
+	e.cutUntil = time.Now().Add(-time.Millisecond)
 	if !e.IsExpired() {
 		t.Fatal("entry must expire at its cut deadline even with TTL remaining")
 	}
@@ -98,14 +98,14 @@ func TestCacheEntry_CutUntil(t *testing.T) {
 	}
 
 	// Zero cut: plain TTL behaviour unchanged.
-	e.setCutUntil(time.Time{})
+	e.cutUntil = time.Time{}
 	if e.IsExpired() || e.TTL() == 0 || e.ToMsg(req) == nil {
 		t.Fatal("zero cutUntil must leave plain TTL behaviour unchanged")
 	}
 
 	// Cut longer than the TTL: the TTL wins.
 	short := NewCacheEntry(cutTestMsg("example.org.", dns.RcodeSuccess, 1), time.Second, 0)
-	short.setCutUntil(time.Now().Add(time.Hour))
+	short.cutUntil = time.Now().Add(time.Hour)
 	if ttl := short.TTL(); ttl > 1 {
 		t.Fatalf("TTL() = %d, a long cut must not extend a short TTL", ttl)
 	}
@@ -115,7 +115,7 @@ func TestCacheEntryRemainingBoundsStayIndependent(t *testing.T) {
 	now := time.Now()
 	entry := NewCacheEntry(cutTestMsg("bounds.example.", dns.RcodeSuccess, 60), time.Minute, 0)
 	entry.setStoredAt(now.Add(-20 * time.Second))
-	entry.setCutUntil(now.Add(10 * time.Second))
+	entry.cutUntil = now.Add(10 * time.Second)
 
 	ttlRemaining, leaseRemaining := entry.remainingBounds(now)
 	if ttlRemaining != 40*time.Second {
@@ -128,7 +128,7 @@ func TestCacheEntryRemainingBoundsStayIndependent(t *testing.T) {
 		t.Fatalf("effective remaining = %v, want lease-bounded 10s", remaining)
 	}
 
-	entry.setCutUntil(time.Time{})
+	entry.cutUntil = time.Time{}
 	_, leaseRemaining = entry.remainingBounds(now)
 	if leaseRemaining != 0 {
 		t.Fatalf("unbounded lease remaining = %v, want zero sentinel", leaseRemaining)
@@ -189,7 +189,7 @@ func TestStore_CutUntil_CoversNegativeCDAndECS(t *testing.T) {
 		if !ok {
 			t.Fatal("negative answer was not cached")
 		}
-		if !entry.cutDeadline().Equal(cut) || entry.cutKey != cutKey {
+		if !entry.cutUntil.Equal(cut) || entry.cutKey != cutKey {
 			t.Fatalf("negative cut = (%v, %#x), want (%v, %#x)", entry.cutUntil, entry.cutKey, cut, cutKey)
 		}
 
@@ -218,7 +218,7 @@ func TestStore_CutUntil_CoversNegativeCDAndECS(t *testing.T) {
 			if !ok {
 				t.Fatalf("CD=%v entry missing", tc.cd)
 			}
-			if !entry.cutDeadline().Equal(tc.deadline) || entry.cutKey != tc.cutKey {
+			if !entry.cutUntil.Equal(tc.deadline) || entry.cutKey != tc.cutKey {
 				t.Fatalf("CD=%v cut = (%v, %#x), want (%v, %#x)", tc.cd, entry.cutUntil, entry.cutKey, tc.deadline, tc.cutKey)
 			}
 		}
@@ -235,7 +235,7 @@ func TestStore_CutUntil_CoversNegativeCDAndECS(t *testing.T) {
 		if !ok {
 			t.Fatal("ECS-scoped entry missing")
 		}
-		if !entry.cutDeadline().Equal(cut) || entry.cutKey != cutKey {
+		if !entry.cutUntil.Equal(cut) || entry.cutKey != cutKey {
 			t.Fatalf("ECS cut = (%v, %#x), want (%v, %#x)", entry.cutUntil, entry.cutKey, cut, cutKey)
 		}
 		s.SetFromResponseScoped(key, resp, scope, time.Now().Add(-time.Millisecond), cutKey)
@@ -412,7 +412,7 @@ func TestWriteMsg_CutUntilSeam(t *testing.T) {
 	if !ok {
 		t.Fatal("response was not cached")
 	}
-	if !entry.cutDeadline().Equal(cut) {
+	if !entry.cutUntil.Equal(cut) {
 		t.Fatalf("entry cutUntil = %v, want the resolver-reported cut %v", entry.cutUntil, cut)
 	}
 	if entry.cutKey != cutKey {
@@ -477,7 +477,7 @@ func TestWriteMsg_CNAMEChainUsesShortestCut(t *testing.T) {
 		if !ok {
 			t.Fatalf("%s cache entry missing", name)
 		}
-		if !entry.cutDeadline().Equal(shortCut) || entry.cutKey != shortKey {
+		if !entry.cutUntil.Equal(shortCut) || entry.cutKey != shortKey {
 			t.Fatalf("%s cut = (%v, %#x), want shortest chain cut (%v, %#x)", name, entry.cutUntil, entry.cutKey, shortCut, shortKey)
 		}
 	}
@@ -515,12 +515,12 @@ func TestWriteMsg_ForwarderAndLocalAnswersRemainUnbounded(t *testing.T) {
 		return entry
 	}
 
-	if entry := query("bounded.example."); !entry.hasCut() {
+	if entry := query("bounded.example."); entry.cutUntil.IsZero() {
 		t.Fatal("test setup: bounded resolver-style answer did not carry a cut")
 	}
 	for _, name := range []string{"local.example.", "forwarded.example."} {
 		entry := query(name)
-		if entry.hasCut() || entry.cutKey != 0 {
+		if !entry.cutUntil.IsZero() || entry.cutKey != 0 {
 			t.Fatalf("%s inherited pooled metadata from a prior request: cut=(%v, %#x)", name, entry.cutUntil, entry.cutKey)
 		}
 	}

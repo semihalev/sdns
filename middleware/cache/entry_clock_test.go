@@ -1,12 +1,20 @@
 package cache
 
 import (
+	"context"
 	"math"
 	"strconv"
 	"testing"
 	"time"
 	"unsafe"
+
+	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/middleware"
 )
+
+// storedAt is the instant the entry was admitted at.
+func (e *CacheEntry) storedAt() time.Time { return monoEpoch.Add(time.Duration(e.stored)) }
 
 // setStoredAt moves an entry's admission instant to t, the way tests age an
 // entry without waiting.
@@ -32,73 +40,117 @@ func wallShifted(t time.Time, d time.Duration) time.Time {
 	return t
 }
 
-// A deadline carrying only a wall reading, a signature's expiry built with
-// time.Unix, keeps the distance it names when the wall clock has stepped
-// since startup. Measured against the epoch's wall reading instead, a minute
-// forward turned a ten second lease into seventy.
-func TestWallOnlyDeadlineSurvivesAWallClockStep(t *testing.T) {
+// stepEpoch puts the entry epoch's wall reading a minute behind its
+// monotonic one, as after a minute's wall clock step forward since startup,
+// for the rest of the test.
+func stepEpoch(t *testing.T) {
+	t.Helper()
 	saved := monoEpoch
 	t.Cleanup(func() { monoEpoch = saved })
-
-	// The epoch's wall reads a minute behind its monotonic one: the wall
-	// clock has stepped a minute forward since the process started.
 	now := time.Now()
 	stepped := wallShifted(now, -time.Minute)
-	if got := now.Round(0).Sub(stepped.Round(0)); got != time.Minute {
-		t.Fatalf("time.Time layout changed: wall shift moved %v, want 1m; update wallShifted", got)
-	}
-	if stepped.Sub(now) != 0 {
-		t.Fatal("time.Time layout changed: the monotonic reading moved; update wallShifted")
+	if now.Round(0).Sub(stepped.Round(0)) != time.Minute || stepped.Sub(now) != 0 {
+		t.Fatal("time.Time layout changed; update wallShifted")
 	}
 	monoEpoch = stepped
+}
 
-	for _, tc := range []struct {
-		name     string
-		deadline time.Time
-	}{
-		{"wall reading only", time.Unix(0, time.Now().Add(10*time.Second).UnixNano())},
-		{"with a monotonic reading", time.Now().Add(10 * time.Second)},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			e := &CacheEntry{}
-			e.setCutUntil(tc.deadline)
-			_, lease := e.remainingBounds(time.Now())
-			if lease > 10*time.Second || lease < 9*time.Second {
-				t.Fatalf("a ten second lease reads %v after a wall clock step", lease)
-			}
-		})
+// clockAfter is now advanced by mono on the monotonic clock and by wall on
+// the wall clock.
+func clockAfter(t *testing.T, now time.Time, mono, wall time.Duration) time.Time {
+	t.Helper()
+	later := wallShifted(now.Add(mono), wall-mono)
+	if later.Sub(now) != mono || later.Round(0).Sub(now.Round(0)) != wall {
+		t.Fatal("time.Time layout changed; update wallShifted")
+	}
+	return later
+}
+
+// wallOnly drops t's monotonic reading, the form a signature expiry built
+// with time.Unix arrives in.
+func wallOnly(t time.Time) time.Time { return time.Unix(0, t.UnixNano()) }
+
+// A lease that is a wall clock instant keeps the distance it names when the
+// wall clock has stepped since startup, and ends when the wall clock reaches
+// it after admission, even when the monotonic clock has not got that far. A
+// lease with a monotonic reading keeps ignoring the wall clock.
+func TestLeaseKeepsItsClock(t *testing.T) {
+	stepEpoch(t)
+	admit := time.Now()
+
+	byWall := &CacheEntry{cutUntil: wallOnly(admit.Add(10 * time.Second))}
+	byMono := &CacheEntry{cutUntil: admit.Add(10 * time.Second)}
+	for _, e := range []*CacheEntry{byWall, byMono} {
+		if _, lease := e.remainingBounds(admit); lease > 10*time.Second || lease < 9*time.Second {
+			t.Fatalf("a ten second lease reads %v after a wall clock step before admission", lease)
+		}
+	}
+
+	later := clockAfter(t, admit, time.Second, 61*time.Second)
+	if _, lease := byWall.remainingBounds(later); lease > -50*time.Second {
+		t.Fatalf("a wall clock lease reads %v after the wall clock passed it by 51s", lease)
+	}
+	if _, lease := byMono.remainingBounds(later); lease < 8*time.Second || lease > 9*time.Second {
+		t.Fatalf("a monotonic lease reads %v, want the nine seconds the monotonic clock allows", lease)
 	}
 }
 
-// A lease given as a wall clock instant ends when the wall clock reaches
-// it, also when the wall clock gets there after admission faster than the
-// monotonic clock does: a minute's step forward expires a ten second lease
-// the monotonic clock alone would still honor for nine. A lease with a
-// monotonic reading keeps ignoring the wall clock.
-func TestWallOnlyDeadlineFollowsTheWallClockAfterAdmission(t *testing.T) {
+// An answer derived from a cached one inherits its lease as the lease is: a
+// wall clock instant stays one, so the derived answer ends with its source
+// when the wall clock reaches it, not seconds later.
+func TestDerivedAnswerInheritsAWallClockLease(t *testing.T) {
+	stepEpoch(t)
 	admit := time.Now()
-	later := wallShifted(admit.Add(time.Second), time.Minute) // monotonic +1s, wall +61s
-	if later.Sub(admit) != time.Second || later.Round(0).Sub(admit.Round(0)) != 61*time.Second {
-		t.Fatal("time.Time layout changed; update wallShifted")
-	}
 
-	wallOnly := &CacheEntry{}
-	wallOnly.setCutUntil(time.Unix(0, admit.Add(10*time.Second).UnixNano()))
-	if _, lease := wallOnly.remainingBounds(later); lease > -50*time.Second {
-		t.Fatalf("a wall clock lease reads %v left after the wall clock passed it by 51s", lease)
-	}
+	source := NewCacheEntry(snapAnswer("a.test.", 300, "192.0.2.1"), 300*time.Second, 0)
+	source.cutUntil = wallOnly(admit.Add(10 * time.Second))
+	source.cutKey = 7
 
-	monotonic := &CacheEntry{}
-	monotonic.setCutUntil(admit.Add(10 * time.Second))
-	if _, lease := monotonic.remainingBounds(later); lease < 8*time.Second || lease > 9*time.Second {
-		t.Fatalf("a monotonic lease reads %v, want the nine seconds the monotonic clock allows", lease)
+	var meta middleware.ResponseMeta
+	boundRequestToEntryLifetime(middleware.WithResponseMeta(context.Background(), &meta), source)
+	cut, key := meta.Cut()
+	if cut.IsZero() || key != 7 {
+		t.Fatalf("the derived answer's bound = (%v, %d), want the source's lease", cut, key)
 	}
+	derived := NewCacheEntry(snapAnswer("b.test.", 300, "192.0.2.2"), 300*time.Second, 0)
+	derived.cutUntil, derived.cutKey = cut, key
 
-	// Dropping the lease drops the wall clock end with it, and the rare
-	// part when nothing else needs it.
-	wallOnly.setCutUntil(time.Time{})
-	if wallOnly.hasCut() || wallOnly.rare != nil {
-		t.Fatal("clearing the lease left part of it behind")
+	later := clockAfter(t, admit, time.Second, 61*time.Second)
+	for name, e := range map[string]*CacheEntry{"source": source, "derived": derived} {
+		if _, lease := e.remainingBounds(later); lease > -50*time.Second {
+			t.Errorf("%s lease reads %v after the wall clock passed it by 51s", name, lease)
+		}
+		if ttl := e.servedTTL(later); ttl != 0 {
+			t.Errorf("%s would still be served with TTL %d", name, ttl)
+		}
+	}
+}
+
+// A stale answer's TTL is what is left of its lease at the moment it is
+// served, by the clock the lease is kept in.
+func TestStaleTTLTakesTheWallClockLease(t *testing.T) {
+	stepEpoch(t)
+	admit := time.Now()
+
+	c := New(&config.Config{CacheSize: 1024, ServeStale: true})
+	req := new(dns.Msg)
+	req.SetQuestion("a.test.", dns.TypeA)
+	entry := NewCacheEntry(snapAnswer("a.test.", 300, "192.0.2.1"), time.Minute, 0)
+	entry.setStoredAt(admit.Add(-2 * time.Minute))
+	entry.cutUntil = wallOnly(admit.Add(10 * time.Second))
+
+	now := clockAfter(t, admit, time.Second, 7*time.Second) // three seconds of lease left
+	if _, lease := entry.remainingBounds(now); lease > 3*time.Second || lease < 2*time.Second {
+		t.Fatalf("lease reads %v, want three seconds", lease)
+	}
+	got := c.staleResponseFromEntry(entry, req, false, now)
+	if got.msg == nil {
+		t.Fatal("no stale answer with three seconds of lease left")
+	}
+	for _, rr := range got.msg.Answer {
+		if rr.Header().Ttl > 3 {
+			t.Fatalf("stale answer published TTL %d with three seconds of lease left", rr.Header().Ttl)
+		}
 	}
 }
 

@@ -10,7 +10,7 @@ import (
 // should earn its place against the memory it costs, and move what only few
 // entries use into entryRare.
 func TestCacheEntrySize(t *testing.T) {
-	const limit = 144
+	const limit = 160
 	if got := unsafe.Sizeof(CacheEntry{}); got > limit {
 		t.Fatalf("CacheEntry is %d bytes, over the %d it is held to", got, limit)
 	}

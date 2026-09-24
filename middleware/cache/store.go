@@ -652,7 +652,7 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Pr
 		// in-tree path, but an entry filed under a CD the response no
 		// longer carries would be unreachable rather than merely misfiled.
 		e.cd = keyCD
-		e.setCutUntil(cutUntil)
+		e.cutUntil = cutUntil
 		e.cutKey = cutKey
 		s.stampSidecar(e, msg)
 		return e
@@ -729,7 +729,7 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 		}
 		entry.cd = expected.cd
 		entry.setRare(expected.scopeKey(), entry.edeOption())
-		entry.setCutUntil(cutUntil)
+		entry.cutUntil = cutUntil
 		entry.cutKey = cutKey
 		s.stampSidecar(entry, filtered)
 		return entry

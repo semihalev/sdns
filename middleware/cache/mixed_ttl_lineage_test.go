@@ -126,7 +126,7 @@ func TestMixedTTLRecordsServeTheAnswersOwnHorizon(t *testing.T) {
 		if got := answerTTL(second); got < 1700 || got > 1800 {
 			t.Fatalf("second query A TTL = %d, want ~1800, not the key's 30", got)
 		}
-		if entry := entryFor(name); entry.hasCut() {
+		if entry := entryFor(name); !entry.cutUntil.IsZero() {
 			t.Fatalf("the DNSKEY consult stamped cutUntil %v onto the answer", entry.cutUntil)
 		}
 	})
@@ -159,7 +159,7 @@ func TestMixedTTLRecordsServeTheAnswersOwnHorizon(t *testing.T) {
 		if got := answerTTL(second); got > 45 || got < 30 {
 			t.Fatalf("second query A TTL = %d, want the 45s delegation lease", got)
 		}
-		if entry := entryFor(name); !entry.hasCut() {
+		if entry := entryFor(name); entry.cutUntil.IsZero() {
 			t.Fatal("the delegation cut did not reach the entry")
 		}
 	})

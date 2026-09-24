@@ -25,8 +25,8 @@ const (
 // its own lifetime, further bounded by the delegation lease it inherited.
 func entryExpiry(e *CacheEntry) time.Time {
 	expiry := e.storedAt().Add(e.ttl)
-	if e.hasCut() && e.cutDeadline().Before(expiry) {
-		return e.cutDeadline()
+	if !e.cutUntil.IsZero() && e.cutUntil.Before(expiry) {
+		return e.cutUntil
 	}
 	return expiry
 }

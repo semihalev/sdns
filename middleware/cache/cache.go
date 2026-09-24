@@ -1656,23 +1656,24 @@ func (c *Cache) handleCacheHit(
 // has the shorter claim, and passing only the lease would let the TTL floor
 // re-publish it under whatever is being assembled.
 func boundRequestToEntryLifetime(ctx context.Context, entry *CacheEntry) {
-	if entry == nil {
+	// Only a request tree deriving something from this answer carries a
+	// meta; an ordinary client hit does not, and pays nothing here.
+	meta := middleware.ResponseMetaFrom(ctx)
+	if entry == nil || meta == nil {
 		return
 	}
-	// Compared as offsets and converted once: this runs on every hit.
-	hardUntil := entry.stored + int64(entry.ttl)
+	// The entry's own expiry, built from a clock reading rather than from
+	// its stored offset, so the instant carries the wall clock as it reads
+	// now: a lease it is compared against, and that the derived answer
+	// inherits, can be a wall clock instant.
+	now := time.Now()
+	ttlLeft, _ := entry.remainingBounds(now)
+	hardUntil := now.Add(ttlLeft)
 	hardKey := uint64(0)
-	if entry.hasCut() && entry.cutUntil <= hardUntil {
+	if !entry.cutUntil.IsZero() && !entry.cutUntil.After(hardUntil) {
 		hardUntil, hardKey = entry.cutUntil, entry.cutKey
 	}
-	hard := monoTime(hardUntil)
-	// A lease that is also a wall clock instant binds on its own terms.
-	if w := entry.wallCutTime(); !w.IsZero() && w.Before(hard) {
-		hard, hardKey = w, entry.cutKey
-	}
-	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
-		meta.BoundCutFor(hard, hardKey)
-	}
+	meta.BoundCutFor(hardUntil, hardKey)
 }
 
 // boundRequestTo folds an absolute expiry that is already exact, a subtree

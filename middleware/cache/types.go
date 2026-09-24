@@ -41,7 +41,7 @@ type CacheEntry struct {
 	stripped []byte
 
 	// The fields every hit reads come first, so they share the entry's
-	// first two cache lines; the layout packs to 144 bytes with no padding.
+	// first two cache lines; the layout packs to 160 bytes with no padding.
 
 	// stored is the instant the entry was admitted at, as a monotonic
 	// offset (see monoOffset).
@@ -56,9 +56,10 @@ type CacheEntry struct {
 	// local answers, or no learned delegation on the path). Enforced
 	// at read time, remaining() takes the min of the TTL expiry and
 	// this deadline, so it also overrides the configured MinTTL
-	// floor when the cut is shorter. A monotonic offset like stored;
-	// cutDeadline and setCutUntil convert.
-	cutUntil int64
+	// floor when the cut is shorter. It stays a time.Time, unlike stored:
+	// a lease can be a wall clock instant, a signature expiry, and has to
+	// keep meaning one, here and in every answer derived from this one.
+	cutUntil time.Time
 
 	// sidecar is policy state stamped beside the immutable entry, the
 	// same shape as the prefetch claim: a mutable atomic the entry
@@ -120,21 +121,13 @@ type entryRare struct {
 	// PrefetchEligible() reflects this.
 	scope netip.Prefix
 	ede   *dns.EDNS0_EDE // Preserved EDE information
-	// wallCut is the delegation lease's end as a wall clock instant, Unix
-	// nanoseconds, kept when the lease was given without a monotonic
-	// reading: a signature expiry is a point on the wall clock, and it
-	// passes when the wall clock does, whatever the monotonic clock says.
-	// cutUntil still holds its conversion at admission, so a wall clock
-	// stepped back cannot extend it either. Zero when the lease had a
-	// monotonic reading or there is none.
-	wallCut int64
 }
 
-// monoEpoch anchors the instants an entry keeps. They are held as offsets
-// from it, eight bytes where a time.Time takes twenty-four, and taken with
-// Sub, which reads the monotonic clock whenever both sides carry it: a wall
-// clock step moves neither an entry's age nor its lease, exactly as when
-// the entry held the instants themselves.
+// monoEpoch anchors an entry's admission instant, held as an offset from it,
+// eight bytes where a time.Time takes twenty-four, and taken with Sub, which
+// reads the monotonic clock whenever both sides carry it: a wall clock step
+// does not move an entry's age, exactly as when the entry held the instant
+// itself.
 var monoEpoch = time.Now()
 
 // hasMonotonic reports whether t carries a monotonic clock reading. Round(0)
@@ -145,18 +138,16 @@ func hasMonotonic(t time.Time) bool {
 	return t != t.Round(0) //nolint:staticcheck // == on purpose, see above
 }
 
-// monoOffset is t as an offset from monoEpoch. It is for the instants an
-// entry is admitted with; a clock reading taken to ask about an entry
-// converts directly (see remainingBounds).
+// monoOffset is t as an offset from monoEpoch. It is for the instant an
+// entry is admitted at; a clock reading taken to ask about an entry converts
+// directly (see remainingBounds).
 //
 // An instant with a monotonic reading, every time.Now and whatever was
-// derived from one, converts directly. One without, a signature's expiry
-// built with time.Unix, carries only a wall reading, and Sub against the
-// epoch would measure it against the wall clock as it read at startup: a
-// wall clock stepped since then would move the instant by the step, and a
-// ten second lease would read as seventy after a minute's step forward. It
-// is taken instead for what it says at the moment it is converted, its
-// distance from the wall clock now, and anchored at the monotonic now.
+// derived from one, converts directly. One without carries only a wall
+// reading, and Sub against the epoch would measure it against the wall
+// clock as it read at startup, off by any step since. It is taken instead
+// for what it says at the moment it is converted, its distance from the
+// wall clock now, and anchored at the monotonic now.
 func monoOffset(t time.Time) int64 {
 	if hasMonotonic(t) {
 		return int64(t.Sub(monoEpoch))
@@ -171,57 +162,6 @@ func monoOffset(t time.Time) int64 {
 		return math.MinInt64
 	}
 	return base + d
-}
-
-// monoTime is the instant an offset stands for.
-func monoTime(off int64) time.Time { return monoEpoch.Add(time.Duration(off)) }
-
-// storedAt is the instant the entry was admitted at.
-func (e *CacheEntry) storedAt() time.Time { return monoTime(e.stored) }
-
-// cutDeadline is the delegation lease's end, zero when there is none.
-func (e *CacheEntry) cutDeadline() time.Time {
-	if e.cutUntil == 0 {
-		return time.Time{}
-	}
-	cut := monoTime(e.cutUntil)
-	if w := e.wallCutTime(); !w.IsZero() && w.Before(cut) {
-		return w
-	}
-	return cut
-}
-
-// wallCutTime is the lease's wall clock end when it has one (see
-// entryRare.wallCut), zero otherwise.
-func (e *CacheEntry) wallCutTime() time.Time {
-	if e.rare == nil || e.rare.wallCut == 0 {
-		return time.Time{}
-	}
-	return time.Unix(0, e.rare.wallCut)
-}
-
-// hasCut reports whether the entry carries a delegation lease.
-func (e *CacheEntry) hasCut() bool { return e.cutUntil != 0 }
-
-// setCutUntil bounds the entry by the lease ending at t; a zero t removes
-// the bound.
-func (e *CacheEntry) setCutUntil(t time.Time) {
-	var wall int64
-	if t.IsZero() {
-		e.cutUntil = 0
-	} else {
-		off := monoOffset(t)
-		if off == 0 {
-			// Zero means no lease; a lease ending at the epoch itself is
-			// taken a nanosecond early rather than lost.
-			off = -1
-		}
-		e.cutUntil = off
-		if !hasMonotonic(t) {
-			wall = t.UnixNano()
-		}
-	}
-	e.setRareParts(e.scopeKey(), e.edeOption(), wall)
 }
 
 // scopeKey is the ECS scope the entry was keyed under, the zero Prefix for
@@ -244,21 +184,11 @@ func (e *CacheEntry) edeOption() *dns.EDNS0_EDE {
 // setRare records a scope and an EDE, allocating the rare part only when
 // there is something to hold.
 func (e *CacheEntry) setRare(scope netip.Prefix, ede *dns.EDNS0_EDE) {
-	var wall int64
-	if e.rare != nil {
-		wall = e.rare.wallCut
-	}
-	e.setRareParts(scope, ede, wall)
-}
-
-// setRareParts replaces the whole rare part, dropping it when every field
-// is empty.
-func (e *CacheEntry) setRareParts(scope netip.Prefix, ede *dns.EDNS0_EDE, wallCut int64) {
-	if !scope.IsValid() && ede == nil && wallCut == 0 {
+	if !scope.IsValid() && ede == nil {
 		e.rare = nil
 		return
 	}
-	e.rare = &entryRare{scope: scope, ede: ede, wallCut: wallCut}
+	e.rare = &entryRare{scope: scope, ede: ede}
 }
 
 // Sidecar returns the entry's stamped policy state; nil means the entry
@@ -280,7 +210,7 @@ func (e *CacheEntry) CompareAndStampSidecar(prev, next *middleware.Sidecar) bool
 // whether the entry may be served; servedTTL says what TTL to write.
 func (e *CacheEntry) remaining(now time.Time) time.Duration {
 	rem, leaseRem := e.remainingBounds(now)
-	if e.hasCut() {
+	if !e.cutUntil.IsZero() {
 		if leaseRem < rem {
 			rem = leaseRem
 		}
@@ -300,7 +230,7 @@ func (e *CacheEntry) remaining(now time.Time) time.Duration {
 // declines the same remainder.
 func (e *CacheEntry) servedTTL(now time.Time) uint32 {
 	rem, leaseRem := e.remainingBounds(now)
-	if e.hasCut() && leaseRem < rem {
+	if !e.cutUntil.IsZero() && leaseRem < rem {
 		if leaseRem < time.Second {
 			return 0
 		}
@@ -353,17 +283,9 @@ func (e *CacheEntry) remainingBounds(now time.Time) (ttlRemaining, leaseRemainin
 	// now is a clock reading on every path that asks, so it carries a
 	// monotonic reading and converts directly; monoOffset's check for one
 	// that does not costs more than the rest of this function, on every hit.
-	at := int64(now.Sub(monoEpoch))
-	ttlRemaining = e.ttl - time.Duration(at-e.stored)
-	if e.hasCut() {
-		leaseRemaining = time.Duration(e.cutUntil - at)
-		// A lease given as a wall clock instant also ends when the wall
-		// clock reaches it; see entryRare.wallCut.
-		if e.rare != nil && e.rare.wallCut != 0 {
-			if w := time.Duration(e.rare.wallCut - now.UnixNano()); w < leaseRemaining {
-				leaseRemaining = w
-			}
-		}
+	ttlRemaining = e.ttl - time.Duration(int64(now.Sub(monoEpoch))-e.stored)
+	if !e.cutUntil.IsZero() {
+		leaseRemaining = e.cutUntil.Sub(now)
 	}
 	return ttlRemaining, leaseRemaining
 }

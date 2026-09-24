@@ -61,7 +61,7 @@ func (s *Store) snapshot(w io.Writer, fingerprint [32]byte, compression uint16, 
 			continue
 		}
 		ttl, lease := e.remainingBounds(now)
-		if !e.hasCut() {
+		if e.cutUntil.IsZero() {
 			lease = noLease
 		}
 		if ttl < minSnapshotLifetime || (lease != noLease && lease < minSnapshotLifetime) {
@@ -221,7 +221,7 @@ func (s *Store) restoreRecord(rec *snapshotRecord, elapsed time.Duration, now ti
 	}
 	e.cd = rec.cd
 	e.compress = rec.compress
-	e.setCutUntil(cutUntil)
+	e.cutUntil = cutUntil
 	// The prefetch threshold is a share of the answer's full lifetime, not
 	// of what was left of it at the restart.
 	if rec.origTTL > e.origTTL {
