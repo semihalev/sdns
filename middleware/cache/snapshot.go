@@ -110,6 +110,13 @@ type snapshotLoaded struct {
 func (s *Store) restore(r io.ReadSeeker, fingerprint [32]byte, spent func(n uint64) bool, now func() time.Time) (snapshotLoaded, error) {
 	var out snapshotLoaded
 
+	// The wall clock is read once, before anything else, for the one thing
+	// only it can say: how long the file has been on disk. Progress from
+	// there is measured on the monotonic clock, so a wall-clock step back
+	// at any point of the restore, the verifying pass included, cannot make
+	// an answer younger, or revive a lease already spent.
+	start := now()
+
 	h, err := scanSnapshot(r, spent, nil)
 	if err != nil {
 		return out, err
@@ -117,11 +124,6 @@ func (s *Store) restore(r io.ReadSeeker, fingerprint [32]byte, spent func(n uint
 	if h.fingerprint != fingerprint {
 		return out, errSnapshotFingerprint
 	}
-	// The wall clock is read once, for the one thing only it can say: how
-	// long the file has been on disk. Progress from there is measured on
-	// the monotonic clock, so a wall-clock step back during the restore
-	// cannot make an answer younger, or revive a lease already spent.
-	start := now()
 	if h.savedAt.After(start) {
 		return out, errSnapshotClock
 	}

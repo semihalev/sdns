@@ -51,7 +51,7 @@ or when it was written under different trust anchors, DNSSEC mode, root,
 fallback or forwarder servers, forward zones or empty zones. A file that is
 merely damaged costs a cold start, never a wrong answer.
 
-**What it costs.** For a million answers, half of them signed, saving takes
+**What it costs.** For a million answers, two thirds of them signed, saving takes
 under a second and loading about two, on ordinary hardware; the file is around
 110 MB. Loading happens before the listeners open, so startup takes that much
 longer. The load stops after ten seconds whatever it has reached, which bounds

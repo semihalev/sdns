@@ -168,10 +168,11 @@ func TestSnapshotAgesTheLeaseSeparately(t *testing.T) {
 	})
 }
 
-// The time on disk is read from the wall clock once; a step back during the
-// restore cannot make an answer younger. Here the restore starts 70 seconds
-// after the save and every later reading claims 50: a 60 second lease spent
-// at the start stays spent.
+// The time on disk is read from the wall clock once, when the restore
+// starts; a step back later cannot make an answer younger. The restore
+// starts 70 seconds after the save and the clock falls back to 50: a 60
+// second lease and a 60 second TTL spent at the start stay spent, whether
+// the step comes during the verifying pass or during admission.
 func TestSnapshotRestoreSurvivesAClockStepBack(t *testing.T) {
 	src := newSnapshotStore(t, 1024, time.Hour)
 	src.SetFromResponse(snapAnswer("a.test.", 300, "192.0.2.1"), false, time.Now().Add(60*time.Second))
@@ -181,22 +182,38 @@ func TestSnapshotRestoreSurvivesAClockStepBack(t *testing.T) {
 
 	// Wall readings only, as a stepped clock produces: no monotonic part.
 	wall := func(d time.Duration) time.Time { return time.Unix(0, saved.Add(d).UnixNano()) }
-	readings := 0
-	clock := func() time.Time {
-		readings++
-		if readings == 1 {
-			return wall(70 * time.Second)
-		}
-		return wall(50 * time.Second)
-	}
 
-	dst := newSnapshotStore(t, 1024, time.Hour)
-	got, err := dst.restore(bytes.NewReader(data), testFingerprint, never, clock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.loaded != 0 || dst.PositiveLen() != 0 {
-		t.Fatalf("a clock step back revived %d answers: %+v", dst.PositiveLen(), got)
+	for _, during := range []string{"verification", "admission"} {
+		t.Run("stepped back during "+during, func(t *testing.T) {
+			stepped, readings, budgetAsks := false, 0, 0
+			clock := func() time.Time {
+				readings++
+				if during == "admission" && readings > 1 {
+					stepped = true
+				}
+				if stepped {
+					return wall(50 * time.Second)
+				}
+				return wall(70 * time.Second)
+			}
+			spent := func(uint64) bool {
+				// The first budget question is asked inside the verifying pass.
+				budgetAsks++
+				if during == "verification" && budgetAsks == 1 {
+					stepped = true
+				}
+				return false
+			}
+
+			dst := newSnapshotStore(t, 1024, time.Hour)
+			got, err := dst.restore(bytes.NewReader(data), testFingerprint, spent, clock)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.loaded != 0 || dst.PositiveLen() != 0 {
+				t.Fatalf("a clock step back revived %d answers: %+v", dst.PositiveLen(), got)
+			}
+		})
 	}
 }
 
