@@ -66,7 +66,11 @@ name    = ""        # empty takes the certificate's first DNS name
 sdns answers with one record per listener you configured, in the order DoH,
 DoT, DoQ, each with its ALPN, its port when it is not the transport's default,
 and for DoH the path template `/dns-query{?dns}`. A listener bound to one
-address offers that address as a hint.
+address offers that address as a hint. Only listeners that are actually up are
+advertised: one whose port was taken at startup is left out, and DoH offers
+HTTP/3 only while the QUIC listener is serving. The DoT listener selects the
+`dot` ALPN for a client that asks for it, and connects older clients that do
+not exactly as before.
 
 **The certificate decides whether it works.** A client upgrades only after
 checking that the certificate on the encrypted listener lists, in its

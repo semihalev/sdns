@@ -16,8 +16,8 @@ import (
 	"context"
 	"net"
 	"net/netip"
-	"strconv"
 	"strings"
+	"sync/atomic"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
@@ -41,15 +41,36 @@ var zoneWire = []byte{8, 'r', 'e', 's', 'o', 'l', 'v', 'e', 'r', 4, 'a', 'r', 'p
 
 // DDR answers resolver.arpa.
 type DDR struct {
-	// records are the SVCB answers for _dns.resolver.arpa, owner names
-	// filled in per query; nil when discovery is off or has nothing to
-	// advertise.
-	records []*dns.SVCB
-	soaNS   string
+	// services are the configured encrypted listeners in preference order,
+	// empty when discovery is off or has nothing to advertise.
+	services []service
+	target   string
+	soaNS    string
+
+	// serving reports whether a listener of a transport is up. The server
+	// sets it once the listeners are bound; until then, and for a DDR
+	// driven without a server, every configured listener is advertised.
+	serving atomic.Pointer[func(proto string) bool]
 }
 
-// New builds the discovery answer once, from the listeners and the name the
-// configuration gives.
+// service is one configured listener: the transports it answers on, each
+// with the ALPN it speaks and the listener tag the server reports it under.
+// DoH is one service on two listeners, HTTP/2 over TCP and HTTP/3 over
+// QUIC, which bind and fail independently.
+type service struct {
+	alpns []alpnListener
+	port  uint16 // zero when it is the transport's default
+	hint  net.IP // the bound address, nil for a wildcard bind
+	path  bool   // carries the DoH URI template
+}
+
+type alpnListener struct {
+	alpn, proto string
+}
+
+// New takes the listeners and the name from the configuration. The records
+// themselves are built per discovery query, from the listeners that are up
+// at that moment.
 func New(cfg *config.Config) *DDR {
 	d := &DDR{soaNS: zone}
 	if !cfg.DDR.Enabled {
@@ -62,66 +83,105 @@ func New(cfg *config.Config) *DDR {
 		zlog.Warn("DDR disabled", "error", err.Error())
 		return d
 	}
-	d.soaNS = target
+	d.target, d.soaNS = target, target
 
-	// Priority is preference: DoH first, the transport every client that
-	// implements DDR speaks, then DoT, then DoQ.
+	// Preference order: DoH first, the transport every client that
+	// implements DDR speaks, then DoT, then DoQ. The network is the one the
+	// listener opens, which is how its port name is looked up.
 	for _, l := range []struct {
-		bind  string
-		alpn  []string
-		path  bool
-		deflt uint16
+		bind    string
+		network string
+		alpns   []alpnListener
+		path    bool
+		deflt   uint16
 	}{
-		{cfg.BindDOH, []string{"h2", "h3"}, true, 443},
-		{cfg.BindTLS, []string{"dot"}, false, 853},
-		{cfg.BindDOQ, []string{"doq"}, false, 853},
+		{cfg.BindDOH, "tcp", []alpnListener{{"h2", "doh"}, {"h3", "doh3"}}, true, 443},
+		{cfg.BindTLS, "tcp", []alpnListener{{"dot", "tls"}}, false, 853},
+		{cfg.BindDOQ, "udp", []alpnListener{{"doq", "doq"}}, false, 853},
 	} {
 		if l.bind == "" {
 			continue
 		}
-		rr, ok := record(target, uint16(len(d.records)+1), l.bind, l.alpn, l.path, l.deflt) //nolint:gosec // G115 - at most three records
-		if ok {
-			d.records = append(d.records, rr)
+		svc, ok := newService(l.bind, l.network, l.alpns, l.path, l.deflt)
+		if !ok {
+			zlog.Warn("DDR skips a listener it cannot describe", "bind", l.bind)
+			continue
 		}
+		d.services = append(d.services, svc)
 	}
 	return d
 }
 
-// record builds one ServiceMode SVCB for a listener. The port is carried
-// only when it differs from the transport's default (RFC 9461 §4.2), and a
-// listener bound to a specific address offers it as a hint, which saves the
-// client resolving the name before it can connect.
-func record(target string, priority uint16, bind string, alpn []string, path bool, deflt uint16) (*dns.SVCB, bool) {
+// newService describes one listener. The port is resolved the way the
+// listener and the config gate resolve it, service names included, and is
+// carried only when it differs from the transport's default (RFC 9461 §4.2).
+// A listener bound to a specific address offers it as a hint, which saves
+// the client resolving the name before it can connect.
+func newService(bind, network string, alpns []alpnListener, path bool, deflt uint16) (service, bool) {
 	host, portStr, err := net.SplitHostPort(bind)
 	if err != nil {
-		return nil, false
+		return service{}, false
 	}
-	port, err := strconv.ParseUint(portStr, 10, 16)
-	if err != nil || port == 0 {
-		return nil, false
+	port, err := net.LookupPort(network, portStr)
+	if err != nil || port <= 0 || port > 65535 {
+		return service{}, false
 	}
-
-	rr := &dns.SVCB{
-		Hdr:      dns.RR_Header{Rrtype: dns.TypeSVCB, Class: dns.ClassINET, Ttl: ttl},
-		Priority: priority,
-		Target:   target,
-	}
-	rr.Value = append(rr.Value, &dns.SVCBAlpn{Alpn: alpn})
-	if uint16(port) != deflt {
-		rr.Value = append(rr.Value, &dns.SVCBPort{Port: uint16(port)})
+	svc := service{alpns: alpns, path: path}
+	if uint16(port) != deflt { //nolint:gosec // G115 - range checked above
+		svc.port = uint16(port) //nolint:gosec // G115 - range checked above
 	}
 	if addr, err := netip.ParseAddr(host); err == nil && !addr.IsUnspecified() {
-		ip := net.IP(addr.Unmap().AsSlice())
-		if addr.Unmap().Is4() {
-			rr.Value = append(rr.Value, &dns.SVCBIPv4Hint{Hint: []net.IP{ip}})
-		} else {
-			rr.Value = append(rr.Value, &dns.SVCBIPv6Hint{Hint: []net.IP{ip}})
+		svc.hint = net.IP(addr.Unmap().AsSlice())
+	}
+	return svc, true
+}
+
+// ObserveListeners implements middleware.ListenerObserver.
+func (d *DDR) ObserveListeners(serving func(proto string) bool) {
+	d.serving.Store(&serving)
+}
+
+// records builds the discovery answer from the listeners that are up: a
+// service with none of its transports up is left out, DoH offers only the
+// HTTP versions it is serving, and priorities count the services offered.
+func (d *DDR) records(owner string) []dns.RR {
+	var up func(string) bool
+	if p := d.serving.Load(); p != nil {
+		up = *p
+	}
+	var out []dns.RR
+	for _, svc := range d.services {
+		var alpn []string
+		for _, a := range svc.alpns {
+			if up == nil || up(a.proto) {
+				alpn = append(alpn, a.alpn)
+			}
 		}
+		if len(alpn) == 0 {
+			continue
+		}
+		rr := &dns.SVCB{
+			Hdr:      dns.RR_Header{Name: owner, Rrtype: dns.TypeSVCB, Class: dns.ClassINET, Ttl: ttl},
+			Priority: uint16(len(out) + 1), //nolint:gosec // G115 - at most three records
+			Target:   d.target,
+		}
+		rr.Value = append(rr.Value, &dns.SVCBAlpn{Alpn: alpn})
+		if svc.port != 0 {
+			rr.Value = append(rr.Value, &dns.SVCBPort{Port: svc.port})
+		}
+		if svc.hint != nil {
+			if svc.hint.To4() != nil {
+				rr.Value = append(rr.Value, &dns.SVCBIPv4Hint{Hint: []net.IP{svc.hint}})
+			} else {
+				rr.Value = append(rr.Value, &dns.SVCBIPv6Hint{Hint: []net.IP{svc.hint}})
+			}
+		}
+		if svc.path {
+			rr.Value = append(rr.Value, &dns.SVCBDoHPath{Template: dohPath})
+		}
+		out = append(out, rr)
 	}
-	if path {
-		rr.Value = append(rr.Value, &dns.SVCBDoHPath{Template: dohPath})
-	}
-	return rr, true
+	return out
 }
 
 // Name returns the middleware name.
@@ -163,13 +223,10 @@ func (d *DDR) answer(req *dns.Msg) *dns.Msg {
 	msg.SetReply(req)
 	msg.Authoritative, msg.RecursionAvailable = true, true
 
-	if q.Qtype == dns.TypeSVCB && strings.EqualFold(q.Name, discovery) && len(d.records) > 0 {
-		for _, rr := range d.records {
-			c := dns.Copy(rr).(*dns.SVCB)
-			c.Hdr.Name = q.Name
-			msg.Answer = append(msg.Answer, c)
+	if q.Qtype == dns.TypeSVCB && strings.EqualFold(q.Name, discovery) {
+		if msg.Answer = d.records(q.Name); len(msg.Answer) > 0 {
+			return msg
 		}
-		return msg
 	}
 
 	msg.Ns = []dns.RR{&dns.SOA{

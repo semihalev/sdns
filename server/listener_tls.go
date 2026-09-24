@@ -66,7 +66,7 @@ func (l *tlsListener) Bind(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	l.ln = tls.NewListener(ln, tlsConfig)
+	l.ln = tls.NewListener(ln, withDoTALPN(tlsConfig))
 	l.engine = newTCPEngine(l.handler, "tls", l.maxConns, l.plan)
 	l.done = make(chan struct{})
 	return nil
@@ -145,4 +145,28 @@ func (l *tlsListener) TrimIdleMemory() int {
 		return 0
 	}
 	return engine.trimIdle()
+}
+
+// dotALPN is the ALPN identifier for DNS over TLS (RFC 9461 §4.1), the one a
+// client that found this listener through DDR connects with.
+const dotALPN = "dot"
+
+// withDoTALPN selects "dot" for a client that offers it and leaves every
+// other handshake as it was. Setting NextProtos on the config itself would
+// make the TLS stack refuse a client whose ALPN list does not contain "dot",
+// and DoT clients that predate RFC 9461 offer other lists or none; those
+// must keep connecting exactly as before.
+func withDoTALPN(base *tls.Config) *tls.Config {
+	cfg := base.Clone()
+	cfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+		for _, p := range hello.SupportedProtos {
+			if p == dotALPN {
+				selected := base.Clone()
+				selected.NextProtos = []string{dotALPN}
+				return selected, nil
+			}
+		}
+		return nil, nil
+	}
+	return cfg
 }

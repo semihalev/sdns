@@ -221,3 +221,58 @@ func TestOtherNamesPassUndecoded(t *testing.T) {
 		t.Fatal("a CHAOS question was answered as resolver.arpa")
 	}
 }
+
+// TestServiceNamePorts: a listener written with a service name, which the
+// config gate and the listener both accept, is advertised with the port the
+// name resolves to. It used to be dropped, so a server whose only encrypted
+// listener was ":https" answered discovery with NODATA.
+func TestServiceNamePorts(t *testing.T) {
+	d := New(enabled(":https", "", ":domain"))
+	resp, _, _ := serve(t, d, "_dns.resolver.arpa.", dns.TypeSVCB, dns.ClassINET, false)
+	if resp == nil || len(resp.Answer) != 2 {
+		t.Fatalf("want the DoH and DoQ records, got %v", resp)
+	}
+	if _, ok := param[*dns.SVCBPort](resp.Answer[0].(*dns.SVCB)); ok {
+		t.Fatal(":https resolves to DoH's default port and must carry no port")
+	}
+	if p, ok := param[*dns.SVCBPort](resp.Answer[1].(*dns.SVCB)); !ok || p.Port != 53 {
+		t.Fatalf(":domain on DoQ must carry port 53, got %v", p)
+	}
+}
+
+// TestOnlyListenersThatAreUpAreAdvertised: once the server reports which
+// listeners are up, a listener that failed is left out and the priorities
+// close up, DoH offers only the HTTP versions it serves, and with nothing up
+// the discovery answer is NODATA.
+func TestOnlyListenersThatAreUpAreAdvertised(t *testing.T) {
+	d := New(enabled(":443", ":853", ":8853"))
+	up := map[string]bool{"doh": true, "doh3": false, "tls": false, "doq": true}
+	d.ObserveListeners(func(proto string) bool { return up[proto] })
+
+	resp, _, _ := serve(t, d, "_dns.resolver.arpa.", dns.TypeSVCB, dns.ClassINET, false)
+	if resp == nil || len(resp.Answer) != 2 {
+		t.Fatalf("want DoH and DoQ, got %v", resp)
+	}
+	doh, doq := resp.Answer[0].(*dns.SVCB), resp.Answer[1].(*dns.SVCB)
+	if a, _ := param[*dns.SVCBAlpn](doh); doh.Priority != 1 || len(a.Alpn) != 1 || a.Alpn[0] != "h2" {
+		t.Fatalf("DoH record %v, want priority 1 offering h2 alone", doh)
+	}
+	if a, _ := param[*dns.SVCBAlpn](doq); doq.Priority != 2 || a.Alpn[0] != "doq" {
+		t.Fatalf("DoQ record %v, want priority 2 once DoT is left out", doq)
+	}
+
+	// The state is read per query.
+	up["tls"] = true
+	resp, _, _ = serve(t, d, "_dns.resolver.arpa.", dns.TypeSVCB, dns.ClassINET, false)
+	if len(resp.Answer) != 3 {
+		t.Fatalf("DoT came up and was not advertised: %v", resp.Answer)
+	}
+
+	for k := range up {
+		up[k] = false
+	}
+	resp, _, _ = serve(t, d, "_dns.resolver.arpa.", dns.TypeSVCB, dns.ClassINET, false)
+	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) != 0 || len(resp.Ns) != 1 {
+		t.Fatalf("with nothing up, want NODATA, got %v", resp)
+	}
+}

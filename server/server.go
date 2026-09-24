@@ -261,6 +261,25 @@ func (s *Server) Run(ctx context.Context) error {
 	s.shutdownDone = done
 	s.listenersMu.Unlock()
 
+	// Handlers that describe the listeners to clients learn which are up.
+	// Asked per call, because a QUIC listener finishes its startup inside
+	// Serve and can fail there after a successful bind.
+	if s.pipeline != nil {
+		serving := func(proto string) bool {
+			for _, l := range active {
+				if l.Proto() == proto && l.Serving() {
+					return true
+				}
+			}
+			return false
+		}
+		for _, h := range s.pipeline.Handlers() {
+			if o, ok := h.(middleware.ListenerObserver); ok {
+				o.ObserveListeners(serving)
+			}
+		}
+	}
+
 	for _, l := range active {
 		s.running.Add(1)
 		go func(l Listener) {
