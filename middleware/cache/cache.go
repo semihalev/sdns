@@ -1665,8 +1665,13 @@ func boundRequestToEntryLifetime(ctx context.Context, entry *CacheEntry) {
 	if entry.hasCut() && entry.cutUntil <= hardUntil {
 		hardUntil, hardKey = entry.cutUntil, entry.cutKey
 	}
+	hard := monoTime(hardUntil)
+	// A lease that is also a wall clock instant binds on its own terms.
+	if w := entry.wallCutTime(); !w.IsZero() && w.Before(hard) {
+		hard, hardKey = w, entry.cutKey
+	}
 	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
-		meta.BoundCutFor(monoTime(hardUntil), hardKey)
+		meta.BoundCutFor(hard, hardKey)
 	}
 }
 

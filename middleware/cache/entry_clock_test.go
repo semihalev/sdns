@@ -2,6 +2,7 @@ package cache
 
 import (
 	"math"
+	"strconv"
 	"testing"
 	"time"
 	"unsafe"
@@ -21,9 +22,13 @@ func wallShifted(t time.Time, d time.Duration) time.Time {
 		ext  int64
 		loc  *time.Location
 	}
-	const nsecShift = 30 // the wall word holds seconds above 30 bits of nanoseconds
-	r := (*layout)(unsafe.Pointer(&t)) //nolint:gosec // audited: test only, and the caller verifies the layout
-	r.wall = uint64(int64(r.wall) + int64(d/time.Second)<<nsecShift) //nolint:gosec // bit layout
+	// The wall word holds seconds above 30 bits of nanoseconds.
+	const nsecShift = 30
+	// Audited: test only, and every caller verifies the result.
+	r := (*layout)(unsafe.Pointer(&t)) //nolint:gosec // see above
+
+	shifted := int64(r.wall) + int64(d/time.Second)<<nsecShift //nolint:gosec // bit layout
+	r.wall = uint64(shifted)                                   //nolint:gosec // bit layout
 	return t
 }
 
@@ -65,6 +70,38 @@ func TestWallOnlyDeadlineSurvivesAWallClockStep(t *testing.T) {
 	}
 }
 
+// A lease given as a wall clock instant ends when the wall clock reaches
+// it, also when the wall clock gets there after admission faster than the
+// monotonic clock does: a minute's step forward expires a ten second lease
+// the monotonic clock alone would still honor for nine. A lease with a
+// monotonic reading keeps ignoring the wall clock.
+func TestWallOnlyDeadlineFollowsTheWallClockAfterAdmission(t *testing.T) {
+	admit := time.Now()
+	later := wallShifted(admit.Add(time.Second), time.Minute) // monotonic +1s, wall +61s
+	if later.Sub(admit) != time.Second || later.Round(0).Sub(admit.Round(0)) != 61*time.Second {
+		t.Fatal("time.Time layout changed; update wallShifted")
+	}
+
+	wallOnly := &CacheEntry{}
+	wallOnly.setCutUntil(time.Unix(0, admit.Add(10*time.Second).UnixNano()))
+	if _, lease := wallOnly.remainingBounds(later); lease > -50*time.Second {
+		t.Fatalf("a wall clock lease reads %v left after the wall clock passed it by 51s", lease)
+	}
+
+	monotonic := &CacheEntry{}
+	monotonic.setCutUntil(admit.Add(10 * time.Second))
+	if _, lease := monotonic.remainingBounds(later); lease < 8*time.Second || lease > 9*time.Second {
+		t.Fatalf("a monotonic lease reads %v, want the nine seconds the monotonic clock allows", lease)
+	}
+
+	// Dropping the lease drops the wall clock end with it, and the rare
+	// part when nothing else needs it.
+	wallOnly.setCutUntil(time.Time{})
+	if wallOnly.hasCut() || wallOnly.rare != nil {
+		t.Fatal("clearing the lease left part of it behind")
+	}
+}
+
 // Converting instants centuries away keeps their sign rather than wrapping
 // around to the other side of the epoch.
 func TestMonoOffsetDoesNotWrap(t *testing.T) {
@@ -79,8 +116,12 @@ func TestMonoOffsetDoesNotWrap(t *testing.T) {
 // A configured rate limit past the int32 range limits nothing, as before;
 // it must not wrap to a small limit that throttles every hit.
 func TestRateLimitNarrowsWithoutWrapping(t *testing.T) {
+	// The values past int32 are int64 variables, converted only where int
+	// holds them: as constants they would not compile on 32-bit platforms,
+	// where int is int32 and no configuration can reach them anyway.
+	fits := func(v int64) bool { return strconv.IntSize == 64 || (v >= math.MinInt32 && v <= math.MaxInt32) }
 	for _, tc := range []struct {
-		configured int
+		configured int64
 		want       int32
 	}{
 		{0, 0},
@@ -90,16 +131,23 @@ func TestRateLimitNarrowsWithoutWrapping(t *testing.T) {
 		{math.MaxInt32, math.MaxInt32},
 		{4294967297, math.MaxInt32}, // wraps to 1 as a plain int32
 	} {
-		if got := clampRateLimit(tc.configured); got != tc.want {
+		if !fits(tc.configured) {
+			continue
+		}
+		if got := clampRateLimit(int(tc.configured)); got != tc.want {
 			t.Errorf("clampRateLimit(%d) = %d, want %d", tc.configured, got, tc.want)
 		}
 	}
 
-	e := NewCacheEntry(snapAnswer("a.test.", 300, "192.0.2.1"), time.Minute, 4294967297)
+	if strconv.IntSize < 64 {
+		return
+	}
+	over, under := int64(4294967297), int64(-4294967295)
+	e := NewCacheEntry(snapAnswer("a.test.", 300, "192.0.2.1"), time.Minute, int(over))
 	if l := e.GetRateLimiter(); l == nil || l.Limit() < math.MaxInt32 {
 		t.Fatalf("a rate limit past int32 became %v", l)
 	}
-	if NewCacheEntry(snapAnswer("a.test.", 300, "192.0.2.1"), time.Minute, -4294967295).GetRateLimiter() != nil {
+	if NewCacheEntry(snapAnswer("a.test.", 300, "192.0.2.1"), time.Minute, int(under)).GetRateLimiter() != nil {
 		t.Fatal("a negative rate limit became a limit")
 	}
 }

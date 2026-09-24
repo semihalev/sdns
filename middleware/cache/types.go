@@ -120,6 +120,14 @@ type entryRare struct {
 	// PrefetchEligible() reflects this.
 	scope netip.Prefix
 	ede   *dns.EDNS0_EDE // Preserved EDE information
+	// wallCut is the delegation lease's end as a wall clock instant, Unix
+	// nanoseconds, kept when the lease was given without a monotonic
+	// reading: a signature expiry is a point on the wall clock, and it
+	// passes when the wall clock does, whatever the monotonic clock says.
+	// cutUntil still holds its conversion at admission, so a wall clock
+	// stepped back cannot extend it either. Zero when the lease had a
+	// monotonic reading or there is none.
+	wallCut int64
 }
 
 // monoEpoch anchors the instants an entry keeps. They are held as offsets
@@ -128,6 +136,14 @@ type entryRare struct {
 // clock step moves neither an entry's age nor its lease, exactly as when
 // the entry held the instants themselves.
 var monoEpoch = time.Now()
+
+// hasMonotonic reports whether t carries a monotonic clock reading. Round(0)
+// strips that reading and nothing else, so t differs from its rounding
+// exactly when it had one. Equal would not do: it ignores the very reading
+// being asked about.
+func hasMonotonic(t time.Time) bool {
+	return t != t.Round(0) //nolint:staticcheck // == on purpose, see above
+}
 
 // monoOffset is t as an offset from monoEpoch. It is for the instants an
 // entry is admitted with; a clock reading taken to ask about an entry
@@ -142,7 +158,7 @@ var monoEpoch = time.Now()
 // is taken instead for what it says at the moment it is converted, its
 // distance from the wall clock now, and anchored at the monotonic now.
 func monoOffset(t time.Time) int64 {
-	if t != t.Round(0) { // Round(0) strips only the monotonic reading
+	if hasMonotonic(t) {
 		return int64(t.Sub(monoEpoch))
 	}
 	now := time.Now()
@@ -168,7 +184,20 @@ func (e *CacheEntry) cutDeadline() time.Time {
 	if e.cutUntil == 0 {
 		return time.Time{}
 	}
-	return monoTime(e.cutUntil)
+	cut := monoTime(e.cutUntil)
+	if w := e.wallCutTime(); !w.IsZero() && w.Before(cut) {
+		return w
+	}
+	return cut
+}
+
+// wallCutTime is the lease's wall clock end when it has one (see
+// entryRare.wallCut), zero otherwise.
+func (e *CacheEntry) wallCutTime() time.Time {
+	if e.rare == nil || e.rare.wallCut == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, e.rare.wallCut)
 }
 
 // hasCut reports whether the entry carries a delegation lease.
@@ -177,17 +206,22 @@ func (e *CacheEntry) hasCut() bool { return e.cutUntil != 0 }
 // setCutUntil bounds the entry by the lease ending at t; a zero t removes
 // the bound.
 func (e *CacheEntry) setCutUntil(t time.Time) {
+	var wall int64
 	if t.IsZero() {
 		e.cutUntil = 0
-		return
+	} else {
+		off := monoOffset(t)
+		if off == 0 {
+			// Zero means no lease; a lease ending at the epoch itself is
+			// taken a nanosecond early rather than lost.
+			off = -1
+		}
+		e.cutUntil = off
+		if !hasMonotonic(t) {
+			wall = t.UnixNano()
+		}
 	}
-	off := monoOffset(t)
-	if off == 0 {
-		// Zero means no lease; a lease ending at the epoch itself is taken
-		// a nanosecond early rather than lost.
-		off = -1
-	}
-	e.cutUntil = off
+	e.setRareParts(e.scopeKey(), e.edeOption(), wall)
 }
 
 // scopeKey is the ECS scope the entry was keyed under, the zero Prefix for
@@ -210,11 +244,21 @@ func (e *CacheEntry) edeOption() *dns.EDNS0_EDE {
 // setRare records a scope and an EDE, allocating the rare part only when
 // there is something to hold.
 func (e *CacheEntry) setRare(scope netip.Prefix, ede *dns.EDNS0_EDE) {
-	if !scope.IsValid() && ede == nil {
+	var wall int64
+	if e.rare != nil {
+		wall = e.rare.wallCut
+	}
+	e.setRareParts(scope, ede, wall)
+}
+
+// setRareParts replaces the whole rare part, dropping it when every field
+// is empty.
+func (e *CacheEntry) setRareParts(scope netip.Prefix, ede *dns.EDNS0_EDE, wallCut int64) {
+	if !scope.IsValid() && ede == nil && wallCut == 0 {
 		e.rare = nil
 		return
 	}
-	e.rare = &entryRare{scope: scope, ede: ede}
+	e.rare = &entryRare{scope: scope, ede: ede, wallCut: wallCut}
 }
 
 // Sidecar returns the entry's stamped policy state; nil means the entry
@@ -313,6 +357,13 @@ func (e *CacheEntry) remainingBounds(now time.Time) (ttlRemaining, leaseRemainin
 	ttlRemaining = e.ttl - time.Duration(at-e.stored)
 	if e.hasCut() {
 		leaseRemaining = time.Duration(e.cutUntil - at)
+		// A lease given as a wall clock instant also ends when the wall
+		// clock reaches it; see entryRare.wallCut.
+		if e.rare != nil && e.rare.wallCut != 0 {
+			if w := time.Duration(e.rare.wallCut - now.UnixNano()); w < leaseRemaining {
+				leaseRemaining = w
+			}
+		}
 	}
 	return ttlRemaining, leaseRemaining
 }
