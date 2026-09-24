@@ -54,6 +54,36 @@ type ListenerObserver interface {
 	ObserveListeners(serving func(proto string) bool)
 }
 
+// Restorer is implemented by a handler that brings back state an earlier
+// run of the process saved. Setup calls Restore on each after wiring and
+// before publishing the pipeline, so nothing that waits on Ready, the
+// resolver's priming and trust anchor upkeep among it, runs while state is
+// being restored, and no query is served until it is done.
+type Restorer interface {
+	Restore()
+}
+
+// Persister is implemented by a handler that saves state for the next run.
+// Persist is called once at shutdown, after the listeners have stopped. It
+// stops starting new work when ctx is done, and should then finish what it
+// was writing promptly; the process does not wait for it indefinitely.
+type Persister interface {
+	Persist(ctx context.Context)
+}
+
+// TrustAnchorProvider is implemented by the handler that owns the live
+// DNSSEC trust anchor set (today: the resolver).
+type TrustAnchorProvider interface {
+	TrustAnchors() []dns.RR
+}
+
+// TrustAnchorSetter is implemented by a handler whose state depends on the
+// trust anchors it was validated under (today: the cache, whose saved
+// answers are only as good as the anchors they were validated with).
+type TrustAnchorSetter interface {
+	SetTrustAnchors(anchors func() []dns.RR)
+}
+
 // Store is the minimum cache facade a resolver sub-query needs.
 // Satisfied by cache.Store; declared here so middleware.Setup can
 // wire it from one handler into another without either importing

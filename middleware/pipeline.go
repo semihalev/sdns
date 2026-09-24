@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 
@@ -194,6 +195,10 @@ func Setup(cfg *config.Config) {
 	// means the atomic.Pointer.Store also acts as a happens-before
 	// barrier for every field the goroutine subsequently reads.
 	p.autoWire()
+	// Saved state comes back after wiring, which a restore may depend on,
+	// and before publishing, which is what lets queries and the resolver's
+	// background upkeep in: neither can race it or see it half done.
+	p.restore()
 	globalPipeline.Store(p)
 }
 
@@ -247,8 +252,12 @@ func (p *Pipeline) autoWire() {
 		hasCryptoConsumer bool
 		sidecarPolicy     SidecarPolicyProvider
 		sidecarProviders  []string
+		anchors           TrustAnchorProvider
 	)
 	for _, h := range p.handlers {
+		if tp, ok := h.(TrustAnchorProvider); ok && anchors == nil {
+			anchors = tp
+		}
 		if sp, ok := h.(StoreProvider); ok {
 			providers = append(providers, h.Name())
 			if store == nil {
@@ -316,6 +325,38 @@ func (p *Pipeline) autoWire() {
 			if s, ok := h.(SidecarPolicySetter); ok {
 				s.SetSidecarPolicy(sidecarPolicy)
 			}
+		}
+		if anchors != nil {
+			if s, ok := h.(TrustAnchorSetter); ok {
+				s.SetTrustAnchors(anchors.TrustAnchors)
+			}
+		}
+	}
+}
+
+// restore runs every Restorer, in pipeline order, once wiring is complete.
+func (p *Pipeline) restore() {
+	if p == nil {
+		return
+	}
+	for _, h := range p.handlers {
+		if r, ok := h.(Restorer); ok {
+			r.Restore()
+		}
+	}
+}
+
+// Persist runs every Persister of the published pipeline, in pipeline
+// order, sharing ctx. It is called once, at shutdown, after the listeners
+// have stopped; before Setup it does nothing.
+func Persist(ctx context.Context) {
+	p := globalPipeline.Load()
+	if p == nil {
+		return
+	}
+	for _, h := range p.handlers {
+		if s, ok := h.(Persister); ok {
+			s.Persist(ctx)
 		}
 	}
 }

@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/miekg/dns"
@@ -327,6 +328,14 @@ func (h *DNSHandler) SetQueryer(q middleware.Queryer) { h.resolver.queryer.Store
 // non-blocking admission on the same gate as required DNSSEC validation.
 func (h *DNSHandler) DNSSECCryptoLimiter() middleware.DNSSECCryptoLimiter {
 	return h.resolver.cryptoLimiter
+}
+
+// TrustAnchors returns a copy of the live trust anchor set: the configured
+// keys as RFC 5011 upkeep and its tombstones have left them.
+func (h *DNSHandler) TrustAnchors() []dns.RR {
+	h.resolver.RLock()
+	defer h.resolver.RUnlock()
+	return slices.Clone(h.resolver.rootKeys)
 }
 
 // (*DNSHandler).Stop stop gracefully shuts down the resolver.
