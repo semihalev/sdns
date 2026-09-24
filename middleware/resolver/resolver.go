@@ -1754,6 +1754,13 @@ mainloop:
 				left--
 
 				if res.err != nil {
+					if errors.Is(res.err, errTruncated) {
+						if left > 0 {
+							continue fallbackloop
+						}
+						continue mainloop
+					}
+
 					// A request-tree work rejection is terminal policy,
 					// not an authority failure. Trying another server
 					// would only repeat the rejected operation and can
@@ -1779,6 +1786,19 @@ mainloop:
 					if (len(responseErrors) > 2 || level < 2) && resp.Rcode == dns.RcodeNameError {
 						break mainloop
 					}
+
+					if left > 0 && len(serversList)-1 == index {
+						continue fallbackloop
+					}
+					continue mainloop
+				}
+
+				// A truncated reply from a server that did not complete TCP fallback
+				// is parked in responseErrors so peers can be tried first. If all
+				// authorities fail, pickFallbackResponse can still return it so the
+				// client receives the truncated response.
+				if resp.Truncated {
+					responseErrors = append(responseErrors, resp)
 
 					if left > 0 && len(serversList)-1 == index {
 						continue fallbackloop
@@ -2066,6 +2086,14 @@ func (r *Resolver) queryServer(ctx context.Context, rs *resolveState, interrupts
 			// (correctly) returning negative answers
 			// interleaved with transient timeouts.
 			r.circuitBreaker.recordSuccess(server.Addr)
+		}
+		if isProbe(exchangeCtx) && resp != nil && resp.Truncated {
+			// A probe only measured the UDP round trip and intentionally
+			// did not fall back to TCP. Its truncated reply is not an
+			// answer and must not win the race ahead of a peer completing
+			// TCP fallback.
+			err = errTruncated
+			resp = nil
 		}
 		res.resp = resp
 		res.err = err
@@ -4255,12 +4283,72 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 			// so no authenticated delegation proof is possible or needed.
 			return parentDS, nil
 		}
+
+		// 1. First, try authenticating q.Name directly against parentSigner.
+		// For normal 1-label delegations (and multi-label delegations directly
+		// parented by parentSigner, e.g. plain.test. in root), this succeeds
+		// immediately with either the child's DS or a signed denial.
 		newDSRR, _, err := r.authenticatedDelegationDS(ctx, parentSigner, q.Name, effectiveParentDS)
-		if err != nil {
-			zlog.Warn("DNSSEC verify failed (delegation)", "query", dnsutil.FormatQuestion(q), "error", err.Error())
-			return nil, err
+		if err == nil {
+			return newDSRR, nil
 		}
-		return newDSRR, nil
+
+		// 2. If direct validation failed and there are intermediate labels between
+		// parentSigner and q.Name, check if the referral jumped across an intermediate
+		// zone cut (e.g. an authoritative server co-hosting a signed parent and an
+		// unsigned child, such as uy. and com.uy. for elpais.com.uy.).
+		qname := strings.ToLower(dns.Fqdn(q.Name))
+		qnameLabels := dns.CountLabel(qname)
+		zoneCount := dns.CountLabel(parentSigner)
+
+		if qnameLabels > zoneCount+1 {
+			curDS := effectiveParentDS
+			curSigner := parentSigner
+			ancestorProvenInsecure := false
+
+			for n := zoneCount + 1; n < qnameLabels; n++ {
+				prev, _ := dns.PrevLabel(qname, n)
+				ancestor := qname[prev:]
+
+				dsset, ancInsecure, aerr := r.authenticatedDelegationDS(ctx, curSigner, ancestor, curDS)
+				if aerr != nil && isDNSSECWorkError(aerr) {
+					return nil, aerr
+				}
+				if aerr == nil && ancInsecure {
+					// An intermediate cut is cryptographically proven insecure;
+					// by RFC 4035 rules, any domain under an insecure zone is insecure.
+					ancestorProvenInsecure = true
+					break
+				}
+				if aerr == nil && len(dsset) > 0 {
+					curDS = dsset
+					curSigner = ancestor
+					continue
+				}
+			}
+
+			if ancestorProvenInsecure {
+				return nil, nil
+			}
+
+			// If intermediate cuts descended to a new secure signer below parentSigner,
+			// retry validating q.Name under that deeper signer.
+			if curSigner != parentSigner {
+				targetDS, targetInsecure, terr := r.authenticatedDelegationDS(ctx, curSigner, qname, curDS)
+				if terr != nil && isDNSSECWorkError(terr) {
+					return nil, terr
+				}
+				if terr == nil {
+					if targetInsecure {
+						return nil, nil
+					}
+					return targetDS, nil
+				}
+			}
+		}
+
+		zlog.Warn("DNSSEC verify failed (delegation)", "query", dnsutil.FormatQuestion(q), "error", err.Error())
+		return nil, err
 	}
 
 	// Try each candidate signer (most specific first) until one

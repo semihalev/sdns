@@ -46,6 +46,10 @@ var (
 		Code:    dns.ExtendedErrorCodeNoReachableAuthority,
 		Message: "Zone at in-flight lookup capacity",
 	}
+	errTruncated = &dnsutil.EDEError{
+		Code:    dns.ExtendedErrorCodeOther,
+		Message: "Response truncated",
+	}
 )
 
 // NewNetworkError creates a network error with EDE information.

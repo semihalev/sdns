@@ -270,3 +270,82 @@ func TestAProbeToASilentServerRecordsTheFailure(t *testing.T) {
 		t.Fatal("a probe that timed out recorded nothing at all")
 	}
 }
+
+// A probe skips TCP fallback on UDP truncation to only record UDP RTT.
+// Its truncated response must not win the race in lookup and preempt the
+// leader's TCP fallback.
+func TestAProbeTruncationDoesNotWinRaceAheadOfTCPFallback(t *testing.T) {
+	// Dual-protocol server that truncates on UDP and returns full answer on TCP
+	handler := dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
+		resp := new(dns.Msg)
+		resp.SetReply(req)
+		if w.RemoteAddr().Network() == "udp" {
+			resp.Truncated = true
+			resp.Answer = append(resp.Answer, &dns.DNSKEY{
+				Hdr: dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: 300},
+			})
+		} else {
+			resp.Answer = append(resp.Answer, &dns.DNSKEY{
+				Hdr: dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeDNSKEY, Class: dns.ClassINET, Ttl: 300},
+			})
+			resp.Answer = append(resp.Answer, &dns.RRSIG{
+				Hdr: dns.RR_Header{Name: "example.com.", Rrtype: dns.TypeRRSIG, Class: dns.ClassINET, Ttl: 300},
+			})
+		}
+		_ = w.WriteMsg(resp)
+	})
+
+	startDual := func() (string, func()) {
+		uconn, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		addr := uconn.LocalAddr().String()
+		tconn, err := net.Listen("tcp", addr)
+		if err != nil {
+			_ = uconn.Close()
+			t.Fatal(err)
+		}
+		uServer := &dns.Server{PacketConn: uconn, Handler: handler}
+		tServer := &dns.Server{Listener: tconn, Handler: handler}
+		go func() { _ = uServer.ActivateAndServe() }()
+		go func() { _ = tServer.ActivateAndServe() }()
+		return addr, func() {
+			_ = uServer.Shutdown()
+			_ = tServer.Shutdown()
+		}
+	}
+
+	addr1, stop1 := startDual()
+	defer stop1()
+	addr2, stop2 := startDual()
+	defer stop2()
+	addr3, stop3 := startDual()
+	defer stop3()
+
+	r := probeResolver(16)
+	r.maxConcurrent = make(chan struct{}, 100)
+	servers := &authority.Servers{Zone: "example.com."}
+	servers.List = append(servers.List,
+		authority.NewServer(addr1, authority.IPv4),
+		authority.NewServer(addr2, authority.IPv4),
+		authority.NewServer(addr3, authority.IPv4),
+	)
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeDNSKEY)
+
+	resp, err := r.lookup(context.Background(), &resolveState{req: req}, req, servers)
+	if err != nil {
+		t.Fatalf("lookup failed: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("resp is nil")
+	}
+	if resp.Truncated {
+		t.Fatalf("lookup returned truncated response with %d answers", len(resp.Answer))
+	}
+	if len(resp.Answer) != 2 {
+		t.Fatalf("lookup returned %d answers, want 2 from TCP fallback", len(resp.Answer))
+	}
+}
