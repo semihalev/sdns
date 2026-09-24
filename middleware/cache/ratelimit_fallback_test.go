@@ -55,7 +55,7 @@ func TestWireDeclineDoesNotSpendTheLimiterTwice(t *testing.T) {
 
 	// Age it into the refresh window: 29s left of 300 is inside the 10%
 	// threshold, so the byte path declines and the Msg body serves.
-	entry.setStoredAt(time.Now().Add(-271 * time.Second))
+	entry.stored = time.Now().Add(-271 * time.Second)
 	if !entry.ShouldPrefetch(int(cfg.Prefetch)) {
 		t.Fatal("entry is not prefetch-due; the decline this pins never happens")
 	}

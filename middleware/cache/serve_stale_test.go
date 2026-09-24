@@ -70,7 +70,7 @@ func seedStaleEntryWithRate(
 		t.Fatal("failed to construct stale cache entry")
 	}
 	entry.setRare(normalizeKeyScope(scope), entry.edeOption())
-	entry.setStoredAt(time.Now().Add(-time.Minute - staleFor))
+	entry.stored = time.Now().Add(-time.Minute - staleFor)
 	if leaseRemaining != 0 {
 		entry.cutUntil = time.Now().Add(leaseRemaining)
 	}
@@ -884,7 +884,7 @@ func TestScopedLookupFreshWiderScopeBeatsExpiredNarrowScope(t *testing.T) {
 	wide := netip.MustParsePrefix("203.0.113.0/24")
 	seedStaleEntry(t, c, staleTestAnswer(req, "192.0.2.60"), narrow, time.Second, time.Hour)
 	fresh := seedStaleEntry(t, c, staleTestAnswer(req, "192.0.2.61"), wide, time.Second, time.Hour)
-	fresh.setStoredAt(time.Now())
+	fresh.stored = time.Now()
 
 	entry, key, scope := c.scopedLookup(req.Question[0], false, client)
 	if entry != fresh || scope != wide {

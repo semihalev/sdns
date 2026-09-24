@@ -246,7 +246,7 @@ func TestClientECSMarkerSurvivesStrippedPrefetchRequest(t *testing.T) {
 	old := nxCutPositiveResponse(baseReq)
 	key := CacheKey{Question: baseReq.Question[0], CD: false}.Hash()
 	entry := NewCacheEntryWithKey(old, 5*time.Second, 0, key)
-	entry.setStoredAt(time.Now().Add(-4 * time.Second))
+	entry.stored = time.Now().Add(-4 * time.Second)
 	cache.positive.Set(key, entry)
 
 	downstream := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {

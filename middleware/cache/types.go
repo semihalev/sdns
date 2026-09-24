@@ -41,11 +41,9 @@ type CacheEntry struct {
 	stripped []byte
 
 	// The fields every hit reads come first, so they share the entry's
-	// first two cache lines; the layout packs to 160 bytes with no padding.
+	// first two cache lines; the layout packs to 176 bytes with no padding.
 
-	// stored is the instant the entry was admitted at, as a monotonic
-	// offset (see monoOffset).
-	stored int64
+	stored time.Time
 	ttl    time.Duration
 
 	// cutUntil bounds the entry's effective lifetime to the
@@ -56,9 +54,7 @@ type CacheEntry struct {
 	// local answers, or no learned delegation on the path). Enforced
 	// at read time, remaining() takes the min of the TTL expiry and
 	// this deadline, so it also overrides the configured MinTTL
-	// floor when the cut is shorter. It stays a time.Time, unlike stored:
-	// a lease can be a wall clock instant, a signature expiry, and has to
-	// keep meaning one, here and in every answer derived from this one.
+	// floor when the cut is shorter.
 	cutUntil time.Time
 
 	// sidecar is policy state stamped beside the immutable entry, the
@@ -121,47 +117,6 @@ type entryRare struct {
 	// PrefetchEligible() reflects this.
 	scope netip.Prefix
 	ede   *dns.EDNS0_EDE // Preserved EDE information
-}
-
-// monoEpoch anchors an entry's admission instant, held as an offset from it,
-// eight bytes where a time.Time takes twenty-four, and taken with Sub, which
-// reads the monotonic clock whenever both sides carry it: a wall clock step
-// does not move an entry's age, exactly as when the entry held the instant
-// itself.
-var monoEpoch = time.Now()
-
-// hasMonotonic reports whether t carries a monotonic clock reading. Round(0)
-// strips that reading and nothing else, so t differs from its rounding
-// exactly when it had one. Equal would not do: it ignores the very reading
-// being asked about.
-func hasMonotonic(t time.Time) bool {
-	return t != t.Round(0) //nolint:staticcheck // == on purpose, see above
-}
-
-// monoOffset is t as an offset from monoEpoch. It is for the instant an
-// entry is admitted at; a clock reading taken to ask about an entry converts
-// directly (see remainingBounds).
-//
-// An instant with a monotonic reading, every time.Now and whatever was
-// derived from one, converts directly. One without carries only a wall
-// reading, and Sub against the epoch would measure it against the wall
-// clock as it read at startup, off by any step since. It is taken instead
-// for what it says at the moment it is converted, its distance from the
-// wall clock now, and anchored at the monotonic now.
-func monoOffset(t time.Time) int64 {
-	if hasMonotonic(t) {
-		return int64(t.Sub(monoEpoch))
-	}
-	now := time.Now()
-	base, d := int64(now.Sub(monoEpoch)), int64(t.Sub(now))
-	// Sub saturates for instants centuries away; the sum must as well.
-	switch {
-	case d > 0 && base > math.MaxInt64-d:
-		return math.MaxInt64
-	case d < 0 && base < math.MinInt64-d:
-		return math.MinInt64
-	}
-	return base + d
 }
 
 // scopeKey is the ECS scope the entry was keyed under, the zero Prefix for
@@ -279,11 +234,7 @@ func (e *CacheEntry) remainingBounds(now time.Time) (ttlRemaining, leaseRemainin
 	// whose own lifetime is under a second alive for a full one. Whether the
 	// entry is alive is a question about time; what TTL to write is a question
 	// about the wire format, and servedSeconds answers that one.
-	//
-	// now is a clock reading on every path that asks, so it carries a
-	// monotonic reading and converts directly; monoOffset's check for one
-	// that does not costs more than the rest of this function, on every hit.
-	ttlRemaining = e.ttl - time.Duration(int64(now.Sub(monoEpoch))-e.stored)
+	ttlRemaining = e.ttl - now.Sub(e.stored)
 	if !e.cutUntil.IsZero() {
 		leaseRemaining = e.cutUntil.Sub(now)
 	}
@@ -399,7 +350,7 @@ func newCacheEntryAt(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64,
 		// The anchoring instant, monotonic reading kept. Converting to UTC
 		// strips it and would let a backward wall-clock adjustment extend
 		// both the TTL and an inherited delegation cut.
-		stored:     monoOffset(now),
+		stored:     now,
 		ttl:        ttl,
 		origTTL:    uint32(ttl.Seconds()),
 		rateLimit:  clampRateLimit(rateLimit),
