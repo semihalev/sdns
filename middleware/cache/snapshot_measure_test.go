@@ -27,8 +27,11 @@ import (
 //	SDNS_SNAPSHOT_MEASURE=save SDNS_SNAPSHOT_DIR=/tmp/snap go test ./middleware/cache -run TestSnapshotMeasure -v -count=1
 //	SDNS_SNAPSHOT_MEASURE=load SDNS_SNAPSHOT_DIR=/tmp/snap go test ./middleware/cache -run TestSnapshotMeasure -v -count=1
 //
-// SDNS_SNAPSHOT_N sets the answer count (default 1,000,000), half of them
-// DNSSEC signed; SDNS_SNAPSHOT_RAW=1 writes without compression.
+// SDNS_SNAPSHOT_N sets the answer count (default 1,000,000), two thirds of
+// them DNSSEC signed; SDNS_SNAPSHOT_RAW=1 writes without compression.
+//
+// The load phase reads a file the save phase has just written, so it reads
+// from the page cache unless that is dropped in between.
 func TestSnapshotMeasure(t *testing.T) {
 	phase := os.Getenv("SDNS_SNAPSHOT_MEASURE")
 	if phase == "" {
@@ -116,7 +119,7 @@ func TestSnapshotMeasure(t *testing.T) {
 }
 
 // measureAnswer is the i-th answer of a cache shaped like a validating
-// resolver's: half signed positive answers, a third unsigned, and the rest
+// resolver's: half signed positive answers, a third unsigned, and a sixth
 // signed denials with their proofs.
 func measureAnswer(i int) *dns.Msg {
 	name := fmt.Sprintf("host%d.zone%d.example%d.test.", i%97, i, i%13)

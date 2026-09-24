@@ -23,6 +23,14 @@ import (
 //	  records, each tagged 1
 //	  tag 0, record count u64
 //	  CRC-32C u32 over the header and every body byte before it
+//	trailer, never compressed:
+//	  magic "SDNSCEND", the body's length on disk u64
+//
+// The trailer is what makes the file's own extent checkable. A file whose
+// size is not header, body and trailer to the byte was cut short or added
+// to, and the body is read through exactly its recorded length, so the
+// decompressor never decides where the file ends: an LZ4 frame that stops
+// at a block boundary reads to it as a clean end.
 //
 // A record holds what the entry's wire image does not: how much of its
 // lifetime and of its delegation lease were left at the saved-at instant,
@@ -36,6 +44,9 @@ const (
 	snapshotLZ4 = 1
 
 	snapshotHeaderLen = 8 + 2 + 2 + 8 + 32
+
+	snapshotTrailerMagic = "SDNSCEND"
+	snapshotTrailerLen   = 8 + 8
 
 	snapshotRecordTag = 1
 	snapshotEndTag    = 0
@@ -88,8 +99,10 @@ type snapshotRecord struct {
 
 // snapshotWriter streams records into a snapshot.
 type snapshotWriter struct {
+	file   io.Writer      // the destination, for the trailer
+	onDisk *countedWriter // the destination, counting the body's bytes
 	lz     *lz4.Writer
-	stream io.Writer // the frame, or the file for a raw body
+	stream io.Writer // the frame, or onDisk for a raw body
 	body   io.Writer // stream and the checksum
 	sum    hash.Hash32
 	n      uint64
@@ -109,9 +122,11 @@ func newSnapshotWriter(w io.Writer, h snapshotHeader) (*snapshotWriter, error) {
 	}
 	_, _ = sw.sum.Write(hdr[:])
 
-	sw.stream = w
+	sw.file = w
+	sw.onDisk = &countedWriter{w: w}
+	sw.stream = sw.onDisk
 	if h.compression == snapshotLZ4 {
-		sw.lz = lz4.NewWriter(w)
+		sw.lz = lz4.NewWriter(sw.onDisk)
 		sw.stream = sw.lz
 	}
 	sw.body = io.MultiWriter(sw.stream, sw.sum)
@@ -169,9 +184,27 @@ func (sw *snapshotWriter) finish() error {
 		return err
 	}
 	if sw.lz != nil {
-		return sw.lz.Close()
+		if err := sw.lz.Close(); err != nil {
+			return err
+		}
 	}
-	return nil
+	var trailer [snapshotTrailerLen]byte
+	copy(trailer[:8], snapshotTrailerMagic)
+	binary.LittleEndian.PutUint64(trailer[8:], uint64(sw.onDisk.n)) //nolint:gosec // a byte count
+	_, err := sw.file.Write(trailer[:])
+	return err
+}
+
+// countedWriter counts what passes through it.
+type countedWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countedWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
 }
 
 // limitedReader fails, rather than ending quietly, once more than n bytes
@@ -200,9 +233,35 @@ func (l *limitedReader) Read(p []byte) (int, error) {
 // turn until visit returns false; the checksum is then not waited for, the
 // caller having verified the file in an earlier pass. spent is asked before
 // each record, with the number read so far, whether the time budget is gone.
-func scanSnapshot(r io.Reader, spent func(n uint64) bool, visit func(*snapshotRecord) bool) (snapshotHeader, error) {
+func scanSnapshot(r io.ReadSeeker, spent func(n uint64) bool, visit func(*snapshotRecord) bool) (snapshotHeader, error) {
 	var h snapshotHeader
 	sum := crc32.New(castagnoli)
+
+	size, err := r.Seek(0, io.SeekEnd)
+	if err != nil {
+		return h, err
+	}
+	if size > maxSnapshotFileBytes {
+		return h, errSnapshotSize
+	}
+	if size < snapshotHeaderLen+snapshotTrailerLen {
+		return h, errSnapshotHeader
+	}
+	var trailer [snapshotTrailerLen]byte
+	if _, err := r.Seek(size-snapshotTrailerLen, io.SeekStart); err != nil {
+		return h, err
+	}
+	if _, err := io.ReadFull(r, trailer[:]); err != nil {
+		return h, readErr(err)
+	}
+	bodyLen := binary.LittleEndian.Uint64(trailer[8:])
+	if string(trailer[:8]) != snapshotTrailerMagic ||
+		bodyLen != uint64(size-snapshotHeaderLen-snapshotTrailerLen) { //nolint:gosec // size exceeds both lengths, checked above
+		return h, errSnapshotShape
+	}
+	if _, err := r.Seek(0, io.SeekStart); err != nil {
+		return h, err
+	}
 
 	var hdr [snapshotHeaderLen]byte
 	if _, err := io.ReadFull(r, hdr[:]); err != nil {
@@ -216,12 +275,11 @@ func scanSnapshot(r io.Reader, spent func(n uint64) bool, visit func(*snapshotRe
 	copy(h.fingerprint[:], hdr[20:])
 	_, _ = sum.Write(hdr[:])
 
-	var body io.Reader
+	body := io.LimitReader(r, int64(bodyLen)) //nolint:gosec // bounded by the file size
 	switch h.compression {
 	case snapshotRaw:
-		body = r
 	case snapshotLZ4:
-		body = lz4.NewReader(r)
+		body = lz4.NewReader(body)
 	default:
 		return h, errSnapshotHeader
 	}
@@ -306,9 +364,15 @@ func scanSnapshot(r io.Reader, spent func(n uint64) bool, visit func(*snapshotRe
 	if binary.LittleEndian.Uint32(crc[:]) != want {
 		return h, errSnapshotChecksum
 	}
+	// Only a clean end of stream completes the file. Anything else, a byte
+	// past the checksum or an LZ4 frame that does not end whole, with its
+	// own checksum intact, fails the verification.
 	var one [1]byte
-	if k, _ := br.Read(one[:]); k != 0 {
+	switch _, err := io.ReadFull(br, one[:]); {
+	case err == nil:
 		return h, errSnapshotShape
+	case err != io.EOF: //nolint:errorlint // ReadFull returns io.EOF itself, unwrapped, only for a clean end
+		return h, readErr(err)
 	}
 	return h, nil
 }

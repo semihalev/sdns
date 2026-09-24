@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,6 +66,8 @@ func TestRestoreRefusesAnotherConfiguration(t *testing.T) {
 		anchor string
 	}{
 		{"trust anchors", func(*config.Config) {}, anchorB},
+		// Base64 is case sensitive: one letter's case is another key.
+		{"trust anchor key material differing in case", func(*config.Config) {}, strings.Replace(anchorA, "mdss", "Mdss", 1)},
 		{"dnssec", func(cfg *config.Config) { cfg.DNSSEC = "off" }, anchorA},
 		{"forwarders", func(cfg *config.Config) { cfg.ForwarderServers = []string{"192.0.2.53:53"} }, anchorA},
 	}
@@ -88,6 +91,25 @@ func TestRestoreRefusesAnotherConfiguration(t *testing.T) {
 				t.Fatal("a snapshot from another configuration was restored")
 			}
 		})
+	}
+}
+
+// What is not a key's identity does not change the fingerprint: its TTL and
+// how its owner name is spelled.
+func TestRestoreUnderTheSameAnchorRespelled(t *testing.T) {
+	dir := t.TempDir()
+	cfg := persistConfig(t, dir)
+
+	before := New(cfg)
+	before.SetTrustAnchors(anchorsOf("example. 172800 IN DNSKEY 257 3 13 mdsswUyr3DPW132mOi8V9xESWE8jTo0dxCjjnopKl+GqJxpVXckHAeF+KkxLbxILfDLUT0rAK9iUzy1L53eKGQ=="))
+	before.store.SetFromResponse(snapAnswer("a.test.", 300, "192.0.2.1"), false, time.Time{})
+	before.Persist(context.Background())
+
+	after := New(cfg)
+	after.SetTrustAnchors(anchorsOf("EXAMPLE. 3600 IN DNSKEY 257 3 13 mdsswUyr3DPW132mOi8V9xESWE8jTo0dxCjjnopKl+GqJxpVXckHAeF+KkxLbxILfDLUT0rAK9iUzy1L53eKGQ=="))
+	after.Restore()
+	if storedEntry(after.store, "a.test.", false) == nil {
+		t.Fatal("the same anchor, respelled, was taken for another")
 	}
 }
 

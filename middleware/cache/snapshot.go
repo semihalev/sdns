@@ -117,9 +117,15 @@ func (s *Store) restore(r io.ReadSeeker, fingerprint [32]byte, spent func(n uint
 	if h.fingerprint != fingerprint {
 		return out, errSnapshotFingerprint
 	}
-	if h.savedAt.After(now()) {
+	// The wall clock is read once, for the one thing only it can say: how
+	// long the file has been on disk. Progress from there is measured on
+	// the monotonic clock, so a wall-clock step back during the restore
+	// cannot make an answer younger, or revive a lease already spent.
+	start := now()
+	if h.savedAt.After(start) {
 		return out, errSnapshotClock
 	}
+	down := start.Sub(h.savedAt)
 	if _, err := r.Seek(0, io.SeekStart); err != nil {
 		return out, err
 	}
@@ -130,7 +136,12 @@ func (s *Store) restore(r io.ReadSeeker, fingerprint [32]byte, spent func(n uint
 			out.full = true
 			return false
 		}
-		switch s.restoreRecord(rec, h.savedAt, now()) {
+		at := now()
+		progress := at.Sub(start)
+		if progress < 0 {
+			progress = 0
+		}
+		switch s.restoreRecord(rec, down+progress, at) {
 		case restoreAdmitted:
 			out.loaded++
 		case restoreExpired:
@@ -156,11 +167,10 @@ const (
 	restoreRefused
 )
 
-// restoreRecord ages one saved answer to now and admits it the way
-// setFromResponseWithKey admits a response.
-func (s *Store) restoreRecord(rec *snapshotRecord, savedAt, now time.Time) restoreOutcome {
-	elapsed := now.Sub(savedAt)
-
+// restoreRecord ages one saved answer by elapsed, the time since it was
+// saved, and admits it at now the way setFromResponseWithKey admits a
+// response.
+func (s *Store) restoreRecord(rec *snapshotRecord, elapsed time.Duration, now time.Time) restoreOutcome {
 	ttlLeft := rec.ttl - elapsed
 	if ttlLeft <= 0 {
 		return restoreExpired

@@ -168,6 +168,38 @@ func TestSnapshotAgesTheLeaseSeparately(t *testing.T) {
 	})
 }
 
+// The time on disk is read from the wall clock once; a step back during the
+// restore cannot make an answer younger. Here the restore starts 70 seconds
+// after the save and every later reading claims 50: a 60 second lease spent
+// at the start stays spent.
+func TestSnapshotRestoreSurvivesAClockStepBack(t *testing.T) {
+	src := newSnapshotStore(t, 1024, time.Hour)
+	src.SetFromResponse(snapAnswer("a.test.", 300, "192.0.2.1"), false, time.Now().Add(60*time.Second))
+	src.SetFromResponse(snapAnswer("b.test.", 60, "192.0.2.1"), false, time.Time{})
+	saved := time.Now()
+	data := saveSnapshot(t, src, snapshotLZ4, saved)
+
+	// Wall readings only, as a stepped clock produces: no monotonic part.
+	wall := func(d time.Duration) time.Time { return time.Unix(0, saved.Add(d).UnixNano()) }
+	readings := 0
+	clock := func() time.Time {
+		readings++
+		if readings == 1 {
+			return wall(70 * time.Second)
+		}
+		return wall(50 * time.Second)
+	}
+
+	dst := newSnapshotStore(t, 1024, time.Hour)
+	got, err := dst.restore(bytes.NewReader(data), testFingerprint, never, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.loaded != 0 || dst.PositiveLen() != 0 {
+		t.Fatalf("a clock step back revived %d answers: %+v", dst.PositiveLen(), got)
+	}
+}
+
 // A file that fails any check admits nothing at all.
 func TestSnapshotRefusedWhole(t *testing.T) {
 	src := newSnapshotStore(t, 1024, time.Hour)
@@ -192,6 +224,18 @@ func TestSnapshotRefusedWhole(t *testing.T) {
 		{"the saved time changed", edit(raw, func(b []byte) []byte { b[13] ^= 1; return b }), testFingerprint, saved.Add(time.Hour)},
 		{"truncated", raw[:len(raw)/2], testFingerprint, saved},
 		{"truncated compressed", lz[:len(lz)/2], testFingerprint, saved},
+		// The records and their CRC intact, the LZ4 frame around them not.
+		{"compressed, last byte gone", lz[:len(lz)-1], testFingerprint, saved},
+		{"compressed, last eight bytes gone", lz[:len(lz)-8], testFingerprint, saved},
+		{"compressed, frame checksum flipped", edit(lz, func(b []byte) []byte { b[len(b)-1] ^= 1; return b }), testFingerprint, saved},
+		{"compressed, trailing byte", append(append([]byte(nil), lz...), 0xff), testFingerprint, saved},
+		// The frame's end mark and checksum cut out with the trailer kept,
+		// which the decompressor alone reads to a clean end.
+		{"compressed, frame end cut, trailer kept", frameEndCut(lz), testFingerprint, saved},
+		// A byte between the body and the trailer lies past the body's
+		// recorded length, where no reader of the body looks.
+		{"a byte before the trailer", beforeTrailer(raw), testFingerprint, saved},
+		{"compressed, a byte before the trailer", beforeTrailer(lz), testFingerprint, saved},
 		{"trailing bytes", append(append([]byte(nil), raw...), 0), testFingerprint, saved},
 		{"another format version", edit(raw, func(b []byte) []byte { b[8] = 9; return b }), testFingerprint, saved},
 		{"another configuration", raw, [32]byte{9}, saved},
@@ -209,6 +253,21 @@ func TestSnapshotRefusedWhole(t *testing.T) {
 			}
 		})
 	}
+}
+
+// frameEndCut removes the LZ4 frame's last eight bytes, its end mark and
+// content checksum, from a snapshot and puts the trailer back after it.
+func frameEndCut(file []byte) []byte {
+	trailer := file[len(file)-snapshotTrailerLen:]
+	out := append([]byte(nil), file[:len(file)-snapshotTrailerLen-8]...)
+	return append(out, trailer...)
+}
+
+// beforeTrailer inserts one byte between a snapshot's body and its trailer.
+func beforeTrailer(file []byte) []byte {
+	body := file[:len(file)-snapshotTrailerLen]
+	out := append(append([]byte(nil), body...), 0)
+	return append(out, file[len(file)-snapshotTrailerLen:]...)
 }
 
 // Both passes share one budget. Spent before verification finishes, it

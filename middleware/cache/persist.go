@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/miekg/dns"
@@ -81,13 +80,6 @@ func (c *Cache) restoreSnapshot(start time.Time) (snapshotLoaded, error) {
 		return snapshotLoaded{}, err
 	}
 	defer f.Close() //nolint:errcheck // read-only
-	st, err := f.Stat()
-	if err != nil {
-		return snapshotLoaded{}, err
-	}
-	if st.Size() > maxSnapshotFileBytes {
-		return snapshotLoaded{}, errSnapshotSize
-	}
 	deadline := start.Add(restoreBudget)
 	return c.store.restore(f, c.snapshotFingerprint(), func(n uint64) bool {
 		return n%1024 == 0 && time.Now().After(deadline)
@@ -166,10 +158,13 @@ func (c *Cache) snapshotFingerprint() [32]byte {
 			if rr == nil {
 				continue
 			}
-			// A key's TTL is not part of its identity.
+			// A key's TTL and the spelling of its owner name are not part of
+			// its identity; its key material is, byte for byte, Base64 case
+			// included.
 			id := dns.Copy(rr)
 			id.Header().Ttl = 0
-			anchors = append(anchors, strings.ToLower(id.String()))
+			id.Header().Name = dns.CanonicalName(id.Header().Name)
+			anchors = append(anchors, id.String())
 		}
 		sort.Strings(anchors)
 	}
