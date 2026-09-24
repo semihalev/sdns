@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -174,19 +175,11 @@ func TestAutoTAKeepsRevocationMarkerUntilTombstonePersists(t *testing.T) {
 	}
 
 	t.Run("tombstones write fails", func(t *testing.T) {
-		if os.Geteuid() == 0 {
-			t.Skip("root reads a mode 000 directory, so the tombstones path cannot be made unreadable")
-		}
 		r, n := autoTAResolver(t)
 		statePath, revoked := markerState(t, r, n)
-		// A directory the process cannot open reads as a transient failure,
-		// not corruption, and a file cannot be renamed over it, so the
-		// refresh runs to its writes and only the tombstones write fails.
-		tombPath := filepath.Join(r.cfg.Directory, tombstoneFile)
-		if err := os.Mkdir(tombPath, 0); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = os.Chmod(tombPath, 0o700) }) //nolint:gosec // test-owned temp dir
+		// Only the tombstones write fails; reading them, and the state write
+		// after, work, so the refresh runs to its writes.
+		r.tombstoneWrite = func(string, Tombstones) error { return errors.New("disk full") }
 
 		r.AutoTA()
 

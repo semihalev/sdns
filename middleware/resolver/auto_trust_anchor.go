@@ -565,7 +565,11 @@ func (r *Resolver) AutoTA() {
 	// move next run, and the post-success r.rootKeys publish below
 	// excludes Revoked from the live trust set, so the key stays
 	// fail-closed across retries.
-	tombErr := writeTombstones(tombstonePath, tombstones)
+	writeTombs := writeTombstones
+	if r.tombstoneWrite != nil {
+		writeTombs = r.tombstoneWrite
+	}
+	tombErr := writeTombs(tombstonePath, tombstones)
 	if tombErr != nil {
 		zlog.Error("Refresh trust anchor tombstones failed, revocation kept in state as StateRevoked for next-run retry", "error", tombErr.Error())
 	} else {

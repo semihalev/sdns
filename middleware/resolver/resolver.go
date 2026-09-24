@@ -77,6 +77,10 @@ type Resolver struct {
 	// key which has aged out of the RFC 5011 lifecycle can't be
 	// resurrected from the mutable copy on the next refresh.
 	configuredRootKeys []dns.RR
+	// tombstoneWrite replaces writeTombstones in AutoTA when set, nil in
+	// production. It is how a test fails that one write while the file
+	// stays readable, which no file mode does on every platform.
+	tombstoneWrite func(filename string, t Tombstones) error
 
 	// qnameMinCount is RFC 9156's MAX_MINIMISE_COUNT and qnameMinOneLabel
 	// its MINIMISE_ONE_LAB. Resolve them through
@@ -365,8 +369,10 @@ func NewResolver(cfg *config.Config) *Resolver {
 	// network upkeep and before the pipeline that could send queries through
 	// this resolver is published. The trust state comes first, so the root
 	// copy is verified against the anchors AutoTA would hold, tombstones
-	// applied, and not against the configured seed.
-	if r.dnssec {
+	// applied, and not against the configured seed. The local root consumes
+	// the anchors whether or not DNSSEC validation is on, so it needs them
+	// filtered either way.
+	if r.dnssec || cfg.HyperlocalRoot {
 		r.loadLocalTrust(filepath.Join(cfg.Directory, stateFile), filepath.Join(cfg.Directory, tombstoneFile))
 	}
 	if mgr := r.localRoot.Load(); mgr != nil {

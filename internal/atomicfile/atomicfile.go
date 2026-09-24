@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Write replaces path with what write produces. The bytes go to a temporary
@@ -23,14 +24,19 @@ import (
 // writer's.
 func Write(path string, write func(io.Writer) error) error {
 	dir := filepath.Dir(path)
-	pattern := filepath.Base(path) + ".tmp.*"
-	if stale, err := filepath.Glob(filepath.Join(dir, pattern)); err == nil {
-		for _, name := range stale {
-			_ = os.Remove(name)
+	prefix := filepath.Base(path) + ".tmp."
+	// The directory is listed, not globbed: a glob would read metacharacters
+	// in the directory's own name as a pattern, and reach into other
+	// directories whose names happen to match it.
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasPrefix(e.Name(), prefix) {
+				_ = os.Remove(filepath.Join(dir, e.Name()))
+			}
 		}
 	}
 
-	f, err := os.CreateTemp(dir, pattern)
+	f, err := os.CreateTemp(dir, prefix+"*")
 	if err != nil {
 		return err
 	}

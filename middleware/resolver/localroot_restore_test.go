@@ -79,18 +79,24 @@ func TestNewResolverRestoresTheRootCopy(t *testing.T) {
 
 // The copy is verified against the trust state on disk, not the configured
 // seed: a key tombstoned by an earlier run cannot vouch for it, even though
-// the configuration still names that key.
+// the configuration still names that key. The local root consumes the
+// anchors with DNSSEC validation off as well, so both modes hold.
 func TestNewResolverRestoresUnderTheTrustStateOnDisk(t *testing.T) {
-	cfg, z := savedRootCopy(t)
-	if err := writeTombstones(filepath.Join(cfg.Directory, tombstoneFile), Tombstones{
-		dnskeyMaterialFP(z.Key): {DNSKey: z.Key, FirstSeen: time.Now()},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	for _, mode := range []string{"on", "off"} {
+		t.Run("dnssec "+mode, func(t *testing.T) {
+			cfg, z := savedRootCopy(t)
+			cfg.DNSSEC = mode
+			if err := writeTombstones(filepath.Join(cfg.Directory, tombstoneFile), Tombstones{
+				dnskeyMaterialFP(z.Key): {DNSKey: z.Key, FirstSeen: time.Now()},
+			}); err != nil {
+				t.Fatal(err)
+			}
 
-	r := NewResolver(cfg)
+			r := NewResolver(cfg)
 
-	if r.localRoot.Load().Active() != nil {
-		t.Fatal("a copy was restored on the strength of a tombstoned key")
+			if r.localRoot.Load().Active() != nil {
+				t.Fatal("a copy was restored on the strength of a tombstoned key")
+			}
+		})
 	}
 }

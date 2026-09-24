@@ -93,3 +93,27 @@ func TestWriteClearsItsOwnLeftovers(t *testing.T) {
 		t.Fatalf("another path's temporary file was removed: %v", err)
 	}
 }
+
+// The cleanup stays in the target's own directory, whatever that
+// directory is called: a name that reads as a glob pattern must not reach
+// a sibling it happens to match.
+func TestWriteCleanupTakesTheDirectoryLiterally(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "state[1]")
+	sibling := filepath.Join(root, "state1")
+	for _, dir := range []string{target, sibling} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	foreign := filepath.Join(sibling, "copy.tmp.123")
+	if err := os.WriteFile(foreign, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Write(filepath.Join(target, "copy"), writeString("new")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(foreign); err != nil {
+		t.Fatalf("a temporary file in another directory was removed: %v", err)
+	}
+}
