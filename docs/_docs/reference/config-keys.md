@@ -50,6 +50,7 @@ feature is off until you uncomment it.
 | `querytimeout` | `"10s"` | For one whole client query |
 | `expire` | `600` | Legacy error-cache ceiling; superseded by `failure_cache_*` |
 | `cachesize` | `256000` | Cached records |
+| `cache_persist` | `false` | Save the answer cache at a clean shutdown and restore it at startup |
 | `prefetch` | `10` | Refresh threshold percent; `0`, or 10 to 90, other values are rejected |
 | `maxdepth` | `30` | Recursion depth ceiling |
 | `maxconcurrentqueries` | `10000` | Upstream fan-out semaphore; separate from the ingress bounds |

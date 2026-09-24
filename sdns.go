@@ -169,11 +169,41 @@ func runServer(cmd *cobra.Command, args []string) error {
 		zlog.Warn("Server shutdown timeout exceeded")
 	}
 
+	persistState(middleware.Persist, persistWalk, persistExit)
+
 	// Drain the metric package's final flush so the last interval
 	// of counts reaches Prometheus before the process exits.
 	metric.Stop()
 
 	return nil
+}
+
+const (
+	// persistWalk is how long state savers may keep adding to what they
+	// write; persistExit is when the process leaves regardless, the gap
+	// being the time to finish a file: its trailer, the fsync, the rename.
+	// A disk that stalls past persistExit is not waited for, and the file
+	// from the previous run stays in place.
+	persistWalk = 3 * time.Second
+	persistExit = 5 * time.Second
+)
+
+// persistState runs persist, which saves what the middlewares keep across
+// restarts, with walk as its budget, and returns by exit at the latest. It
+// runs after the listeners stop, so no new query adds to what is written.
+func persistState(persist func(context.Context), walk, exit time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), walk)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		persist(ctx)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(exit):
+		zlog.Warn("Saving state for the next run did not finish in time", "limit", exit.String())
+	}
 }
 
 func validateConfiguration() error {
