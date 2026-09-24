@@ -127,6 +127,11 @@ type Cache struct {
 	// policy middleware registered) costs one field check per hit.
 	wireHitGate middleware.WireHitGate
 
+	// trustAnchors reads the resolver's live trust anchor set, wired at
+	// Setup. A saved cache is only restored under the anchors it was
+	// validated with. nil leaves the anchors out of the fingerprint.
+	trustAnchors func() []dns.RR
+
 	config  CacheConfig
 	metrics *CacheMetrics
 

@@ -68,6 +68,7 @@ type Config struct {
 	QueryTimeout    Duration
 	Expire          uint32
 	CacheSize       int
+	CachePersist    bool `toml:"cache_persist"`
 	Prefetch        uint32
 	Maxdepth        int
 	RateLimit       int
@@ -935,6 +936,11 @@ expire = 600
 
 # Maximum number of cached DNS records
 cachesize = 256000
+
+# Save the answer cache to the working directory at a clean shutdown and load
+# it back at the next start, so a restart does not begin with an empty cache.
+# Every answer keeps only the lifetime it had left, less the time sdns was down.
+cache_persist = false
 
 # Prefetch threshold percentage (10-90)
 # Refreshes popular cache entries before expiration

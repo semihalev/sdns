@@ -25,6 +25,50 @@ The value must be `0`, which turns prefetching off, or between 10 and 90.
 Anything else is a configuration error rather than being clamped, so `sdns -t`
 rejects it.
 
+## Across restarts
+
+```toml
+cache_persist = false
+```
+
+With `cache_persist = true`, sdns writes its answers to `cache.snapshot` in the
+working `directory` when it shuts down cleanly, and loads them back before it
+starts answering, so a restart or an upgrade does not begin with an empty cache.
+Off by default.
+
+A restored answer gets no more trust than one fresh from the network. Each
+keeps only the lifetime it had left, less the time sdns was down, and its
+delegation lease is aged the same way, separately; an answer whose lease ran
+out while sdns was down is gone, not stale. Each then goes through the same
+admission as an upstream answer, under the limits and the signature rules in
+force at the new start, which can only shorten it. ECS-scoped answers and
+answers with less than ten seconds left are not saved.
+
+The file is LZ4 compressed and carries a CRC-32C over everything in it. It is
+set aside whole, and the cache starts empty as it would have without it, when
+the checksum fails, when it was written in the future by the clock's account,
+or when it was written under different trust anchors, DNSSEC mode, root,
+fallback or forwarder servers, forward zones or empty zones. A file that is
+merely damaged costs a cold start, never a wrong answer.
+
+**What it costs.** For a million answers, half of them signed, saving takes
+under a second and loading about two, on ordinary hardware; the file is around
+110 MB. Loading happens before the listeners open, so startup takes that much
+longer. The load stops after ten seconds whatever it has reached, which bounds
+it under normal disk access, not against a disk that stalls.
+
+**Shutdown takes longer.** The save runs after the listeners have drained,
+which may itself take up to ten seconds, and stops adding answers after three
+more; the process then waits at most two further seconds for the file to be
+finished and exits regardless. A save that does not finish in time leaves the
+previous file in place. Whatever stops the service must allow for that: the
+shipped systemd unit sets no `TimeoutStopSec`, so the manager's
+`DefaultTimeoutStopSec` applies, and it needs headroom over those fifteen
+seconds.
+
+Only a clean shutdown saves. After a crash the next start loads the file from
+the last clean one, aged by the whole time since.
+
 ## Which TTL you receive
 
 The TTL sdns serves is the answer's own remaining TTL, counted down from when
@@ -179,7 +223,8 @@ curl http://127.0.0.1:8080/api/v1/purge/example.com./A
 ```
 
 Drops one name and type from the cache. There is no purge-everything endpoint;
-restarting is the way to empty the cache entirely.
+restarting is the way to empty the cache entirely, with `cache_persist` off, or
+with `cache.snapshot` removed while sdns is stopped.
 
 ## Watching it
 
@@ -192,6 +237,8 @@ dns_cache_evictions_total   entries dropped under pressure
 dns_cache_prefetches_total  background refreshes
 dns_cache_stale_answers_total  answers served past expiry
 dns_cache_wire_fastpath_total  hits served straight from stored bytes
+dns_cache_snapshot_entries_total  answers saved and restored across a restart
+dns_cache_snapshot_seconds     how long the last save and restore took
 ```
 
 A rising `dns_cache_evictions_total` with a falling hit rate is the signal that
