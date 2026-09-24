@@ -138,6 +138,15 @@ See [Response Policy Zones]({{ '/docs/features/rpz/' | relative_url }}).
 | `ttl.srv` | `30` |
 | `ttl.ptr` | `30` |
 
+## `[ddr]`
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Advertise the encrypted listeners at `_dns.resolver.arpa` (RFC 9462) |
+| `name` | `""` | Designated resolver name; empty takes the certificate's first DNS name |
+
+See [Encrypted transports]({{ '/docs/features/encrypted-transports/' | relative_url }}).
+
 ## `[dns64]`
 
 | Key | Default |

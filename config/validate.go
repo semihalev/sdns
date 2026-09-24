@@ -788,6 +788,24 @@ func (c *Config) validateSubTables(add func(string, ...any)) {
 	// setting that has no effect either way.
 	c.validateDNS64(add)
 	c.validateECS(add)
+	c.validateDDR(add)
+}
+
+// validateDDR refuses a DDR setting that would advertise nothing: no
+// encrypted listener to point at, or no name the SVCB records can carry.
+// Gated on enabled like the other sections, so a disabled [ddr] with a stale
+// name keeps loading.
+func (c *Config) validateDDR(add func(string, ...any)) {
+	if !c.DDR.Enabled {
+		return
+	}
+	if c.BindTLS == "" && c.BindDOH == "" && c.BindDOQ == "" {
+		add("ddr.enabled: there is no encrypted listener to advertise; set binddoh, bindtls or binddoq")
+		return
+	}
+	if _, err := c.DDRTarget(); err != nil {
+		add("ddr.name: %v", err)
+	}
 }
 
 func (c *Config) validateDNS64(add func(string, ...any)) {

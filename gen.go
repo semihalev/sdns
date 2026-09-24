@@ -24,6 +24,11 @@ var middlewareList = []string{
 	"edns",
 	"accesslog",
 	"chaos",
+	// ddr answers resolver.arpa, the zone that describes this server
+	// itself (RFC 9462). After the access and rate controls, ahead of every
+	// handler that could rewrite or forward it: no policy has a say in which
+	// listeners this server advertises, and no upstream may answer for it.
+	"ddr",
 	"hostsfile",
 	"views",
 	"blocklist",

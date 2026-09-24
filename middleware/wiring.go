@@ -43,6 +43,17 @@ type InlineBarrier interface {
 	InlineBarrier() bool
 }
 
+// ListenerObserver is implemented by a handler that tells clients about the
+// server's own listeners. Once the listeners are bound the server hands it
+// serving, which reports at call time whether a listener of the given
+// transport ("tls", "doh", "doh3", "doq") is up, so what the handler
+// describes is what is actually answering, not what was configured: a
+// listener whose bind failed, or whose QUIC setup failed inside Serve, is
+// not advertised.
+type ListenerObserver interface {
+	ObserveListeners(serving func(proto string) bool)
+}
+
 // Store is the minimum cache facade a resolver sub-query needs.
 // Satisfied by cache.Store; declared here so middleware.Setup can
 // wire it from one handler into another without either importing

@@ -49,6 +49,51 @@ point. It is indistinguishable from ordinary web traffic on the wire.
 **DoQ** is the newest and least widely supported. It avoids the head-of-line
 blocking DoT inherits from TCP.
 
+## Letting clients find them
+
+A device configured with your resolver's IP address speaks plain DNS to it and
+has no way to know the encrypted listeners exist. Discovery of Designated
+Resolvers (RFC 9462) closes that gap: the client asks `_dns.resolver.arpa` for
+SVCB records, learns which transports you serve, and upgrades on its own.
+Current Windows, macOS, iOS and Android releases all do this.
+
+```toml
+[ddr]
+enabled = true
+name    = ""        # empty takes the certificate's first DNS name
+```
+
+sdns answers with one record per listener you configured, in the order DoH,
+DoT, DoQ, each with its ALPN, its port when it is not the transport's default,
+and for DoH the path template `/dns-query{?dns}`. A listener bound to one
+address offers that address as a hint. Only listeners that are actually up are
+advertised: one whose port was taken at startup is left out, and DoH offers
+HTTP/3 only while the QUIC listener is serving. The DoT listener selects the
+`dot` ALPN for a client that asks for it, and connects older clients that do
+not exactly as before.
+
+**The certificate decides whether it works.** A client upgrades only after
+checking that the certificate on the encrypted listener lists, in its
+subjectAltName, the IP address it was using for plain DNS. A certificate that
+names the server only by hostname passes `sdns -t` and is never used by
+discovering clients, so issue one with the resolver's IP addresses on it. The
+advertised name is the one the certificate or `name` gives at startup; a
+renewed certificate with a different first name takes effect at the next
+restart, so set `name` if it should never move.
+
+`sdns -t` refuses an enabled `[ddr]` with no encrypted listener to point at,
+or with no usable name: an empty `name` and a certificate that carries IP
+addresses only.
+
+Whether discovery is on or not, every name under `resolver.arpa` is answered by
+sdns itself and never sent upstream, as the RFC requires: an upstream's answer
+would describe the upstream's listeners, not yours. Anything but the discovery
+record gets NODATA.
+
+```bash
+dig @resolver.example _dns.resolver.arpa SVCB
+```
+
 ## What to check after enabling
 
 ```bash

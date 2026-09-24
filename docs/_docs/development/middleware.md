@@ -36,7 +36,7 @@ response's OPT record. It is not an authoritative flag.
 
 ```
 recovery → metrics → dnstap → accesslist → ratelimit → reflex → edns
-  → accesslog → chaos → hostsfile → views → blocklist → rpz → as112
+  → accesslog → chaos → ddr → hostsfile → views → blocklist → rpz → as112
   → kubernetes → dns64 → cache → failover → resolver → forwarder
 ```
 

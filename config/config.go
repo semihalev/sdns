@@ -158,6 +158,10 @@ type Config struct {
 	// changing responses; enforce mode terminates over-budget work.
 	RecursionFirewall RecursionFirewallConfig `toml:"recursion_firewall"`
 
+	// DDR advertises the encrypted listeners to clients that ask the
+	// special-use name _dns.resolver.arpa (RFC 9462). Off by default.
+	DDR DDRConfig `toml:"ddr"`
+
 	Plugins map[string]Plugin
 
 	CookieSecret string
@@ -447,6 +451,17 @@ type DNS64Config struct {
 	ExcludeZones        []string `toml:"exclude_zones"`
 	ExcludeANetworks    []string `toml:"exclude_a_networks"`
 	ExcludeAAAANetworks []string `toml:"exclude_aaaa_networks"`
+}
+
+// DDRConfig is Discovery of Designated Resolvers (RFC 9462). When enabled,
+// a query for _dns.resolver.arpa SVCB is answered with one record per
+// encrypted listener (DoH, DoT, DoQ), so a client that reached this server
+// over plain DNS can upgrade to an encrypted transport on its own.
+type DDRConfig struct {
+	Enabled bool `toml:"enabled"`
+	// Name is the designated resolver's name, the SVCB TargetName. Empty
+	// takes the first DNS name in tlscertificate's subjectAltName.
+	Name string `toml:"name"`
 }
 
 // ECSConfig holds the EDNS Client Subnet middleware configuration
@@ -1203,6 +1218,25 @@ srv = 30
 
 # TTL for PTR records (seconds)
 ptr = 30
+
+# ============================
+# Discovery of Designated Resolvers (RFC 9462)
+# ============================
+# Answers _dns.resolver.arpa SVCB with one record per encrypted listener
+# (binddoh, bindtls, binddoq), so clients that reach this server over plain
+# DNS can switch to DoH, DoT or DoQ on their own. A client verifies the
+# upgrade against tlscertificate: the certificate must list, in its
+# subjectAltName, the IP address the client used for plain DNS. Names under
+# resolver.arpa are always answered locally and never sent upstream, with
+# NODATA for anything but the discovery record.
+
+[ddr]
+# Advertise the encrypted listeners.
+enabled = false
+
+# The designated resolver's name, the SVCB TargetName. Empty takes the first
+# DNS name in tlscertificate's subjectAltName.
+name = ""
 
 # ============================
 # DNS64 (RFC 6147)
