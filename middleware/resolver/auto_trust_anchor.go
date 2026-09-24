@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/atomicfile"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
@@ -44,8 +45,9 @@ const (
 )
 
 const (
-	stateFile     = "trust-anchor.db"
-	tombstoneFile = "trust-anchor-tombstones.db"
+	stateFile         = "trust-anchor.db"
+	tombstoneFile     = "trust-anchor-tombstones.db"
+	localRootCopyFile = "root.zone"
 )
 
 // TrustAnchor holds a DNSSEC trust anchor with its state and metadata.
@@ -101,15 +103,20 @@ func (s State) String() string {
 	}
 }
 
-func (r *Resolver) AutoTA() {
-	refreshResult := taRefreshValidationError
-	defer func() {
-		refreshResult.Inc()
-	}()
+// localTrust is the trust state AutoTA reads from disk before it fetches
+// anything: the RFC 5011 anchors, the tombstones, and the candidate set
+// built from them.
+type localTrust struct {
+	kskCurrent TrustAnchors
+	tombstones Tombstones
+	candidate  []dns.RR
+}
 
-	filename := filepath.Join(r.cfg.Directory, stateFile)
-	tombstonePath := filepath.Join(r.cfg.Directory, tombstoneFile)
-
+// loadLocalTrust reads the trust anchor state and tombstones from disk,
+// merges the configured keys into them, and publishes the tombstone-filtered
+// candidate over a live trust set. It neither queries nor writes. false
+// means the tombstones file is corrupt and the live trust set was cleared.
+func (r *Resolver) loadLocalTrust(filename, tombstonePath string) (localTrust, bool) {
 	// Snapshot whether the live trust set was non-empty when this
 	// run started. A nil/empty r.rootKeys signals that a prior run
 	// hit a persistence failure and put us in fail-closed mode; we
@@ -121,15 +128,6 @@ func (r *Resolver) AutoTA() {
 	// state is at least as restrictive and may safely be published
 	// before the external fetch.
 	priorTrustValid := r.hasTrustAnchors()
-
-	// Track whether this run produced a fresh contraction event,
-	// a brand-new revocation that exists only in memory until the
-	// writes land. Only that case requires fail-closed handling on
-	// dual-write failure; an unrelated refresh that happens to
-	// race a read-only/full disk shouldn't tear down working trust
-	// anchors. Pre-existing StateRevoked entries (legacy migration)
-	// are already durable in the state file, so they don't count.
-	newRevocation := false
 
 	kskCurrent, err := readFromTAFile(filename)
 	if err != nil {
@@ -173,8 +171,7 @@ func (r *Resolver) AutoTA() {
 			r.Lock()
 			r.rootKeys = nil
 			r.Unlock()
-			refreshResult = taRefreshPersistenceError
-			return
+			return localTrust{}, false
 		}
 		zlog.Warn("Trust anchor tombstones file unreadable, proceeding with empty in-memory tombstones", "path", tombstonePath, "error", err.Error())
 		tombstones = make(Tombstones)
@@ -303,6 +300,34 @@ func (r *Resolver) AutoTA() {
 		r.rootKeys = candidate
 		r.Unlock()
 	}
+
+	return localTrust{kskCurrent: kskCurrent, tombstones: tombstones, candidate: candidate}, true
+}
+
+func (r *Resolver) AutoTA() {
+	refreshResult := taRefreshValidationError
+	defer func() {
+		refreshResult.Inc()
+	}()
+
+	filename := filepath.Join(r.cfg.Directory, stateFile)
+	tombstonePath := filepath.Join(r.cfg.Directory, tombstoneFile)
+
+	local, ok := r.loadLocalTrust(filename, tombstonePath)
+	if !ok {
+		refreshResult = taRefreshPersistenceError
+		return
+	}
+	kskCurrent, tombstones, candidate := local.kskCurrent, local.tombstones, local.candidate
+
+	// Track whether this run produced a fresh contraction event,
+	// a brand-new revocation that exists only in memory until the
+	// writes land. Only that case requires fail-closed handling on
+	// dual-write failure; an unrelated refresh that happens to
+	// race a read-only/full disk shouldn't tear down working trust
+	// anchors. Pre-existing StateRevoked entries (legacy migration)
+	// are already durable in the state file, so they don't count.
+	newRevocation := false
 
 	req := new(dns.Msg)
 	req.SetQuestion(".", dns.TypeDNSKEY)
@@ -540,7 +565,11 @@ func (r *Resolver) AutoTA() {
 	// move next run, and the post-success r.rootKeys publish below
 	// excludes Revoked from the live trust set, so the key stays
 	// fail-closed across retries.
-	tombErr := writeTombstones(tombstonePath, tombstones)
+	writeTombs := writeTombstones
+	if r.tombstoneWrite != nil {
+		writeTombs = r.tombstoneWrite
+	}
+	tombErr := writeTombs(tombstonePath, tombstones)
 	if tombErr != nil {
 		zlog.Error("Refresh trust anchor tombstones failed, revocation kept in state as StateRevoked for next-run retry", "error", tombErr.Error())
 	} else {
@@ -894,5 +923,5 @@ func atomicGobWrite(filename string, v interface{}) error {
 	// update. On POSIX this is an fsync of the parent directory;
 	// on Windows it's a no-op (the OS doesn't expose directory
 	// fsync, NTFS journals metadata).
-	return syncDir(dir)
+	return atomicfile.SyncDir(dir)
 }

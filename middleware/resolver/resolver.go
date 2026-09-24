@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -76,6 +77,10 @@ type Resolver struct {
 	// key which has aged out of the RFC 5011 lifecycle can't be
 	// resurrected from the mutable copy on the next refresh.
 	configuredRootKeys []dns.RR
+	// tombstoneWrite replaces writeTombstones in AutoTA when set, nil in
+	// production. It is how a test fails that one write while the file
+	// stays readable, which no file mode does on every platform.
+	tombstoneWrite func(filename string, t Tombstones) error
 
 	// qnameMinCount is RFC 9156's MAX_MINIMISE_COUNT and qnameMinOneLabel
 	// its MINIMISE_ONE_LAB. Resolve them through
@@ -349,13 +354,29 @@ func NewResolver(cfg *config.Config) *Resolver {
 	}
 
 	if cfg.HyperlocalRoot {
-		r.localRoot.Store(localroot.New(cfg.HyperlocalRootSources, func() []dns.RR {
+		mgr := localroot.New(cfg.HyperlocalRootSources, func() []dns.RR {
 			anchors, err := r.dsRRFromRootKeys(context.Background())
 			if err != nil {
 				return nil
 			}
 			return anchors
-		}))
+		})
+		mgr.SetCopyPath(filepath.Join(cfg.Directory, localRootCopyFile))
+		r.localRoot.Store(mgr)
+	}
+
+	// What earlier runs left on disk is read here, before run starts the
+	// network upkeep and before the pipeline that could send queries through
+	// this resolver is published. The trust state comes first, so the root
+	// copy is verified against the anchors AutoTA would hold, tombstones
+	// applied, and not against the configured seed. The local root consumes
+	// the anchors whether or not DNSSEC validation is on, so it needs them
+	// filtered either way.
+	if r.dnssec || cfg.HyperlocalRoot {
+		r.loadLocalTrust(filepath.Join(cfg.Directory, stateFile), filepath.Join(cfg.Directory, tombstoneFile))
+	}
+	if mgr := r.localRoot.Load(); mgr != nil {
+		mgr.Restore()
 	}
 
 	go r.run()

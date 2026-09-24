@@ -6,7 +6,7 @@ order: 3
 description: Every metric sdns exports, what it means, and the queries worth building a dashboard from.
 ---
 
-sdns exports 64 metrics in Prometheus format on the API listener, alongside the
+sdns exports 65 metrics in Prometheus format on the API listener, alongside the
 Go runtime and process collectors.
 
 ```toml
@@ -176,6 +176,7 @@ with fewer rules than intended.
 | `dns_localroot_transfers_total` | counter | `outcome` | Transfer attempts, by outcome |
 | `dns_localroot_serial` | gauge | | Serial of the active copy; `-1` when none is active |
 | `dns_localroot_copy_age_seconds` | gauge | | Age since last successful refresh; `-1` when none is active |
+| `dns_localroot_disk_total` | counter | `op`, `result` | Saved copy reads at startup (`op="load"`) and writes after each transfer (`op="write"`), by result |
 
 `dns_localroot_copy_age_seconds` is the one to alert on. Climbing steadily means
 refreshes are failing and the copy is walking toward its SOA expire, after which
