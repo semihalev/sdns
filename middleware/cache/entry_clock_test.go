@@ -22,7 +22,7 @@ func wallShifted(t time.Time, d time.Duration) time.Time {
 		loc  *time.Location
 	}
 	const nsecShift = 30 // the wall word holds seconds above 30 bits of nanoseconds
-	r := (*layout)(unsafe.Pointer(&t))
+	r := (*layout)(unsafe.Pointer(&t)) //nolint:gosec // audited: test only, and the caller verifies the layout
 	r.wall = uint64(int64(r.wall) + int64(d/time.Second)<<nsecShift) //nolint:gosec // bit layout
 	return t
 }
