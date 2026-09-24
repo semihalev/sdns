@@ -2,6 +2,7 @@ package cache
 
 import (
 	"errors"
+	"math"
 	"net/netip"
 	"sync/atomic"
 	"time"
@@ -128,8 +129,33 @@ type entryRare struct {
 // the entry held the instants themselves.
 var monoEpoch = time.Now()
 
-// monoOffset is t as an offset from monoEpoch.
-func monoOffset(t time.Time) int64 { return int64(t.Sub(monoEpoch)) }
+// monoOffset is t as an offset from monoEpoch. It is for the instants an
+// entry is admitted with; a clock reading taken to ask about an entry
+// converts directly (see remainingBounds).
+//
+// An instant with a monotonic reading, every time.Now and whatever was
+// derived from one, converts directly. One without, a signature's expiry
+// built with time.Unix, carries only a wall reading, and Sub against the
+// epoch would measure it against the wall clock as it read at startup: a
+// wall clock stepped since then would move the instant by the step, and a
+// ten second lease would read as seventy after a minute's step forward. It
+// is taken instead for what it says at the moment it is converted, its
+// distance from the wall clock now, and anchored at the monotonic now.
+func monoOffset(t time.Time) int64 {
+	if t != t.Round(0) { // Round(0) strips only the monotonic reading
+		return int64(t.Sub(monoEpoch))
+	}
+	now := time.Now()
+	base, d := int64(now.Sub(monoEpoch)), int64(t.Sub(now))
+	// Sub saturates for instants centuries away; the sum must as well.
+	switch {
+	case d > 0 && base > math.MaxInt64-d:
+		return math.MaxInt64
+	case d < 0 && base < math.MinInt64-d:
+		return math.MinInt64
+	}
+	return base + d
+}
 
 // monoTime is the instant an offset stands for.
 func monoTime(off int64) time.Time { return monoEpoch.Add(time.Duration(off)) }
@@ -279,7 +305,11 @@ func (e *CacheEntry) remainingBounds(now time.Time) (ttlRemaining, leaseRemainin
 	// whose own lifetime is under a second alive for a full one. Whether the
 	// entry is alive is a question about time; what TTL to write is a question
 	// about the wire format, and servedSeconds answers that one.
-	at := monoOffset(now)
+	//
+	// now is a clock reading on every path that asks, so it carries a
+	// monotonic reading and converts directly; monoOffset's check for one
+	// that does not costs more than the rest of this function, on every hit.
+	at := int64(now.Sub(monoEpoch))
 	ttlRemaining = e.ttl - time.Duration(at-e.stored)
 	if e.hasCut() {
 		leaseRemaining = time.Duration(e.cutUntil - at)
@@ -399,7 +429,7 @@ func newCacheEntryAt(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64,
 		stored:     monoOffset(now),
 		ttl:        ttl,
 		origTTL:    uint32(ttl.Seconds()),
-		rateLimit:  int32(rateLimit), //nolint:gosec // a configured queries-per-second value
+		rateLimit:  clampRateLimit(rateLimit),
 		rateLimKey: key,
 		cd:         msg.CheckingDisabled,
 		compress:   msg.Compress,
@@ -581,6 +611,20 @@ func (e *CacheEntry) ShouldPrefetch(threshold int) bool {
 	remainingTTL := e.TTL()
 	thresholdSeconds := int(float64(threshold) / 100.0 * float64(e.origTTL))
 	return remainingTTL <= thresholdSeconds
+}
+
+// clampRateLimit narrows a configured rate limit to the entry's int32. Zero
+// and below stay "no limit", and anything past the int32 range is held at
+// its top, two billion queries a second, which limits nothing either: a
+// plain conversion would wrap a large value to a small one.
+func clampRateLimit(n int) int32 {
+	switch {
+	case n <= 0:
+		return 0
+	case n > math.MaxInt32:
+		return math.MaxInt32
+	}
+	return int32(n)
 }
 
 // (*CacheEntry).GetRateLimiter returns the shared rate limiter for this entry
