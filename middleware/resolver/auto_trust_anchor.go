@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/atomicfile"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
@@ -917,5 +918,5 @@ func atomicGobWrite(filename string, v interface{}) error {
 	// update. On POSIX this is an fsync of the parent directory;
 	// on Windows it's a no-op (the OS doesn't expose directory
 	// fsync, NTFS journals metadata).
-	return syncDir(dir)
+	return atomicfile.SyncDir(dir)
 }
