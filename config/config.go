@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	configver               = "1.8.2"
+	configver               = "1.8.3"
 	defaultServeStaleMaxTTL = 24 * time.Hour
 )
 

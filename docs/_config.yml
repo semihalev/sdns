@@ -14,7 +14,7 @@ github:
 # sees for the first few hundred milliseconds, or with scripting off. It
 # is also the single source for the version written into the install
 # commands, which no script can correct, bump it at release.
-sdns_version: v1.8.2
+sdns_version: v1.8.3
 
 exclude:
   - Gemfile
