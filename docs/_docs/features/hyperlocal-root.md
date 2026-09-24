@@ -37,6 +37,20 @@ The copy refreshes on the zone's own SOA schedule. If it cannot be refreshed and
 reaches SOA expire, it is withdrawn and resolution falls back to the real root
 servers unchanged. There is no state in which a stale root keeps answering.
 
+## Across restarts
+
+Every verified copy is also written to `root.zone` in the state `directory`, and
+the next start serves from it right away instead of waiting for a transfer. The
+file gets no trust of its own. It passes the same ZONEMD check against the
+trust anchors held at startup, and it keeps the age it had: its expire is
+counted from when it was transferred, not from when it was read back. A copy
+that expired while sdns was down, one that no longer verifies, or a file that
+fails its checksum is set aside, and the first transfer happens as it would on
+a fresh install.
+
+Reading it back adds the time to parse and verify the zone to startup, well
+under a second for the real root on ordinary hardware.
+
 ## Sources
 
 `hyperlocal_root_sources` overrides the built-in transfer hosts. Give
@@ -50,6 +64,7 @@ dns_localroot_answers_total     queries answered from the local copy
 dns_localroot_serial            serial of the copy in use
 dns_localroot_copy_age_seconds  age since last successful refresh
 dns_localroot_transfers_total   transfer attempts, by outcome
+dns_localroot_disk_total        saved copy loads and writes, by result
 ```
 
 `dns_localroot_copy_age_seconds` is the one to alert on. It climbing steadily

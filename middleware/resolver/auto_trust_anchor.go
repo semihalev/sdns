@@ -45,8 +45,9 @@ const (
 )
 
 const (
-	stateFile     = "trust-anchor.db"
-	tombstoneFile = "trust-anchor-tombstones.db"
+	stateFile         = "trust-anchor.db"
+	tombstoneFile     = "trust-anchor-tombstones.db"
+	localRootCopyFile = "root.zone"
 )
 
 // TrustAnchor holds a DNSSEC trust anchor with its state and metadata.

@@ -123,6 +123,14 @@ type Manager struct {
 	// order, quietly rolling the copy backwards, a sequence no race
 	// detector reports, because every individual operation is legal.
 	publish sync.Mutex
+	// published numbers each copy as it goes live, under publish, so the
+	// disk writer can tell a late offer of an older copy from a newer one.
+	published uint64
+
+	// copyPath is where the verified copy is kept across restarts; empty
+	// keeps it in memory only. disk hands published copies to the writer.
+	copyPath string
+	disk     diskWriter
 
 	// now/transferFn/probeFn are the test seams; production uses the
 	// package functions and the wall clock.
@@ -135,6 +143,10 @@ type Manager struct {
 	// the race detector and to volume testing: a test needs to hold the
 	// section open to prove the section is exclusive.
 	afterSerialCheck func()
+	// beforeOffer runs between a copy going live and its offer to the disk
+	// writer, nil in production. Holding it open is how a test makes two
+	// loads reach the writer in the opposite order they were published.
+	beforeOffer func(seq uint64)
 }
 
 // New builds a Manager over the given transfer sources (DefaultSources when
@@ -160,6 +172,7 @@ func New(sources []string, anchors func() []dns.RR) *Manager {
 		now:        time.Now,
 		transferFn: axfr,
 		probeFn:    probeSerial,
+		disk:       diskWriter{wake: make(chan struct{}, 1)},
 	}
 	m.sourceOffset.Store(rand.Uint64()) //nolint:gosec // load spreading, not key material.
 	return m
@@ -263,6 +276,10 @@ func (m *Manager) Run(ctx context.Context) {
 	// The manager that owns the refresh lifecycle is the one the gauges
 	// describe; they read it at scrape time.
 	serving.Store(m)
+
+	if m.copyPath != "" {
+		go m.writeLoop(ctx)
+	}
 
 	// The first transfer waits out the resolver's own cold start rather
 	// than racing it. A couple of megabytes pulled over TCP while the
@@ -412,35 +429,20 @@ func (m *Manager) load(rrs []dns.RR, expect uint32, expected bool) error {
 	// One normalization stage, ahead of every reader: see normalizeZone.
 	rrs = normalizeZone(rrs)
 
-	// One reading of the anchors for both the verification and the
-	// fingerprint stamped on the copy: taking them twice could verify
-	// against one set and record another.
-	anchors := m.anchors()
-	authUntil, err := verifyZone(rrs, anchors)
+	snap, outcome, err := m.verify(rrs, m.now())
 	if err != nil {
-		metricTransfers.WithLabelValues("verify_error").Inc()
+		metricTransfers.WithLabelValues(outcome).Inc()
 		return err
 	}
-	snap, err := buildSnapshot(rrs, m.now())
-	if err != nil {
-		metricTransfers.WithLabelValues("build_error").Inc()
-		return err
-	}
-	// The digest is evidence only while the signature over it holds, so the
-	// copy cannot outlive that signature however long its records run.
-	snap.BoundTo(authUntil)
-	// verifyZone refuses an empty anchor set, so usable is true here; the
-	// fingerprint is what Active later compares the live anchors against.
-	snap.anchorFP, _ = anchorFingerprint(anchors)
 	if expected && snap.serial != expect && !serialNewer(expect, snap.serial) {
 		metricTransfers.WithLabelValues("serial_behind_probe").Inc()
 		return errSerialBehindProbe
 	}
 
 	m.publish.Lock()
-	defer m.publish.Unlock()
 	if cur := m.snap.Load(); cur != nil &&
 		snap.serial != cur.serial && !serialNewer(cur.serial, snap.serial) {
+		m.publish.Unlock()
 		metricTransfers.WithLabelValues("serial_rollback").Inc()
 		return errSerialRollback
 	}
@@ -448,7 +450,43 @@ func (m *Manager) load(rrs []dns.RR, expect uint32, expected bool) error {
 		m.afterSerialCheck()
 	}
 	m.snap.Store(snap)
+	m.published++
+	seq := m.published
+	m.publish.Unlock()
+
 	metricTransfers.WithLabelValues("success").Inc()
 	zlog.Info("Local root zone updated", "serial", snap.serial, "records", len(rrs))
+
+	if m.copyPath != "" {
+		if m.beforeOffer != nil {
+			m.beforeOffer(seq)
+		}
+		m.disk.offer(seq, &diskCopy{rrs: rrs, fetched: snap.loaded})
+	}
 	return nil
+}
+
+// verify checks rrs against the trust anchors and indexes them into a
+// snapshot whose horizon runs from fetched, the instant the zone was
+// transferred. On failure the string is the outcome to count.
+func (m *Manager) verify(rrs []dns.RR, fetched time.Time) (*Snapshot, string, error) {
+	// One reading of the anchors for both the verification and the
+	// fingerprint stamped on the copy: taking them twice could verify
+	// against one set and record another.
+	anchors := m.anchors()
+	authUntil, err := verifyZone(rrs, anchors)
+	if err != nil {
+		return nil, "verify_error", err
+	}
+	snap, err := buildSnapshot(rrs, fetched)
+	if err != nil {
+		return nil, "build_error", err
+	}
+	// The digest is evidence only while the signature over it holds, so the
+	// copy cannot outlive that signature however long its records run.
+	snap.BoundTo(authUntil)
+	// verifyZone refuses an empty anchor set, so usable is true here; the
+	// fingerprint is what Active later compares the live anchors against.
+	snap.anchorFP, _ = anchorFingerprint(anchors)
+	return snap, "", nil
 }

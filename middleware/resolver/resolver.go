@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strconv"
@@ -349,13 +350,27 @@ func NewResolver(cfg *config.Config) *Resolver {
 	}
 
 	if cfg.HyperlocalRoot {
-		r.localRoot.Store(localroot.New(cfg.HyperlocalRootSources, func() []dns.RR {
+		mgr := localroot.New(cfg.HyperlocalRootSources, func() []dns.RR {
 			anchors, err := r.dsRRFromRootKeys(context.Background())
 			if err != nil {
 				return nil
 			}
 			return anchors
-		}))
+		})
+		mgr.SetCopyPath(filepath.Join(cfg.Directory, localRootCopyFile))
+		r.localRoot.Store(mgr)
+	}
+
+	// What earlier runs left on disk is read here, before run starts the
+	// network upkeep and before the pipeline that could send queries through
+	// this resolver is published. The trust state comes first, so the root
+	// copy is verified against the anchors AutoTA would hold, tombstones
+	// applied, and not against the configured seed.
+	if r.dnssec {
+		r.loadLocalTrust(filepath.Join(cfg.Directory, stateFile), filepath.Join(cfg.Directory, tombstoneFile))
+	}
+	if mgr := r.localRoot.Load(); mgr != nil {
+		mgr.Restore()
 	}
 
 	go r.run()

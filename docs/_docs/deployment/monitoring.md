@@ -95,7 +95,7 @@ dns_listener_errors_total
 Overflow means queries arrived faster than the workers accepted them. That is a
 capacity signal, not a bug.
 
-**Everything else.** All 64 metrics, with their types, labels, help strings,
+**Everything else.** All 65 metrics, with their types, labels, help strings,
 ready-made PromQL and the alerts worth having, live in the
 [metrics reference]({{ '/docs/reference/metrics/' | relative_url }}).
 
