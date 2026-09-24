@@ -21,6 +21,7 @@ import (
 	"github.com/semihalev/sdns/middleware/blocklist"
 	"github.com/semihalev/sdns/middleware/cache"
 	"github.com/semihalev/sdns/middleware/chaos"
+	"github.com/semihalev/sdns/middleware/ddr"
 	"github.com/semihalev/sdns/middleware/dns64"
 	"github.com/semihalev/sdns/middleware/dnstap"
 	"github.com/semihalev/sdns/middleware/edns"
@@ -52,6 +53,7 @@ var chain = []entry{
 	{"edns", func(cfg *config.Config) middleware.Handler { return edns.New(cfg) }},
 	{"accesslog", func(cfg *config.Config) middleware.Handler { return accesslog.New(cfg) }},
 	{"chaos", func(cfg *config.Config) middleware.Handler { return chaos.New(cfg) }},
+	{"ddr", func(cfg *config.Config) middleware.Handler { return ddr.New(cfg) }},
 	{"hostsfile", func(cfg *config.Config) middleware.Handler { return hostsfile.New(cfg) }},
 	{"views", func(cfg *config.Config) middleware.Handler { return views.New(cfg) }},
 	{"blocklist", func(cfg *config.Config) middleware.Handler { return blocklist.New(cfg) }},
