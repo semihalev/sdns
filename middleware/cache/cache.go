@@ -1659,13 +1659,14 @@ func boundRequestToEntryLifetime(ctx context.Context, entry *CacheEntry) {
 	if entry == nil {
 		return
 	}
-	hardUntil := entry.stored.Add(entry.ttl)
+	// Compared as offsets and converted once: this runs on every hit.
+	hardUntil := entry.stored + int64(entry.ttl)
 	hardKey := uint64(0)
-	if !entry.cutUntil.IsZero() && !entry.cutUntil.After(hardUntil) {
+	if entry.hasCut() && entry.cutUntil <= hardUntil {
 		hardUntil, hardKey = entry.cutUntil, entry.cutKey
 	}
 	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
-		meta.BoundCutFor(hardUntil, hardKey)
+		meta.BoundCutFor(monoTime(hardUntil), hardKey)
 	}
 }
 

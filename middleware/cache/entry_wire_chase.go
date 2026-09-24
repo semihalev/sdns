@@ -333,10 +333,10 @@ func composeWireChase(
 		AuthenticatedData: authData,
 		HasDNSSEC:         hasDNSSEC,
 	}
-	if alias.ede != nil {
+	if ede := alias.edeOption(); ede != nil {
 		info.HasEDE = true
-		info.EDECode = alias.ede.InfoCode
-		info.EDEText = alias.ede.ExtraText
+		info.EDECode = ede.InfoCode
+		info.EDEText = ede.ExtraText
 	}
 	return body, info, true
 }

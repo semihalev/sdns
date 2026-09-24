@@ -34,14 +34,15 @@ func TestEDEPreservationInCache(t *testing.T) {
 	entry := NewCacheEntry(msg, 30*time.Second, 0)
 
 	// Verify EDE was preserved
-	if entry.ede == nil {
-		t.Fatalf("entry.ede is nil")
+	kept := entry.edeOption()
+	if kept == nil {
+		t.Fatalf("entry EDE is nil")
 	}
-	if !reflect.DeepEqual(dns.ExtendedErrorCodeDNSBogus, entry.ede.InfoCode) {
-		t.Errorf("entry.ede.InfoCode = %v, want %v", entry.ede.InfoCode, dns.ExtendedErrorCodeDNSBogus)
+	if !reflect.DeepEqual(dns.ExtendedErrorCodeDNSBogus, kept.InfoCode) {
+		t.Errorf("EDE InfoCode = %v, want %v", kept.InfoCode, dns.ExtendedErrorCodeDNSBogus)
 	}
-	if !reflect.DeepEqual("DNSSEC validation failed", entry.ede.ExtraText) {
-		t.Errorf("entry.ede.ExtraText = %v, want %v", entry.ede.ExtraText, "DNSSEC validation failed")
+	if !reflect.DeepEqual("DNSSEC validation failed", kept.ExtraText) {
+		t.Errorf("EDE ExtraText = %v, want %v", kept.ExtraText, "DNSSEC validation failed")
 	}
 
 	// Create a request
@@ -102,8 +103,8 @@ func TestEDENotAddedForSuccessResponses(t *testing.T) {
 	entry := NewCacheEntry(msg, 30*time.Second, 0)
 
 	// Verify no EDE was preserved (success responses don't have EDE)
-	if entry.ede != nil {
-		t.Errorf("entry.ede = %v, want nil", entry.ede)
+	if entry.edeOption() != nil {
+		t.Errorf("entry EDE = %v, want nil", entry.edeOption())
 	}
 
 	// Create a request

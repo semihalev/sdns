@@ -162,7 +162,7 @@ func TestSnapshotAgesTheLeaseSeparately(t *testing.T) {
 		if _, err := loadSnapshot(dst, saveSnapshot(t, src, snapshotLZ4, saved), saved.Add(time.Second)); err != nil {
 			t.Fatal(err)
 		}
-		if e := storedEntry(dst, "a.test.", false); e == nil || !e.cutUntil.IsZero() {
+		if e := storedEntry(dst, "a.test.", false); e == nil || e.hasCut() {
 			t.Fatal("an answer without a lease came back with one, or not at all")
 		}
 	})
@@ -463,7 +463,7 @@ func TestSnapshotRestoresTheSameEntry(t *testing.T) {
 		t.Fatal("the signed answer lost its DO=0 body")
 	}
 	e := storedEntry(dst, "ede.test.", false)
-	if e.ede == nil || e.ede.InfoCode != dns.ExtendedErrorCodeStaleAnswer || e.ede.ExtraText != "kept" {
-		t.Fatalf("EDE lost: %+v", e.ede)
+	if ede := e.edeOption(); ede == nil || ede.InfoCode != dns.ExtendedErrorCodeStaleAnswer || ede.ExtraText != "kept" {
+		t.Fatalf("EDE lost: %+v", ede)
 	}
 }

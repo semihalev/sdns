@@ -457,7 +457,7 @@ func TestServedTTLIsNeverZero(t *testing.T) {
 	if !ok {
 		t.Fatal("the denial was not admitted")
 	}
-	entry.stored = entry.stored.Add(-entry.ttl + 991*time.Millisecond)
+	entry.setStoredAt(entry.storedAt().Add(-entry.ttl + 991*time.Millisecond))
 
 	out := entry.ToMsg(req)
 	if out == nil {
@@ -813,7 +813,7 @@ func TestClampRoundsLikeAHit(t *testing.T) {
 		}
 
 		entry := NewCacheEntryWithKey(build(), time.Hour, 0, 0)
-		entry.cutUntil = time.Now().Add(lease)
+		entry.setCutUntil(time.Now().Add(lease))
 		req := new(dns.Msg)
 		req.SetQuestion("rounding.example.", dns.TypeA)
 		served := entry.ToMsg(req)
@@ -836,7 +836,7 @@ func TestClampRoundsLikeAHit(t *testing.T) {
 		}
 
 		entry := NewCacheEntryWithKey(build(), time.Hour, 0, 0)
-		entry.cutUntil = time.Now().Add(lease)
+		entry.setCutUntil(time.Now().Add(lease))
 		req := new(dns.Msg)
 		req.SetQuestion("rounding.example.", dns.TypeA)
 		served := entry.ToMsg(req)

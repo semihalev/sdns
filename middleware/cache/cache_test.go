@@ -253,7 +253,7 @@ func TestCacheTTL(t *testing.T) {
 	// derived from stored+ttl, so moving stored back is exactly equivalent
 	// to five seconds passing, and the minimum TTL the configuration
 	// accepts is five seconds, so waiting is the only alternative.
-	entry.stored = entry.stored.Add(-6 * time.Second)
+	entry.setStoredAt(entry.storedAt().Add(-6 * time.Second))
 
 	// Should be expired
 	entry = c.checkCache(key)

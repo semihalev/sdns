@@ -69,10 +69,10 @@ func seedStaleEntryWithRate(
 	if entry == nil {
 		t.Fatal("failed to construct stale cache entry")
 	}
-	entry.scope = normalizeKeyScope(scope)
-	entry.stored = time.Now().Add(-time.Minute - staleFor)
+	entry.setRare(normalizeKeyScope(scope), entry.edeOption())
+	entry.setStoredAt(time.Now().Add(-time.Minute - staleFor))
 	if leaseRemaining != 0 {
-		entry.cutUntil = time.Now().Add(leaseRemaining)
+		entry.setCutUntil(time.Now().Add(leaseRemaining))
 	}
 	c.store.SetEntryWithKey(want.Hash(), entry, dnsutil.TypeSuccess)
 	return entry
@@ -435,9 +435,9 @@ func TestServeStaleCompletesCNAMEFromStaleTarget(t *testing.T) {
 			t.Fatalf("stale target lifetime was not folded into alias TTL: %d", ttl)
 		}
 	}
-	if cut, key := ch.Meta.Cut(); cut.IsZero() || cut.After(targetEntry.cutUntil) {
+	if cut, key := ch.Meta.Cut(); cut.IsZero() || cut.After(targetEntry.cutDeadline()) {
 		t.Fatalf("composed stale alias bound = (%v, %#x), must not outlive target (%v, %#x)",
-			cut, key, targetEntry.cutUntil, targetEntry.cutKey)
+			cut, key, targetEntry.cutDeadline(), targetEntry.cutKey)
 	}
 }
 
@@ -884,7 +884,7 @@ func TestScopedLookupFreshWiderScopeBeatsExpiredNarrowScope(t *testing.T) {
 	wide := netip.MustParsePrefix("203.0.113.0/24")
 	seedStaleEntry(t, c, staleTestAnswer(req, "192.0.2.60"), narrow, time.Second, time.Hour)
 	fresh := seedStaleEntry(t, c, staleTestAnswer(req, "192.0.2.61"), wide, time.Second, time.Hour)
-	fresh.stored = time.Now()
+	fresh.setStoredAt(time.Now())
 
 	entry, key, scope := c.scopedLookup(req.Question[0], false, client)
 	if entry != fresh || scope != wide {
@@ -1036,7 +1036,8 @@ func TestBoundRequestToStaleLifetime(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			entry := &CacheEntry{cutUntil: tt.cutUntil, cutKey: tt.cutKey}
+			entry := &CacheEntry{cutKey: tt.cutKey}
+			entry.setCutUntil(tt.cutUntil)
 			var meta middleware.ResponseMeta
 			ctx := middleware.WithResponseMeta(context.Background(), &meta)
 			boundRequestToStaleLifetime(ctx, entry, now)

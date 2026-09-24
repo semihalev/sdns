@@ -223,7 +223,7 @@ func entryMatchesPreimage(entry *CacheEntry, qtype, qclass uint16, cd bool, scop
 	}
 	eq := entry.question
 	return eq.Qtype == qtype && eq.Qclass == qclass &&
-		entry.cd == cd && entry.scope == normalizeKeyScope(scope)
+		entry.cd == cd && entry.scopeKey() == normalizeKeyScope(scope)
 }
 
 // equalNameASCIIFold reports whether two DNS names are equal under
@@ -652,7 +652,7 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Pr
 		// in-tree path, but an entry filed under a CD the response no
 		// longer carries would be unreachable rather than merely misfiled.
 		e.cd = keyCD
-		e.cutUntil = cutUntil
+		e.setCutUntil(cutUntil)
 		e.cutKey = cutKey
 		s.stampSidecar(e, msg)
 		return e
@@ -728,8 +728,8 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 			return nil
 		}
 		entry.cd = expected.cd
-		entry.scope = expected.scope
-		entry.cutUntil = cutUntil
+		entry.setRare(expected.scopeKey(), entry.edeOption())
+		entry.setCutUntil(cutUntil)
 		entry.cutKey = cutKey
 		s.stampSidecar(entry, filtered)
 		return entry
