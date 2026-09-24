@@ -82,7 +82,7 @@ func Test_ValidateDelegation_SkipLevelInsecureCut(t *testing.T) {
 
 	r := &Resolver{}
 	var store middleware.Store = &cannedByQnameAndType{byKey: map[string]*dns.Msg{
-		fmt.Sprintf("%s:%d", sub, dns.TypeDS):         subDSResp,
+		fmt.Sprintf("%s:%d", sub, dns.TypeDS):        subDSResp,
 		fmt.Sprintf("%s:%d", parent, dns.TypeDNSKEY): parentKeyResp,
 	}}
 	r.store.Store(&store)
@@ -152,9 +152,9 @@ func Test_ValidateDelegation_SkipLevelBothSigned(t *testing.T) {
 	r := &Resolver{}
 	var store middleware.Store = &cannedByQnameAndType{byKey: map[string]*dns.Msg{
 		fmt.Sprintf("%s:%d", parent, dns.TypeDNSKEY): parentKeyResp,
-		fmt.Sprintf("%s:%d", sub, dns.TypeDS):         subDSResp,
-		fmt.Sprintf("%s:%d", sub, dns.TypeDNSKEY):     subKeyResp,
-		fmt.Sprintf("%s:%d", target, dns.TypeDS):      targetDSResp,
+		fmt.Sprintf("%s:%d", sub, dns.TypeDS):        subDSResp,
+		fmt.Sprintf("%s:%d", sub, dns.TypeDNSKEY):    subKeyResp,
+		fmt.Sprintf("%s:%d", target, dns.TypeDS):     targetDSResp,
 	}}
 	r.store.Store(&store)
 
@@ -206,7 +206,7 @@ func Test_ValidateDelegation_SkipLevelForgedDenialFailsClosed(t *testing.T) {
 	r := &Resolver{}
 	var store middleware.Store = &cannedByQnameAndType{byKey: map[string]*dns.Msg{
 		fmt.Sprintf("%s:%d", parent, dns.TypeDNSKEY): parentKeyResp,
-		fmt.Sprintf("%s:%d", sub, dns.TypeDS):         subDSResp,
+		fmt.Sprintf("%s:%d", sub, dns.TypeDS):        subDSResp,
 	}}
 	r.store.Store(&store)
 
@@ -226,5 +226,60 @@ func Test_ValidateDelegation_SkipLevelForgedDenialFailsClosed(t *testing.T) {
 	_, err := r.validateDelegation(context.Background(), clientReq, delegationResp, q, parentDS, parent)
 	if err == nil {
 		t.Fatal("expected validateDelegation to fail closed on stripped DS denial, got nil")
+	}
+}
+
+// Test_ValidateDelegation_SkipLevelNonDelegationFailsClosed tests that an intermediate
+// name that exists in the parent but is not a delegation (NSEC present but NS bit
+// missing) fails closed and does not allow downgrading the delegation to insecure.
+func Test_ValidateDelegation_SkipLevelNonDelegationFailsClosed(t *testing.T) {
+	parent := "parent.test."
+	key, priv := makeZoneKeyRes(t, parent)
+	parentDS := []dns.RR{key.ToDS(dns.SHA256)}
+
+	sub := "sub." + parent
+	target := "target." + sub
+
+	parentKeyResp := new(dns.Msg)
+	parentKeyResp.SetQuestion(parent, dns.TypeDNSKEY)
+	parentKeyResp.Response = true
+	parentKeyResp.Answer = []dns.RR{key}
+
+	// NSEC for sub.parent.test. proving the name exists but has types A, RRSIG, NSEC (no NS bit)
+	subNSEC := &dns.NSEC{
+		Hdr:        dns.RR_Header{Name: sub, Rrtype: dns.TypeNSEC, Class: dns.ClassINET, Ttl: 3600},
+		NextDomain: "z." + parent,
+		TypeBitMap: []uint16{dns.TypeA, dns.TypeRRSIG, dns.TypeNSEC},
+	}
+	nsecSig := signRRSetRes(t, key, priv, []dns.RR{subNSEC})
+
+	subDSResp := new(dns.Msg)
+	subDSResp.SetQuestion(sub, dns.TypeDS)
+	subDSResp.Response = true
+	subDSResp.Ns = []dns.RR{subNSEC, nsecSig}
+
+	r := &Resolver{}
+	var store middleware.Store = &cannedByQnameAndType{byKey: map[string]*dns.Msg{
+		fmt.Sprintf("%s:%d", parent, dns.TypeDNSKEY): parentKeyResp,
+		fmt.Sprintf("%s:%d", sub, dns.TypeDS):        subDSResp,
+	}}
+	r.store.Store(&store)
+
+	clientReq := new(dns.Msg)
+	clientReq.SetQuestion("www."+target, dns.TypeA)
+
+	delegationResp := new(dns.Msg)
+	delegationResp.SetReply(clientReq)
+	delegationResp.Ns = []dns.RR{
+		&dns.NS{
+			Hdr: dns.RR_Header{Name: target, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: 3600},
+			Ns:  "ns1.target." + sub,
+		},
+	}
+
+	q := dns.Question{Name: target, Qtype: dns.TypeNS, Qclass: dns.ClassINET}
+	_, err := r.validateDelegation(context.Background(), clientReq, delegationResp, q, parentDS, parent)
+	if err == nil {
+		t.Fatal("expected validateDelegation to fail closed when intermediate name lacks NS bit, got nil")
 	}
 }

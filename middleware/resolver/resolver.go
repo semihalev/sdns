@@ -1754,6 +1754,13 @@ mainloop:
 				left--
 
 				if res.err != nil {
+					if errors.Is(res.err, errTruncated) {
+						if left > 0 {
+							continue fallbackloop
+						}
+						continue mainloop
+					}
+
 					// A request-tree work rejection is terminal policy,
 					// not an authority failure. Trying another server
 					// would only repeat the rejected operation and can
@@ -1786,6 +1793,10 @@ mainloop:
 					continue mainloop
 				}
 
+				// A truncated reply from a server that did not complete TCP fallback
+				// is parked in responseErrors so peers can be tried first. If all
+				// authorities fail, pickFallbackResponse can still return it so the
+				// client receives the truncated response.
 				if resp.Truncated {
 					responseErrors = append(responseErrors, resp)
 
@@ -4277,11 +4288,8 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 		// For normal 1-label delegations (and multi-label delegations directly
 		// parented by parentSigner, e.g. plain.test. in root), this succeeds
 		// immediately with either the child's DS or a signed denial.
-		newDSRR, insecure, err := r.authenticatedDelegationDS(ctx, parentSigner, q.Name, effectiveParentDS)
+		newDSRR, _, err := r.authenticatedDelegationDS(ctx, parentSigner, q.Name, effectiveParentDS)
 		if err == nil {
-			if insecure {
-				return nil, nil
-			}
 			return newDSRR, nil
 		}
 
@@ -4303,6 +4311,9 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 				ancestor := qname[prev:]
 
 				dsset, ancInsecure, aerr := r.authenticatedDelegationDS(ctx, curSigner, ancestor, curDS)
+				if aerr != nil && isDNSSECWorkError(aerr) {
+					return nil, aerr
+				}
 				if aerr == nil && ancInsecure {
 					// An intermediate cut is cryptographically proven insecure;
 					// by RFC 4035 rules, any domain under an insecure zone is insecure.
@@ -4324,6 +4335,9 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 			// retry validating q.Name under that deeper signer.
 			if curSigner != parentSigner {
 				targetDS, targetInsecure, terr := r.authenticatedDelegationDS(ctx, curSigner, qname, curDS)
+				if terr != nil && isDNSSECWorkError(terr) {
+					return nil, terr
+				}
 				if terr == nil {
 					if targetInsecure {
 						return nil, nil

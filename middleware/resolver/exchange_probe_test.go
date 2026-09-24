@@ -349,4 +349,3 @@ func TestAProbeTruncationDoesNotWinRaceAheadOfTCPFallback(t *testing.T) {
 		t.Fatalf("lookup returned %d answers, want 2 from TCP fallback", len(resp.Answer))
 	}
 }
-
