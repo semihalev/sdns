@@ -163,3 +163,42 @@ func TestOverlappingMissesKeepTheVerdict(t *testing.T) {
 		t.Fatal("the replay lost the verdict the second completion brought")
 	}
 }
+
+// Two first records for a question no generation holds yet: one has found
+// the slot empty and is held there while the other installs its generation.
+// Whichever order they land in, the verdict one of them carries survives in
+// the single generation left.
+func TestRacingFirstRecordsKeepTheVerdict(t *testing.T) {
+	generic := FailureProvenance("response")
+	for _, held := range []FailureProvenance{generic, FailureProvenanceValidation} {
+		t.Run("held "+string(held), func(t *testing.T) {
+			clock := &failureFakeClock{now: time.Unix(1_000_000, 0)}
+			c := newFailureTestCache(t, 64, clock)
+			key := failureQuestion("first.example.", dns.TypeA)
+
+			reached, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			c.beforeFirstRecord = func(p FailureProvenance) {
+				if p == held {
+					once.Do(func() { close(reached); <-release })
+				}
+			}
+			other := FailureProvenanceValidation
+			if held == FailureProvenanceValidation {
+				other = generic
+			}
+
+			done := make(chan struct{})
+			go func() { c.RecordQuestion(key, held, nil); close(done) }()
+			<-reached // held has seen the slot empty
+			c.RecordQuestion(key, other, nil)
+			close(release)
+			<-done
+
+			hit, ok := c.Lookup(key)
+			if !ok || hit.Provenance != FailureProvenanceValidation || hit.Streak != 1 {
+				t.Fatalf("lookup = %+v, %v, want one generation holding the verdict", hit, ok)
+			}
+		})
+	}
+}

@@ -171,6 +171,11 @@ type FailureCache struct {
 	initialTTL time.Duration
 	maxTTL     time.Duration
 	now        func() time.Time
+
+	// beforeFirstRecord, nil outside tests, runs after a record has found
+	// no generation for its key and before it installs one: the window two
+	// first records for one question race through.
+	beforeFirstRecord func(FailureProvenance)
 }
 
 // NewFailureCache constructs a bounded failure cache.
@@ -492,8 +497,19 @@ func (c *FailureCache) record(hash uint64, candidate *failureEntry) FailureHit {
 			first := *candidate
 			first.streak = 1
 			first.retryAfter = now.Add(c.initialTTL)
-			c.entries.Add(hash, &first)
-			return first.hit()
+			// Conditional, so two first records racing for one question
+			// cannot both land and let the later erase the other: the loser
+			// goes round again and meets the winner as an active generation,
+			// where a verdict it carries is taken. A colliding entry for
+			// another question is replaced only as it was examined.
+			if c.beforeFirstRecord != nil {
+				c.beforeFirstRecord(candidate.provenance)
+			}
+			if !ok && c.entries.AddIfAbsent(hash, &first) ||
+				ok && c.entries.CompareAndSwap(hash, current, &first) {
+				return first.hit()
+			}
+			continue
 		}
 		if now.Before(current.retryAfter) {
 			// Two lookups that missed together can complete in either
