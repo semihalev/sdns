@@ -70,7 +70,10 @@ only when you set them, `ipv4hint` and `ipv6hint` under `[ddr]`, and never
 taken from a listener's bind address: behind a load balancer, NAT, anycast or
 a reverse proxy the address sdns is bound to is not the one clients reach.
 Without hints clients resolve the advertised name, which must then point at
-where they connect; with them they can connect without that lookup. A private
+where they connect; with them they can connect without that lookup. The
+answer also carries the name's own A and AAAA records in its Additional
+section, as sdns resolves them, never the hints; a lookup that is not back
+within a second is left out rather than waited for. A private
 address is a fine hint for a resolver on a home or office network; anything
 that is not global unicast, loopback, link-local, multicast, unspecified or
 the IPv4 limited broadcast, is refused by `sdns -t`. A listener bound
