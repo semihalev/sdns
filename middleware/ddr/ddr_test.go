@@ -2,6 +2,8 @@ package ddr
 
 import (
 	"context"
+	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -182,6 +184,95 @@ func TestConfiguredHintsAreCarried(t *testing.T) {
 		if _, ok := param[*dns.SVCBIPv4Hint](rr); ok {
 			t.Fatalf("%v carries a refused hint", rr)
 		}
+	}
+}
+
+// queryerFunc adapts a function to middleware.Queryer.
+type queryerFunc func(ctx context.Context, req *dns.Msg) (*dns.Msg, error)
+
+func (f queryerFunc) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, error) { return f(ctx, req) }
+
+// TestTargetAddressesAreAdditional pins RFC 9462 §4: a discovery answer
+// carries the target's A and AAAA records in the Additional section, as the
+// resolver returns them for the name itself. They are never the hints,
+// which can name other addresses, and a lookup that fails, stalls or
+// returns something else leaves the section empty and the answer intact.
+func TestTargetAddressesAreAdditional(t *testing.T) {
+	answers := map[uint16][]dns.RR{
+		dns.TypeA: {
+			&dns.A{Hdr: dns.RR_Header{Name: "dns.example.com.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: []byte{192, 0, 2, 7}},
+		},
+		dns.TypeAAAA: {
+			&dns.CNAME{Hdr: dns.RR_Header{Name: "other.example.com.", Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 60}, Target: "dns.example.com."},
+			&dns.AAAA{Hdr: dns.RR_Header{Name: "DNS.example.com.", Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 60}, AAAA: net.ParseIP("2001:db8::7")},
+			&dns.AAAA{Hdr: dns.RR_Header{Name: "other.example.com.", Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 60}, AAAA: net.ParseIP("2001:db8::8")},
+		},
+	}
+	var asked []string
+	resolve := queryerFunc(func(_ context.Context, req *dns.Msg) (*dns.Msg, error) {
+		q := req.Question[0]
+		asked = append(asked, q.Name+" "+dns.TypeToString[q.Qtype])
+		resp := new(dns.Msg)
+		resp.SetReply(req)
+		resp.Answer = answers[q.Qtype]
+		return resp, nil
+	})
+
+	cfg := enabled(":443", ":853", "")
+	cfg.DDR.IPv4Hint = []string{"198.51.100.1"}
+	d := New(cfg)
+	d.SetQueryer(resolve)
+
+	resp, _, _ := serve(t, d, "_dns.resolver.arpa.", dns.TypeSVCB, dns.ClassINET, true)
+	if resp == nil || len(resp.Answer) != 2 {
+		t.Fatalf("discovery answer %v, want DoH and DoT", resp)
+	}
+	var got []string
+	for _, rr := range resp.Extra {
+		got = append(got, rr.String())
+	}
+	want := []string{"dns.example.com.\t60\tIN\tA\t192.0.2.7", "DNS.example.com.\t60\tIN\tAAAA\t2001:db8::7"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("additional %q, want the target's own A and AAAA %q", got, want)
+	}
+	if len(asked) != 2 || asked[0] != "dns.example.com. A" || asked[1] != "dns.example.com. AAAA" {
+		t.Fatalf("asked %v, want the target's A and AAAA", asked)
+	}
+
+	// Only the discovery answer looks anything up.
+	asked = nil
+	if resp, _, _ := serve(t, d, "_dns.resolver.arpa.", dns.TypeA, dns.ClassINET, false); resp == nil || len(resp.Extra) != 0 || len(asked) != 0 {
+		t.Fatalf("NODATA %v looked up %v", resp, asked)
+	}
+
+	for _, tc := range []struct {
+		name string
+		q    queryerFunc
+	}{
+		{"lookup fails", func(context.Context, *dns.Msg) (*dns.Msg, error) { return nil, errors.New("unreachable") }},
+		{"lookup SERVFAILs", func(_ context.Context, req *dns.Msg) (*dns.Msg, error) {
+			resp := new(dns.Msg)
+			resp.SetRcode(req, dns.RcodeServerFailure)
+			resp.Answer = answers[req.Question[0].Qtype]
+			return resp, nil
+		}},
+		{"lookup stalls past the budget", func(ctx context.Context, _ *dns.Msg) (*dns.Msg, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := New(cfg)
+			d.SetQueryer(tc.q)
+			start := time.Now()
+			resp, _, _ := serve(t, d, "_dns.resolver.arpa.", dns.TypeSVCB, dns.ClassINET, false)
+			if resp == nil || len(resp.Answer) != 2 || len(resp.Extra) != 0 {
+				t.Fatalf("answer %v, want the records without additional addresses", resp)
+			}
+			if elapsed := time.Since(start); elapsed > 2*addressBudget {
+				t.Fatalf("the answer waited %v", elapsed)
+			}
+		})
 	}
 }
 

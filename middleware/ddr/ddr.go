@@ -18,6 +18,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
@@ -33,6 +34,11 @@ const (
 	// dohPath is the DoH URI template (RFC 9461 §5). The DoH listener
 	// accepts any path, so the conventional one is advertised.
 	dohPath = "/dns-query{?dns}"
+
+	// addressBudget bounds the lookup of the target's addresses, so a
+	// discovery answer never waits out a slow resolution. What is not back
+	// by then is left out, and the client resolves the name itself.
+	addressBudget = time.Second
 )
 
 // zoneWire is resolver.arpa. in wire form, the suffix every name in the zone
@@ -55,6 +61,10 @@ type DDR struct {
 	// sets it once the listeners are bound; until then, and for a DDR
 	// driven without a server, every configured listener is advertised.
 	serving atomic.Pointer[func(proto string) bool]
+
+	// queryer looks the target's addresses up for the Additional section;
+	// nil leaves the section empty.
+	queryer middleware.Queryer
 }
 
 // service is one configured listener: the transports it answers on, each
@@ -198,6 +208,38 @@ func (d *DDR) ObserveListeners(serving func(proto string) bool) {
 	d.serving.Store(&serving)
 }
 
+// SetQueryer implements middleware.QueryerSetter.
+func (d *DDR) SetQueryer(q middleware.Queryer) { d.queryer = q }
+
+// addresses looks the target's A and AAAA records up through the internal
+// pipeline, for the Additional section of a discovery answer (RFC 9462 §4).
+// Only the records it returns for the target itself are carried, never the
+// configured hints: behind a load balancer the address a hint names and the
+// one the name resolves to can differ, and the Additional section speaks
+// for the name.
+func (d *DDR) addresses(ctx context.Context) []dns.RR {
+	if d.queryer == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, addressBudget)
+	defer cancel()
+	var out []dns.RR
+	for _, qtype := range []uint16{dns.TypeA, dns.TypeAAAA} {
+		req := new(dns.Msg)
+		req.SetQuestion(d.target, qtype)
+		resp, err := d.queryer.Query(ctx, req)
+		if err != nil || resp == nil || resp.Rcode != dns.RcodeSuccess {
+			continue
+		}
+		for _, rr := range resp.Answer {
+			if rr.Header().Rrtype == qtype && strings.EqualFold(rr.Header().Name, d.target) {
+				out = append(out, dns.Copy(rr))
+			}
+		}
+	}
+	return out
+}
+
 // records builds the discovery answer from the listeners that are up: a
 // service with none of its transports up is left out, DoH offers only the
 // HTTP versions it is serving, and priorities count the services offered.
@@ -267,13 +309,14 @@ func (d *DDR) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	_ = ch.Writer.WriteMsg(d.answer(req))
+	_ = ch.Writer.WriteMsg(d.answer(ctx, req))
 	ch.Cancel()
 }
 
-// answer is the SVCB set for the discovery question and NODATA for every
-// other name or type in the zone (RFC 9462 §6.4).
-func (d *DDR) answer(req *dns.Msg) *dns.Msg {
+// answer is the SVCB set for the discovery question, with the target's
+// addresses in the Additional section, and NODATA for every other name or
+// type in the zone (RFC 9462 §6.4).
+func (d *DDR) answer(ctx context.Context, req *dns.Msg) *dns.Msg {
 	q := req.Question[0]
 	msg := new(dns.Msg)
 	msg.SetReply(req)
@@ -281,6 +324,7 @@ func (d *DDR) answer(req *dns.Msg) *dns.Msg {
 
 	if q.Qtype == dns.TypeSVCB && strings.EqualFold(q.Name, discovery) {
 		if msg.Answer = d.records(q.Name); len(msg.Answer) > 0 {
+			msg.Extra = d.addresses(ctx)
 			return msg
 		}
 	}
