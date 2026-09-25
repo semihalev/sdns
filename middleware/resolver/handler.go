@@ -202,6 +202,8 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 			middleware.MarkRequestLocalFailureResponse(ctx, resp, err)
 		case requestCtxErr != nil:
 			middleware.MarkRequestLocalFailureResponse(ctx, resp, requestCtxErr)
+		case isValidationFailure(err):
+			middleware.MarkValidationFailureResponse(ctx, resp)
 		}
 		return resp
 	}

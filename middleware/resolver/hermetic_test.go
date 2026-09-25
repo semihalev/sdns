@@ -496,6 +496,19 @@ func (z *hermeticZone) ServeUnsigned(rrs ...dns.RR) {
 	z.server.serve(hdr.Name, hdr.Rrtype, rrs...)
 }
 
+// ServeTampered publishes signed, the zone's real signature over signedAs,
+// the RRset rrs instead: the signature is present and made by the right key,
+// and does not verify, a bogus answer the DNS library refuses with a bare
+// dns.ErrSig.
+func (z *hermeticZone) ServeTampered(signedAs []dns.RR, rrs ...dns.RR) {
+	z.tb.Helper()
+	if len(rrs) == 0 || !z.signed {
+		z.tb.Fatal("ServeTampered needs records and a signed zone")
+	}
+	hdr := rrs[0].Header()
+	z.server.serve(hdr.Name, hdr.Rrtype, append(append([]dns.RR{}, rrs...), z.key.sign(z.tb, signedAs))...)
+}
+
 // ServeEmptyNonTerminals publishes the interior labels of a name the way a
 // real zone holds them: they exist and carry no records. delegate() does this
 // for the labels above a cut; a deep name needs it below one too.

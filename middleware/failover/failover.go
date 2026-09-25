@@ -104,6 +104,13 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	if m.Rcode != dns.RcodeServerFailure || !m.RecursionDesired {
 		return w.ResponseWriter.WriteMsg(m)
 	}
+	// A validation failure is the validator's verdict that the data is
+	// bogus, not a failure to reach it. Another resolver's answer would
+	// hand the client that same data unvalidated, from one that lacks an
+	// algorithm this one verifies or does not validate at all.
+	if middleware.IsValidationFailureResponse(w.ctx, m) {
+		return w.ResponseWriter.WriteMsg(m)
+	}
 	if middleware.RecursionWorkEnforcementError(w.ctx) != nil {
 		return w.writeRecursionWorkFailure(m, nil)
 	}

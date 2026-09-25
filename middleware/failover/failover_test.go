@@ -220,6 +220,74 @@ func TestFailoverResolutionAttemptGuardBoundsDuplicateEndpoints(t *testing.T) {
 	}
 }
 
+// bogusResolver answers the way the resolver does when validation refuses
+// the data: a SERVFAIL marked as the validator's verdict.
+type bogusResolver struct{ mark bool }
+
+func (b *bogusResolver) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	// The resolver materializes the request and runs on the context that
+	// returns, detached from the one failover wrapped.
+	ctx, req := ch.Materialize(ctx)
+	if req == nil {
+		return
+	}
+	m := new(dns.Msg)
+	m.SetRcode(req, dns.RcodeServerFailure)
+	if b.mark {
+		middleware.MarkValidationFailureResponse(ctx, m)
+	}
+	_ = ch.Writer.WriteMsg(m)
+}
+
+func (b *bogusResolver) Name() string { return "bogus" }
+
+// A SERVFAIL that validation produced is not handed to a fallback server:
+// its answer would be the very data validation refused, unvalidated, from a
+// resolver that lacks an algorithm this one verifies or does not validate
+// at all. Any other SERVFAIL still fails over.
+func TestFailoverLeavesAValidationFailureAlone(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		mark      bool
+		wantRcode int
+		wantCalls int32
+	}{
+		{"validation failure", true, dns.RcodeServerFailure, 0},
+		{"other failure", false, dns.RcodeSuccess, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			addr, calls, stop := startFailoverRcodeServer(t, dns.RcodeSuccess)
+			defer stop()
+
+			f := &Failover{servers: []string{addr}}
+			msg := new(dns.Msg)
+			msg.SetQuestion("bogus.example.", dns.TypeA)
+			msg.RecursionDesired = true
+			raw, err := msg.Pack()
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Wire-born, as the server receives it: materializing it detaches
+			// the resolver's context from the one failover wrapped.
+			req := new(middleware.Request)
+			if !req.ParseWire(raw, time.Now(), nil) {
+				t.Fatal("query refused")
+			}
+			writer := mock.NewWriter("udp", "127.0.0.1:0")
+			ch := middleware.NewChain([]middleware.Handler{f, &bogusResolver{mark: tc.mark}})
+			ch.ResetWire(writer, req)
+			ch.Next(context.Background())
+
+			if got := writer.Msg(); got == nil || got.Rcode != tc.wantRcode {
+				t.Fatalf("response = %v, want rcode %s", got, dns.RcodeToString[tc.wantRcode])
+			}
+			if got := calls.Load(); got != tc.wantCalls {
+				t.Fatalf("fallback queries = %d, want %d", got, tc.wantCalls)
+			}
+		})
+	}
+}
+
 func TestFailoverTriesNextServerAfterUnusableDNSResponse(t *testing.T) {
 	badAddr, badCalls, stopBad := startFailoverRcodeServer(t, dns.RcodeServerFailure)
 	defer stopBad()

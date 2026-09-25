@@ -1368,7 +1368,10 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 					)
 					if werr != nil {
 						zlog.Warn("DNSSEC verify failed (wildcard answer)", "query", dnsutil.FormatQuestion(q), "error", werr.Error())
-						return nil, werr
+						if isDNSSECWorkError(werr) {
+							return nil, werr
+						}
+						return nil, asBogus(werr)
 					}
 					ok = wildcardSecure
 				}
@@ -1381,7 +1384,7 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 					lastErr = dnssec.ErrNoSignatures
 				}
 				zlog.Warn("DNSSEC verify failed (answer)", "query", dnsutil.FormatQuestion(q), "error", lastErr.Error())
-				return nil, lastErr
+				return nil, asBogus(lastErr)
 			}
 		}
 	}
@@ -1518,7 +1521,7 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 					lastErr = dnssec.ErrNoSignatures
 				}
 				zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", dnsutil.FormatQuestion(q), "error", lastErr.Error())
-				return nil, lastErr
+				return nil, asBogus(lastErr)
 			}
 
 			if r.dnssec && verified {
@@ -4332,7 +4335,10 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 		}
 
 		zlog.Warn("DNSSEC verify failed (delegation)", "query", dnsutil.FormatQuestion(q), "error", err.Error())
-		return nil, err
+		if isDNSSECWorkError(err) {
+			return nil, err
+		}
+		return nil, asBogus(err)
 	}
 
 	// Try each candidate signer (most specific first) until one

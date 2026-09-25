@@ -100,6 +100,27 @@ var (
 	taRefreshPersistenceError = trustAnchorRefresh.Register("persistence_error")
 )
 
+// isValidationFailure reports whether err is a DNSSEC validation verdict:
+// an error carrying one of the codes classifyResolverErr routes to the
+// DNSSEC vector.
+func isValidationFailure(err error) bool {
+	code, _ := dnsutil.ErrorToEDE(err)
+	switch code {
+	case dns.ExtendedErrorCodeDNSBogus,
+		dns.ExtendedErrorCodeSignatureExpired,
+		dns.ExtendedErrorCodeSignatureNotYetValid,
+		dns.ExtendedErrorCodeDNSKEYMissing,
+		dns.ExtendedErrorCodeRRSIGsMissing,
+		dns.ExtendedErrorCodeNSECMissing,
+		dns.ExtendedErrorCodeUnsupportedDNSKEYAlgorithm,
+		dns.ExtendedErrorCodeUnsupportedDSDigestType,
+		dns.ExtendedErrorCodeNoZoneKeyBitSet,
+		dns.ExtendedErrorCodeDNSSECIndeterminate:
+		return true
+	}
+	return false
+}
+
 // classifyResolverErr increments the appropriate counter for a non-
 // nil resolver error. Timeout is checked first since context errors
 // don't carry an EDE code by themselves. DNSSEC-specific EDE codes
