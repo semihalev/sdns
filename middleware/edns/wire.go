@@ -48,6 +48,20 @@ func (w *ResponseWriter) Size() int {
 	return middleware.ResponseSize(w.ResponseWriter)
 }
 
+// ResponseBudget reports, for a writer above this layer with optional
+// records to leave out rather than overflow into truncation, the largest
+// response the client takes and how much of it the OPT this layer appends
+// will use. limit is 0 over a stream, which bounds nothing here. ok is false
+// when the OPT's length cannot be known, and the caller should then add
+// nothing optional to a bounded response.
+func (w *ResponseWriter) ResponseBudget() (limit, reserve int, ok bool) {
+	reserve, ok = w.wireOPTLen()
+	if w.Proto() == "udp" {
+		limit = w.size
+	}
+	return limit, reserve, ok
+}
+
 // WireReady reports what the byte path may produce for this client. It
 // allocates nothing: the OPT's contribution is arithmetic, so a request the
 // caller ends up refusing has cost only field reads. The record itself is

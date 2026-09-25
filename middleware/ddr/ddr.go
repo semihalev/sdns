@@ -14,6 +14,7 @@ package ddr
 
 import (
 	"context"
+	"math"
 	"net"
 	"net/netip"
 	"strings"
@@ -212,32 +213,82 @@ func (d *DDR) ObserveListeners(serving func(proto string) bool) {
 func (d *DDR) SetQueryer(q middleware.Queryer) { d.queryer = q }
 
 // addresses looks the target's A and AAAA records up through the internal
-// pipeline, for the Additional section of a discovery answer (RFC 9462 §4).
-// Only the records it returns for the target itself are carried, never the
-// configured hints: behind a load balancer the address a hint names and the
-// one the name resolves to can differ, and the Additional section speaks
-// for the name.
-func (d *DDR) addresses(ctx context.Context) []dns.RR {
+// pipeline, for the Additional section of a discovery answer (RFC 9462 §4),
+// and returns them as one RRset per family. Only the records it returns for
+// the target itself are carried, never the configured hints: behind a load
+// balancer the address a hint names and the one the name resolves to can
+// differ, and the Additional section speaks for the name.
+//
+// The lookups are optional work: they stop at the request tree's shared
+// limits without failing a discovery answer that is already complete. Each
+// is its own question with its own lineage, so neither is bounded by what
+// the other found, and each set is published no longer than its own lease
+// allows; a set whose lease has run out is left out.
+func (d *DDR) addresses(ctx context.Context) [][]dns.RR {
 	if d.queryer == nil {
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(ctx, addressBudget)
+	ctx, cancel := context.WithTimeout(middleware.WithBestEffortRecursionWork(ctx), addressBudget)
 	defer cancel()
-	var out []dns.RR
+	var sets [][]dns.RR
 	for _, qtype := range []uint16{dns.TypeA, dns.TypeAAAA} {
 		req := new(dns.Msg)
 		req.SetQuestion(d.target, qtype)
-		resp, err := d.queryer.Query(ctx, req)
+		lookup, meta := middleware.WithForkedCut(ctx)
+		resp, err := d.queryer.Query(lookup, req)
 		if err != nil || resp == nil || resp.Rcode != dns.RcodeSuccess {
 			continue
 		}
+		ceiling := uint32(math.MaxUint32)
+		if left, bounded := meta.Cut().Remaining(time.Now()); bounded {
+			if left < time.Second {
+				continue
+			}
+			ceiling = uint32(min(left/time.Second, math.MaxUint32)) //nolint:gosec // G115 - clamped above
+		}
+		var set []dns.RR
 		for _, rr := range resp.Answer {
 			if rr.Header().Rrtype == qtype && strings.EqualFold(rr.Header().Name, d.target) {
-				out = append(out, dns.Copy(rr))
+				rr = dns.Copy(rr)
+				rr.Header().Ttl = min(rr.Header().Ttl, ceiling)
+				set = append(set, rr)
 			}
 		}
+		if len(set) > 0 {
+			sets = append(sets, set)
+		}
 	}
-	return out
+	return sets
+}
+
+// budgeted is a writer that bounds the response, the edns layer.
+type budgeted interface {
+	ResponseBudget() (limit, reserve int, ok bool)
+}
+
+// additional appends to msg each address set that fits the client's
+// buffer, whole, and leaves out any that does not: the addresses are
+// optional (RFC 2181 §9), and a set that overflowed would truncate the
+// discovery answer itself. A writer that bounds nothing takes every set.
+func additional(w middleware.ResponseWriter, msg *dns.Msg, sets [][]dns.RR) {
+	limit := 0
+	if b, ok := w.(budgeted); ok {
+		l, reserve, known := b.ResponseBudget()
+		switch {
+		case l > 0 && known:
+			limit = l - reserve
+		case l > 0:
+			return
+		}
+	}
+	msg.Compress = true
+	for _, set := range sets {
+		kept := msg.Extra
+		msg.Extra = append(msg.Extra, set...)
+		if limit > 0 && msg.Len() > limit {
+			msg.Extra = kept
+		}
+	}
 }
 
 // records builds the discovery answer from the listeners that are up: a
@@ -309,14 +360,14 @@ func (d *DDR) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	_ = ch.Writer.WriteMsg(d.answer(ctx, req))
+	_ = ch.Writer.WriteMsg(d.answer(ctx, ch.Writer, req))
 	ch.Cancel()
 }
 
 // answer is the SVCB set for the discovery question, with the target's
 // addresses in the Additional section, and NODATA for every other name or
 // type in the zone (RFC 9462 §6.4).
-func (d *DDR) answer(ctx context.Context, req *dns.Msg) *dns.Msg {
+func (d *DDR) answer(ctx context.Context, w middleware.ResponseWriter, req *dns.Msg) *dns.Msg {
 	q := req.Question[0]
 	msg := new(dns.Msg)
 	msg.SetReply(req)
@@ -324,7 +375,7 @@ func (d *DDR) answer(ctx context.Context, req *dns.Msg) *dns.Msg {
 
 	if q.Qtype == dns.TypeSVCB && strings.EqualFold(q.Name, discovery) {
 		if msg.Answer = d.records(q.Name); len(msg.Answer) > 0 {
-			msg.Extra = d.addresses(ctx)
+			additional(w, msg, d.addresses(ctx))
 			return msg
 		}
 	}
