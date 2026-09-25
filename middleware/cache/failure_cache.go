@@ -1,12 +1,14 @@
 package cache
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"time"
 
 	"github.com/miekg/dns"
 	internalcache "github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/middleware"
 )
 
 const (
@@ -33,6 +35,12 @@ var (
 // Admission policy belongs to the caller; the cache only retains the value for
 // observability and for consumers that need to distinguish failure sources.
 type FailureProvenance string
+
+// FailureProvenanceValidation marks a failure this resolver's own DNSSEC
+// validation produced, a verdict that the data is bogus. A replay of it
+// carries the same mark the original SERVFAIL did, so failover leaves it
+// alone. It is taken only from that mark, never from an upstream's EDE.
+const FailureProvenanceValidation FailureProvenance = "validation"
 
 // FailureKind identifies whether a hit is question-specific or zone-wide.
 type FailureKind uint8
@@ -78,6 +86,17 @@ type FailureHit struct {
 	Question   FailureQuestionKey
 	Zone       FailureZoneKey
 	witness    []denialWitnessPair
+}
+
+// replay is Response for a request tree: a cached validation failure comes
+// back marked as the verdict it was, so failover, and a DNAME composing an
+// answer from it, treat the replay as they treated the original.
+func (h FailureHit) replay(ctx context.Context, req *dns.Msg) *dns.Msg {
+	resp := h.Response(req)
+	if h.Provenance == FailureProvenanceValidation {
+		middleware.MarkValidationFailureResponse(ctx, resp)
+	}
+	return resp
 }
 
 // Response builds a clean SERVFAIL response for a cached failure. EDE 13 is

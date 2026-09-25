@@ -315,7 +315,7 @@ func (s *Store) GetWithContext(ctx context.Context, req *dns.Msg) (*dns.Msg, boo
 	// with their explicit audience.
 	if hit, ok := s.LookupFailure(req, netip.Prefix{}); ok {
 		failureCacheHits.Inc()
-		return hit.Response(req), true
+		return hit.replay(ctx, req), true
 	}
 	return nil, false
 }

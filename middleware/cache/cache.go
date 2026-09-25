@@ -1173,7 +1173,7 @@ func (c *Cache) handleFailureHit(
 	}
 
 	failureCacheHits.Inc()
-	resp := hit.Response(ch.Request.Msg())
+	resp := hit.replay(ctx, ch.Request.Msg())
 	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
 		release := meta.MarkCachedFailureResponse(resp)
 		defer release()
@@ -2084,7 +2084,11 @@ func (w *ResponseWriter) writeResolutionFailure(ctx context.Context, res *dns.Ms
 	}
 
 	if cacheableResolutionFailure(ctx, out) {
-		w.cache.store.RecordFailure(out, w.clientScope, FailureProvenance("response"), w.denialMissWitness)
+		provenance := FailureProvenance("response")
+		if out == res && middleware.IsValidationFailureResponse(ctx, res) {
+			provenance = FailureProvenanceValidation
+		}
+		w.cache.store.RecordFailure(out, w.clientScope, provenance, w.denialMissWitness)
 	}
 	if out.Rcode == dns.RcodeServerFailure && staleEligibleResolutionFailure(ctx, out) {
 		req := w.req
