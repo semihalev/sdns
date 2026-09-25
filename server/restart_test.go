@@ -12,36 +12,53 @@ import (
 	"github.com/semihalev/sdns/config"
 )
 
-// dualStackFreeAddr picks a loopback address that both transports will
-// take. The server binds UDP and TCP on one address, but only one of
-// them assigns the ephemeral port, and on Windows a port handed out for
-// UDP can fall inside a range excluded for TCP, so the bind fails on the
-// fixture instead of on the property under test.
 // dualStackFreeAddr finds a loopback port both transports will accept.
 //
-// TCP picks the port and UDP confirms it, not the other way round: Windows
-// keeps excluded ephemeral ranges that TCP must avoid and UDP need not, so a
-// port chosen for UDP can be one TCP is never allowed to bind, and every
-// attempt draws from the same forbidden pool. Asking the constrained
-// transport first means the retries are spent only on the genuine race, the
-// port going to another process between the two binds.
+// The server binds UDP and TCP on one address, but only one of them can
+// draw the port from :0, and Windows keeps per-protocol exclusion ranges:
+// a port one protocol is given is not necessarily one the other may bind.
+// Which side draws is alternated rather than fixed. A fixed TCP-first draw
+// failed twenty times in a row on a CI runner, which is what the allocator
+// handing out a sequential run inside one UDP exclusion block looks like:
+// every redraw lands in the same place. The two protocols allocate from
+// different state, so letting each take a turn means a block that swallows
+// one side's run does not swallow the other's.
 func dualStackFreeAddr(t *testing.T) string {
 	t.Helper()
-	for range 20 {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			continue
+	const attempts = 64
+	var err error
+	for attempt := range attempts {
+		var addr string
+		if attempt%2 == 0 {
+			var ln net.Listener
+			if ln, err = net.Listen("tcp", "127.0.0.1:0"); err != nil {
+				continue
+			}
+			addr = ln.Addr().String()
+			var pc net.PacketConn
+			pc, err = net.ListenPacket("udp", addr)
+			_ = ln.Close()
+			if err != nil {
+				continue
+			}
+			_ = pc.Close()
+		} else {
+			var pc net.PacketConn
+			if pc, err = net.ListenPacket("udp", "127.0.0.1:0"); err != nil {
+				continue
+			}
+			addr = pc.LocalAddr().String()
+			var ln net.Listener
+			ln, err = net.Listen("tcp", addr)
+			_ = pc.Close()
+			if err != nil {
+				continue
+			}
+			_ = ln.Close()
 		}
-		addr := ln.Addr().String()
-		pc, err := net.ListenPacket("udp", addr)
-		_ = ln.Close()
-		if err != nil {
-			continue // this port is spoken for on the other transport
-		}
-		_ = pc.Close()
 		return addr
 	}
-	t.Fatal("no loopback port both transports would accept")
+	t.Fatalf("no loopback port both transports would accept in %d attempts: %v", attempts, err)
 	return ""
 }
 
