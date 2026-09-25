@@ -117,10 +117,11 @@ func (e *CacheEntry) wireChainMismatch(
 // option, zero without one. It rides the lease reserve so the edns layer
 // appends the option into existing capacity.
 func (e *CacheEntry) wireEDEReserve() int {
-	if e.ede == nil {
+	ede := e.edeOption()
+	if ede == nil {
 		return 0
 	}
-	return wire.OPTOptionHdrLen + 2 + len(e.ede.ExtraText)
+	return wire.OPTOptionHdrLen + 2 + len(ede.ExtraText)
 }
 
 // wireBodyFor returns the stored body this client may be served, and the
@@ -264,10 +265,10 @@ func (e *CacheEntry) wireInfoFor(
 		AuthenticatedData: authData,
 		HasDNSSEC:         flags&wireHasDNSSEC != 0,
 	}
-	if e.ede != nil {
+	if ede := e.edeOption(); ede != nil {
 		info.HasEDE = true
-		info.EDECode = e.ede.InfoCode
-		info.EDEText = e.ede.ExtraText
+		info.EDECode = ede.InfoCode
+		info.EDEText = ede.ExtraText
 	}
 	return info
 }

@@ -223,7 +223,7 @@ func entryMatchesPreimage(entry *CacheEntry, qtype, qclass uint16, cd bool, scop
 	}
 	eq := entry.question
 	return eq.Qtype == qtype && eq.Qclass == qclass &&
-		entry.cd == cd && entry.scope == normalizeKeyScope(scope)
+		entry.cd == cd && entry.scopeKey() == normalizeKeyScope(scope)
 }
 
 // equalNameASCIIFold reports whether two DNS names are equal under
@@ -728,7 +728,7 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 			return nil
 		}
 		entry.cd = expected.cd
-		entry.scope = expected.scope
+		entry.setRare(expected.scopeKey(), entry.edeOption())
 		entry.cutUntil = cutUntil
 		entry.cutKey = cutKey
 		s.stampSidecar(entry, filtered)

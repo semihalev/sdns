@@ -69,7 +69,7 @@ func seedStaleEntryWithRate(
 	if entry == nil {
 		t.Fatal("failed to construct stale cache entry")
 	}
-	entry.scope = normalizeKeyScope(scope)
+	entry.setRare(normalizeKeyScope(scope), entry.edeOption())
 	entry.stored = time.Now().Add(-time.Minute - staleFor)
 	if leaseRemaining != 0 {
 		entry.cutUntil = time.Now().Add(leaseRemaining)

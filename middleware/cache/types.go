@@ -2,6 +2,7 @@ package cache
 
 import (
 	"errors"
+	"math"
 	"net/netip"
 	"sync/atomic"
 	"time"
@@ -38,13 +39,39 @@ type CacheEntry struct {
 	// clients that did not set DO. It is nil unless wire carries DNSSEC
 	// records and the stripped form is itself byte-servable.
 	stripped []byte
-	// strippedServe is the byte-serving verdict for stripped, derived the
-	// same way as wireServe and never carrying wireHasDNSSEC.
-	strippedServe wireServeFlags
+
+	// The fields every hit reads come first, so they share the entry's
+	// first two cache lines; the layout packs to 176 bytes with no padding.
+
+	stored time.Time
+	ttl    time.Duration
+
+	// cutUntil bounds the entry's effective lifetime to the
+	// delegation cut that produced the answer (GHSA-mqfw-f48p-2vc8,
+	// answer-cache ghost): an answer must never be served past the
+	// parent-granted lease of the delegation it came from, no matter
+	// how long its own TTL is. Zero means unbounded (forwarder and
+	// local answers, or no learned delegation on the path). Enforced
+	// at read time, remaining() takes the min of the TTL expiry and
+	// this deadline, so it also overrides the configured MinTTL
+	// floor when the cut is shorter.
+	cutUntil time.Time
+
+	// sidecar is policy state stamped beside the immutable entry, the
+	// same shape as the prefetch claim: a mutable atomic the entry
+	// carries without ever being copied. The cache never reads its Value;
+	// it is stamped at admission by the wired evaluator and handed to the
+	// wire-hit gate at serve time. nil means unevaluated, unknown, never
+	// clean (middleware.Sidecar's contract).
+	sidecar atomic.Pointer[middleware.Sidecar]
+
 	// question is the packed message's question, retained unpacked so the
 	// per-hit hash-collision verification (LookupByKeyVerified) and the cold
 	// compat paths never need to touch the wire.
 	question dns.Question
+	// strippedServe is the byte-serving verdict for stripped, derived the
+	// same way as wireServe and never carrying wireHasDNSSEC.
+	strippedServe wireServeFlags
 	// cd mirrors the packed header's CD bit for compat paths that classify
 	// an entry without unpacking it.
 	cd bool
@@ -56,15 +83,26 @@ type CacheEntry struct {
 	// uncompressed, invisible inside the standard chain (the edns layer
 	// re-enables compression) but a behavior break for exported
 	// Store/CacheEntry consumers writing responses directly.
-	compress   bool
-	stored     time.Time
-	ttl        time.Duration
-	origTTL    uint32 // Original TTL in seconds for prefetch calculation
-	prefetch   atomic.Bool
-	rateLimit  int            // Rate limit value (0 = no limit)
-	rateLimKey uint64         // Key for shared rate limiter lookup
-	ede        *dns.EDNS0_EDE // Preserved EDE information
+	compress bool
+	origTTL  uint32 // Original TTL in seconds for prefetch calculation
+	prefetch atomic.Bool
+	// rateLimit is the per-entry rate limit (0 = no limit).
+	rateLimit  int32
+	rateLimKey uint64 // Key for shared rate limiter lookup
 
+	// rare holds what few entries carry: an ECS scope, an EDE. nil for
+	// the rest, which is almost all of them.
+	rare *entryRare
+
+	// cutKey identifies the delegation cache entry that supplied cutUntil.
+	// It is retained for the optional Phase-3 generation design; Phase 1b
+	// enforcement depends only on cutUntil.
+	cutKey uint64
+}
+
+// entryRare is the part of an entry that only a few carry, kept behind one
+// pointer so the rest do not pay for it.
+type entryRare struct {
 	// scope is the ECS prefix this entry was keyed under, normalized the
 	// way the key preimage folds it in (masked address; /0 and invalid
 	// both mean "shared"). The hit-path verifier compares it against the
@@ -78,30 +116,34 @@ type CacheEntry struct {
 	// would store the wrong audience's answer under the scoped key.
 	// PrefetchEligible() reflects this.
 	scope netip.Prefix
+	ede   *dns.EDNS0_EDE // Preserved EDE information
+}
 
-	// cutUntil bounds the entry's effective lifetime to the
-	// delegation cut that produced the answer (GHSA-mqfw-f48p-2vc8,
-	// answer-cache ghost): an answer must never be served past the
-	// parent-granted lease of the delegation it came from, no matter
-	// how long its own TTL is. Zero means unbounded (forwarder and
-	// local answers, or no learned delegation on the path). Enforced
-	// at read time, remaining() takes the min of the TTL expiry and
-	// this deadline, so it also overrides the configured MinTTL
-	// floor when the cut is shorter.
-	cutUntil time.Time
+// scopeKey is the ECS scope the entry was keyed under, the zero Prefix for
+// the shared key.
+func (e *CacheEntry) scopeKey() netip.Prefix {
+	if e.rare == nil {
+		return netip.Prefix{}
+	}
+	return e.rare.scope
+}
 
-	// cutKey identifies the delegation cache entry that supplied cutUntil.
-	// It is retained for the optional Phase-3 generation design; Phase 1b
-	// enforcement depends only on cutUntil.
-	cutKey uint64
+// edeOption is the EDE the entry preserves, nil when none.
+func (e *CacheEntry) edeOption() *dns.EDNS0_EDE {
+	if e.rare == nil {
+		return nil
+	}
+	return e.rare.ede
+}
 
-	// sidecar is policy state stamped beside the immutable entry, the
-	// same shape as the prefetch claim above: a mutable atomic the entry
-	// carries without ever being copied. The cache never reads its Value;
-	// it is stamped at admission by the wired evaluator and handed to the
-	// wire-hit gate at serve time. nil means unevaluated, unknown, never
-	// clean (middleware.Sidecar's contract).
-	sidecar atomic.Pointer[middleware.Sidecar]
+// setRare records a scope and an EDE, allocating the rare part only when
+// there is something to hold.
+func (e *CacheEntry) setRare(scope netip.Prefix, ede *dns.EDNS0_EDE) {
+	if !scope.IsValid() && ede == nil {
+		e.rare = nil
+		return
+	}
+	e.rare = &entryRare{scope: scope, ede: ede}
 }
 
 // Sidecar returns the entry's stamped policy state; nil means the entry
@@ -219,13 +261,13 @@ func newScopedCacheEntryAt(msg *dns.Msg, ttl time.Duration, rateLimit int, scope
 	if e == nil {
 		return nil
 	}
-	e.scope = normalizeKeyScope(scope)
+	e.setRare(normalizeKeyScope(scope), e.edeOption())
 	return e
 }
 
 // scoped reports whether this entry was admitted under an ECS scope
 // rather than the shared key.
-func (e *CacheEntry) scoped() bool { return e.scope.IsValid() }
+func (e *CacheEntry) scoped() bool { return e.scopeKey().IsValid() }
 
 // PrefetchEligible reports whether the prefetch worker may refresh
 // this entry. Scoped entries are skipped because the worker has no
@@ -311,12 +353,12 @@ func newCacheEntryAt(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64,
 		stored:     now,
 		ttl:        ttl,
 		origTTL:    uint32(ttl.Seconds()),
-		rateLimit:  rateLimit,
+		rateLimit:  clampRateLimit(rateLimit),
 		rateLimKey: key,
-		ede:        ede,
 		cd:         msg.CheckingDisabled,
 		compress:   msg.Compress,
 	}
+	entry.setRare(netip.Prefix{}, ede)
 	if len(msg.Question) > 0 {
 		entry.question = msg.Question[0]
 	}
@@ -420,7 +462,7 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 
 	// Restore EDE if it was present in the original response
 	// EDE can be present with any response code, not just SERVFAIL
-	if e.ede != nil {
+	if ede := e.edeOption(); ede != nil {
 		opt := resp.IsEdns0()
 		if opt == nil && req.IsEdns0() != nil {
 			// Request has EDNS0, so add it to response
@@ -446,7 +488,7 @@ func (e *CacheEntry) ToMsg(req *dns.Msg) *dns.Msg {
 			}
 			// Add EDE if not already present
 			if !hasEDE {
-				opt.Option = append(opt.Option, e.ede)
+				opt.Option = append(opt.Option, ede)
 			}
 		}
 	}
@@ -495,12 +537,26 @@ func (e *CacheEntry) ShouldPrefetch(threshold int) bool {
 	return remainingTTL <= thresholdSeconds
 }
 
+// clampRateLimit narrows a configured rate limit to the entry's int32. Zero
+// and below stay "no limit", and anything past the int32 range is held at
+// its top, two billion queries a second, which limits nothing either: a
+// plain conversion would wrap a large value to a small one.
+func clampRateLimit(n int) int32 {
+	switch {
+	case n <= 0:
+		return 0
+	case n > math.MaxInt32:
+		return math.MaxInt32
+	}
+	return int32(n)
+}
+
 // (*CacheEntry).GetRateLimiter returns the shared rate limiter for this entry
 func (e *CacheEntry) GetRateLimiter() *rate.Limiter {
 	if e.rateLimit <= 0 {
 		return nil
 	}
-	return getSharedRateLimiter(e.rateLimit, e.rateLimKey)
+	return getSharedRateLimiter(int(e.rateLimit), e.rateLimKey)
 }
 
 // CacheKey represents a structured cache key.

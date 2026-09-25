@@ -416,8 +416,8 @@ func TestCacheEntryWithoutEDE(t *testing.T) {
 	if entry == nil {
 		t.Fatalf("entry is nil")
 	}
-	if entry.ede != nil {
-		t.Errorf("entry.ede = %v, want nil", entry.ede)
+	if entry.edeOption() != nil {
+		t.Errorf("entry.edeOption() = %v, want nil", entry.edeOption())
 	}
 
 	// Restore with EDNS request

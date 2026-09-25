@@ -74,7 +74,7 @@ func (s *Store) snapshot(w io.Writer, fingerprint [32]byte, compression uint16, 
 			origTTL:  e.origTTL,
 			cd:       e.cd,
 			compress: e.compress,
-			ede:      e.ede,
+			ede:      e.edeOption(),
 			wire:     e.wire,
 		}); err != nil {
 			return out, err

@@ -463,7 +463,7 @@ func TestSnapshotRestoresTheSameEntry(t *testing.T) {
 		t.Fatal("the signed answer lost its DO=0 body")
 	}
 	e := storedEntry(dst, "ede.test.", false)
-	if e.ede == nil || e.ede.InfoCode != dns.ExtendedErrorCodeStaleAnswer || e.ede.ExtraText != "kept" {
-		t.Fatalf("EDE lost: %+v", e.ede)
+	if ede := e.edeOption(); ede == nil || ede.InfoCode != dns.ExtendedErrorCodeStaleAnswer || ede.ExtraText != "kept" {
+		t.Fatalf("EDE lost: %+v", ede)
 	}
 }
