@@ -110,6 +110,47 @@ func TestValidateDDR(t *testing.T) {
 			c.BindDOH, c.TLSCertificate, c.TLSPrivateKey = ":443", named, namedKey
 		}, ""},
 		{"disabled with a name that could never work", func(c *Config) { c.DDR.Name = "resolver.arpa" }, ""},
+		{"proxied DoH", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.DDR.DoHPort, c.DDR.DoHALPN = true, "dns.example.", 443, []string{"h2", "h3"}
+			c.BindDOH = "127.0.0.1:8053"
+		}, ""},
+		{"doh_port out of range", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.DDR.DoHPort, c.BindDOH = true, "dns.example.", 70000, "127.0.0.1:8053"
+		}, "ddr.doh_port"},
+		{"doh_alpn that is not a DoH ALPN", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.DDR.DoHALPN, c.BindDOH = true, "dns.example.", []string{"http/1.1"}, ":443"
+		}, "not a DoH ALPN"},
+		{"doh_alpn listed twice", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.DDR.DoHALPN, c.BindDOH = true, "dns.example.", []string{"h2", "h2"}, ":443"
+		}, "listed twice"},
+		{"address hints, a private one among them", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.BindTLS = true, "dns.example.", ":853"
+			c.DDR.IPv4Hint, c.DDR.IPv6Hint = []string{"198.51.100.1", "192.168.1.53"}, []string{"2001:db8::53"}
+		}, ""},
+		{"ipv4hint that is IPv6", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.BindTLS, c.DDR.IPv4Hint = true, "dns.example.", ":853", []string{"2001:db8::53"}
+		}, "not an IPv4 address"},
+		{"ipv6hint that is IPv4-mapped", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.BindTLS, c.DDR.IPv6Hint = true, "dns.example.", ":853", []string{"::ffff:198.51.100.1"}
+		}, "not an IPv6 address"},
+		{"ipv4hint that is not an address", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.BindTLS, c.DDR.IPv4Hint = true, "dns.example.", ":853", []string{"dns.example.com"}
+		}, "not an IPv4 address"},
+		{"loopback hint", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.BindTLS, c.DDR.IPv4Hint = true, "dns.example.", ":853", []string{"127.0.0.1"}
+		}, "not an address a client can connect to"},
+		{"unspecified hint", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.BindTLS, c.DDR.IPv6Hint = true, "dns.example.", ":853", []string{"::"}
+		}, "not an address a client can connect to"},
+		{"link-local hint", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.BindTLS, c.DDR.IPv4Hint = true, "dns.example.", ":853", []string{"169.254.1.1"}
+		}, "not an address a client can connect to"},
+		{"hint listed twice", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.BindTLS, c.DDR.IPv4Hint = true, "dns.example.", ":853", []string{"198.51.100.1", "198.51.100.1"}
+		}, "listed twice"},
+		{"doh_port without a DoH listener", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.DDR.DoHPort, c.BindTLS = true, "dns.example.", 443, ":853"
+		}, "no DoH listener to publish"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := new(Config)
