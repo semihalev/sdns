@@ -2,7 +2,6 @@ package ddr
 
 import (
 	"context"
-	"net"
 	"testing"
 	"time"
 
@@ -131,8 +130,9 @@ func TestDiscoveryRecords(t *testing.T) {
 }
 
 // TestOnlyConfiguredListenersAreAdvertised: a server with DoT alone offers
-// DoT alone, at priority 1, and a listener bound to one address offers that
-// address as a hint while a wildcard bind offers none.
+// DoT alone, at priority 1. No record carries an address hint, a listener
+// bound to one address included: behind a load balancer, NAT or a proxy that
+// address is not the one clients reach, and they resolve the target instead.
 func TestOnlyConfiguredListenersAreAdvertised(t *testing.T) {
 	d := New(enabled("", "192.0.2.53:853", "[2001:db8::53]:853"))
 	resp, _, _ := serve(t, d, "_dns.resolver.arpa.", dns.TypeSVCB, dns.ClassINET, false)
@@ -143,17 +143,14 @@ func TestOnlyConfiguredListenersAreAdvertised(t *testing.T) {
 	if dot.Priority != 1 {
 		t.Fatalf("DoT priority %d, want 1 when it is the first listener", dot.Priority)
 	}
-	if h, ok := param[*dns.SVCBIPv4Hint](dot); !ok || !h.Hint[0].Equal(net.ParseIP("192.0.2.53")) {
-		t.Fatalf("DoT hint %v", h)
-	}
-	if h, ok := param[*dns.SVCBIPv6Hint](resp.Answer[1].(*dns.SVCB)); !ok || !h.Hint[0].Equal(net.ParseIP("2001:db8::53")) {
-		t.Fatalf("DoQ hint %v", h)
-	}
-
-	wild := New(enabled(":443", "", ""))
-	resp, _, _ = serve(t, wild, "_dns.resolver.arpa.", dns.TypeSVCB, dns.ClassINET, false)
-	if _, ok := param[*dns.SVCBIPv4Hint](resp.Answer[0].(*dns.SVCB)); ok {
-		t.Fatal("a wildcard bind offered an address hint")
+	for _, rr := range resp.Answer {
+		svcb := rr.(*dns.SVCB)
+		if h, ok := param[*dns.SVCBIPv4Hint](svcb); ok {
+			t.Fatalf("%v carries the bound address %v as a hint", svcb, h.Hint)
+		}
+		if h, ok := param[*dns.SVCBIPv6Hint](svcb); ok {
+			t.Fatalf("%v carries the bound address %v as a hint", svcb, h.Hint)
+		}
 	}
 }
 
@@ -313,7 +310,10 @@ func TestLoopbackListenersAndProxiedDoH(t *testing.T) {
 	}
 
 	t.Run("loopback listeners are left out", func(t *testing.T) {
-		for _, doh := range []string{"127.0.0.1:8053", "[::1]:8053", "localhost:8053"} {
+		for _, doh := range []string{
+			"127.0.0.1:8053", "[::1]:8053", "[::ffff:127.0.0.1]:8053",
+			"localhost:8053", "localhost.:8053", "LOCALHOST.:8053", "ns.localhost:8053",
+		} {
 			rrs := advertised(t, New(enabled(doh, ":853", ":853")))
 			if len(rrs) != 2 || alpnOf(rrs[0])[0] != "dot" || alpnOf(rrs[1])[0] != "doq" {
 				t.Fatalf("DoH on %s: records %v, want DoT and DoQ only", doh, rrs)
@@ -375,6 +375,23 @@ func TestLoopbackListenersAndProxiedDoH(t *testing.T) {
 		d.ObserveListeners(func(string) bool { return false })
 		if rrs := advertised(t, d); len(rrs) != 0 {
 			t.Fatalf("records %v, want none while the DoH listener is down", rrs)
+		}
+	})
+
+	// With the port alone the listener's own ALPNs stand for the proxy's,
+	// and they too follow the TCP side the proxy reaches: local QUIC being
+	// up says nothing about a proxy whose backend is down.
+	t.Run("inherited ALPNs follow the listener's TCP side", func(t *testing.T) {
+		cfg := enabled("127.0.0.1:8053", "", "")
+		cfg.DDR.DoHPort = 443
+		d := New(cfg)
+		d.ObserveListeners(func(proto string) bool { return proto == "doh3" })
+		if rrs := advertised(t, d); len(rrs) != 0 {
+			t.Fatalf("records %v, want none while the TCP DoH listener is down", rrs)
+		}
+		d.ObserveListeners(func(proto string) bool { return proto == "doh" })
+		if rrs := advertised(t, d); len(rrs) != 1 || len(alpnOf(rrs[0])) != 2 {
+			t.Fatalf("records %v, want DoH with the listener's h2 and h3", rrs)
 		}
 	})
 }

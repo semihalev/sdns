@@ -57,10 +57,14 @@ type DDR struct {
 // with the ALPN it speaks and the listener tag the server reports it under.
 // DoH is one service on two listeners, HTTP/2 over TCP and HTTP/3 over
 // QUIC, which bind and fail independently.
+//
+// No record carries an address hint. The address a listener is bound to is
+// not the one clients reach whenever anything stands in between, a load
+// balancer, NAT, anycast, a reverse proxy, and the server cannot tell. The
+// client resolves the target name instead, which the operator controls.
 type service struct {
 	alpns []alpnListener
 	port  uint16 // zero when it is the transport's default
-	hint  net.IP // the bound address, nil for a wildcard bind
 	path  bool   // carries the DoH URI template
 }
 
@@ -121,23 +125,31 @@ func New(cfg *config.Config) *DDR {
 }
 
 // published describes DoH as a reverse proxy publishes it, when the
-// configuration says so. A proxy port replaces the listener's port and its
-// address hint: clients connect to the proxy, found through the target name.
-// Proxy ALPNs replace the listener's: whichever HTTP version a client speaks
+// configuration says so. A proxy port replaces the listener's port: clients
+// connect to the proxy, found through the target name.
+// Proxy ALPNs replace the listener's, and without them the listener's own
+// stand for the proxy's. Either way, whichever HTTP version a client speaks
 // to the proxy, the proxy reaches the listener over its TCP side, so each is
-// offered while that side is up.
+// offered while that side is up, never on the listener's own QUIC state.
 func published(ddr config.DDRConfig, svc service, loopback bool) (service, bool) {
+	if ddr.DoHPort == 0 && len(ddr.DoHALPN) == 0 {
+		return svc, loopback
+	}
 	if ddr.DoHPort != 0 {
-		svc.port, svc.hint, loopback = 0, nil, false
+		svc.port, loopback = 0, false
 		if ddr.DoHPort != 443 {
 			svc.port = uint16(ddr.DoHPort) //nolint:gosec // G115 - range checked by the config gate
 		}
 	}
-	if len(ddr.DoHALPN) > 0 {
-		svc.alpns = make([]alpnListener, 0, len(ddr.DoHALPN))
-		for _, alpn := range ddr.DoHALPN {
-			svc.alpns = append(svc.alpns, alpnListener{alpn, "doh"})
+	alpns := ddr.DoHALPN
+	if len(alpns) == 0 {
+		for _, a := range svc.alpns {
+			alpns = append(alpns, a.alpn)
 		}
+	}
+	svc.alpns = make([]alpnListener, 0, len(alpns))
+	for _, alpn := range alpns {
+		svc.alpns = append(svc.alpns, alpnListener{alpn, "doh"})
 	}
 	return svc, loopback
 }
@@ -145,10 +157,8 @@ func published(ddr config.DDRConfig, svc service, loopback bool) (service, bool)
 // newService describes one listener. The port is resolved the way the
 // listener and the config gate resolve it, service names included, and is
 // carried only when it differs from the transport's default (RFC 9461 §4.2).
-// A listener bound to a specific address offers it as a hint, which saves
-// the client resolving the name before it can connect. A loopback address is
-// never a hint, and loopback reports that the listener is bound to one: a
-// client could only ever reach its own machine there.
+// loopback reports that the listener is bound to a loopback address, where
+// no client can reach it.
 func newService(bind, network string, alpns []alpnListener, path bool, deflt uint16) (svc service, loopback, ok bool) {
 	host, portStr, err := net.SplitHostPort(bind)
 	if err != nil {
@@ -163,14 +173,10 @@ func newService(bind, network string, alpns []alpnListener, path bool, deflt uin
 		svc.port = uint16(port) //nolint:gosec // G115 - range checked above
 	}
 	if addr, err := netip.ParseAddr(host); err == nil {
-		addr = addr.Unmap()
-		switch {
-		case addr.IsLoopback():
-			loopback = true
-		case !addr.IsUnspecified():
-			svc.hint = net.IP(addr.AsSlice())
-		}
-	} else if strings.EqualFold(host, "localhost") {
+		loopback = addr.Unmap().IsLoopback()
+	} else if name := strings.ToLower(strings.TrimSuffix(host, ".")); name == "localhost" || strings.HasSuffix(name, ".localhost") {
+		// RFC 6761 §6.3: localhost and every name under it are loopback,
+		// with or without the trailing dot.
 		loopback = true
 	}
 	return svc, loopback, true
@@ -208,13 +214,6 @@ func (d *DDR) records(owner string) []dns.RR {
 		rr.Value = append(rr.Value, &dns.SVCBAlpn{Alpn: alpn})
 		if svc.port != 0 {
 			rr.Value = append(rr.Value, &dns.SVCBPort{Port: svc.port})
-		}
-		if svc.hint != nil {
-			if svc.hint.To4() != nil {
-				rr.Value = append(rr.Value, &dns.SVCBIPv4Hint{Hint: []net.IP{svc.hint}})
-			} else {
-				rr.Value = append(rr.Value, &dns.SVCBIPv6Hint{Hint: []net.IP{svc.hint}})
-			}
 		}
 		if svc.path {
 			rr.Value = append(rr.Value, &dns.SVCBDoHPath{Template: dohPath})

@@ -65,9 +65,12 @@ name    = ""        # empty takes the certificate's first DNS name
 
 sdns answers with one record per listener you configured, in the order DoH,
 DoT, DoQ, each with its ALPN, its port when it is not the transport's default,
-and for DoH the path template `/dns-query{?dns}`. A listener bound to one
-address offers that address as a hint. A listener bound to a loopback address
-is not advertised at all: a client would only ever reach its own machine there.
+and for DoH the path template `/dns-query{?dns}`. No record carries an address
+hint: behind a load balancer, NAT, anycast or a reverse proxy the address sdns
+is bound to is not the one clients reach, so they resolve the advertised name
+instead, and that name must point at where clients connect. A listener bound
+to a loopback address is not advertised at all: a client would only ever
+reach its own machine there.
 Only listeners that are actually up are
 advertised: one whose port was taken at startup is left out, and DoH offers
 HTTP/3 only while the QUIC listener is serving. The DoT listener selects the
@@ -94,8 +97,8 @@ doh_port = 443      # the proxy's port; 443 is the default and is not carried
 doh_alpn = ["h2"]   # what the proxy serves; add "h3" only if it serves HTTP/3
 ```
 
-The record then carries the proxy's port and no address hint, so clients find
-the proxy through the advertised name. Discovering clients speak HTTP/2 to
+The record then carries the proxy's port, and clients find the proxy through
+the advertised name. Discovering clients speak HTTP/2 to
 DoH, so the proxy must serve it: with nginx, `http2 on;` in the server block.
 
 `sdns -t` refuses an enabled `[ddr]` with no encrypted listener to point at,
