@@ -34,11 +34,12 @@ import (
 //
 // A record holds what the entry's wire image does not: how much of its
 // lifetime and of its delegation lease were left at the saved-at instant,
-// its original TTL, its CD bit and compression flag, and its EDE. Integers
-// are little endian.
+// the calendar instant a wall-clock bound on the lease ends at, its
+// original TTL, its CD bit and compression flag, and its EDE. Integers are
+// little endian.
 const (
 	snapshotMagic   = "SDNSCSNP"
-	snapshotVersion = 1
+	snapshotVersion = 2
 
 	snapshotRaw = 0
 	snapshotLZ4 = 1
@@ -51,8 +52,8 @@ const (
 	snapshotRecordTag = 1
 	snapshotEndTag    = 0
 
-	// recFixedLen: tag, ttl, lease, origTTL, flags, wire length.
-	recFixedLen = 1 + 8 + 8 + 4 + 1 + 4
+	// recFixedLen: tag, ttl, lease, wall, origTTL, flags, wire length.
+	recFixedLen = 1 + 8 + 8 + 8 + 4 + 1 + 4
 
 	recFlagCD       = 1 << 0
 	recFlagCompress = 1 << 1
@@ -90,6 +91,7 @@ type snapshotHeader struct {
 type snapshotRecord struct {
 	ttl      time.Duration // lifetime left at saved-at
 	lease    time.Duration // lease left at saved-at, noLease when none
+	wall     time.Time     // the lease's wall-clock deadline, zero when none
 	origTTL  uint32
 	cd       bool
 	compress bool
@@ -148,6 +150,11 @@ func (sw *snapshotWriter) add(r *snapshotRecord) error {
 	b = append(b, snapshotRecordTag)
 	b = binary.LittleEndian.AppendUint64(b, uint64(r.ttl))   //nolint:gosec // a duration, bit for bit
 	b = binary.LittleEndian.AppendUint64(b, uint64(r.lease)) //nolint:gosec // noLease round-trips as -1
+	var wall int64
+	if !r.wall.IsZero() {
+		wall = r.wall.UnixNano()
+	}
+	b = binary.LittleEndian.AppendUint64(b, uint64(wall)) //nolint:gosec // a wall clock instant, bit for bit
 	b = binary.LittleEndian.AppendUint32(b, r.origTTL)
 	b = append(b, flags)
 	b = binary.LittleEndian.AppendUint32(b, uint32(len(r.wire))) //nolint:gosec // bounded by the DNS message size
@@ -310,12 +317,15 @@ func scanSnapshot(r io.ReadSeeker, spent func(n uint64) bool, visit func(*snapsh
 		rec := snapshotRecord{
 			ttl:     time.Duration(binary.LittleEndian.Uint64(fixed[1:])), //nolint:gosec // written from a duration
 			lease:   time.Duration(binary.LittleEndian.Uint64(fixed[9:])), //nolint:gosec // written from a duration
-			origTTL: binary.LittleEndian.Uint32(fixed[17:]),
+			origTTL: binary.LittleEndian.Uint32(fixed[25:]),
 		}
-		flags := fixed[21]
+		if wall := int64(binary.LittleEndian.Uint64(fixed[17:])); wall != 0 { //nolint:gosec // written from UnixNano
+			rec.wall = time.Unix(0, wall)
+		}
+		flags := fixed[29]
 		rec.cd = flags&recFlagCD != 0
 		rec.compress = flags&recFlagCompress != 0
-		wireLen := binary.LittleEndian.Uint32(fixed[22:])
+		wireLen := binary.LittleEndian.Uint32(fixed[30:])
 		if wireLen == 0 || wireLen > maxSnapshotWire || flags&^(recFlagCD|recFlagCompress|recFlagEDE) != 0 {
 			return h, errSnapshotShape
 		}

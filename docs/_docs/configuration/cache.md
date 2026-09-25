@@ -41,10 +41,11 @@ keeps only the lifetime it had left, less the time sdns was down, and its
 delegation lease is aged the same way, separately; an answer whose lease ran
 out while sdns was down is gone, not stale. Each then goes through the same
 admission as an upstream answer, under the limits and the signature rules in
-force at the new start, which can only shorten it. ECS-scoped answers,
-answers with less than ten seconds left, and answers bound by a signature
-expiration from the local root copy, a calendar instant the file cannot keep
-as one, are not saved.
+force at the new start, which can only shorten it. A bound that is a
+calendar instant, the signature expiration of the local root copy that
+every answer under the hyperlocal root carries, is kept as that instant and
+still ends when the calendar reaches it. ECS-scoped answers and answers with
+less than ten seconds left are not saved.
 
 The file is LZ4 compressed and carries a CRC-32C over everything in it. It is
 set aside whole, and the cache starts empty as it would have without it, when

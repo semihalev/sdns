@@ -7,6 +7,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/lease"
 )
 
 // minSnapshotLifetime is the least an answer must have left to be written:
@@ -15,8 +16,8 @@ const minSnapshotLifetime = 10 * time.Second
 
 // snapshotSaved counts what Snapshot wrote and why it passed over the rest.
 type snapshotSaved struct {
-	saved, scoped, short, wallClock int
-	truncated                       bool // the walk ran out of time
+	saved, scoped, short int
+	truncated            bool // the walk ran out of time
 }
 
 // Snapshot writes the positive answers the cache holds to w. Each keeps the
@@ -26,8 +27,7 @@ type snapshotSaved struct {
 //
 // ECS-scoped answers are left out: their audience is a client prefix, and a
 // restart is no reason to trust a geo answer longer. So are answers with
-// less than minSnapshotLifetime left, and answers bound by a wall-clock
-// deadline, which a record cannot keep on its own clock.
+// less than minSnapshotLifetime left by any of their bounds.
 //
 // The entries are gathered under the cache's segment locks and written
 // after they are released, so a slow disk never holds up a cache write.
@@ -61,24 +61,27 @@ func (s *Store) snapshot(w io.Writer, fingerprint [32]byte, compression uint16, 
 			out.scoped++
 			continue
 		}
-		// A record keeps its lease as a duration, which a restore counts on
-		// the monotonic clock. A wall-clock deadline would come back as
-		// something it is not, so an answer bound by one is left out.
-		if !e.lease().Wall().Until.IsZero() {
-			out.wallClock++
-			continue
+		// Each bound keeps its own clock: the monotonic deadline as the time
+		// it had left, which a restore ages by the time on disk, the
+		// wall-clock one, a signature expiration, as the calendar instant it
+		// is. Under the hyperlocal root every answer carries the root
+		// copy's, so leaving such answers out would leave out all of them.
+		ttl, _ := e.remainingBounds(now)
+		cut := e.lease()
+		leaseLeft := time.Duration(noLease)
+		if mono := cut.Mono(); !mono.Until.IsZero() {
+			leaseLeft = mono.Until.Sub(now)
 		}
-		ttl, lease := e.remainingBounds(now)
-		if e.cutUntil.IsZero() {
-			lease = noLease
-		}
-		if ttl < minSnapshotLifetime || (lease != noLease && lease < minSnapshotLifetime) {
+		wall := cut.Wall().Until
+		if ttl < minSnapshotLifetime || (leaseLeft != noLease && leaseLeft < minSnapshotLifetime) ||
+			(!wall.IsZero() && wall.Sub(now) < minSnapshotLifetime) {
 			out.short++
 			continue
 		}
 		if err := sw.add(&snapshotRecord{
 			ttl:      ttl,
-			lease:    lease,
+			lease:    leaseLeft,
+			wall:     wall,
 			origTTL:  e.origTTL,
 			cd:       e.cd,
 			compress: e.compress,
@@ -185,7 +188,7 @@ func (s *Store) restoreRecord(rec *snapshotRecord, elapsed time.Duration, now ti
 	if ttlLeft <= 0 {
 		return restoreExpired
 	}
-	var cutUntil time.Time
+	var cut lease.Lease
 	if rec.lease != noLease {
 		leaseLeft := rec.lease - elapsed
 		if leaseLeft <= 0 {
@@ -193,7 +196,13 @@ func (s *Store) restoreRecord(rec *snapshotRecord, elapsed time.Duration, now ti
 			// it is neither fresh nor stale, it is gone.
 			return restoreExpired
 		}
-		cutUntil = now.Add(leaseLeft)
+		cut = lease.Until(now.Add(leaseLeft))
+	}
+	if !rec.wall.IsZero() {
+		if !now.Before(rec.wall) {
+			return restoreExpired
+		}
+		cut = cut.Min(lease.Until(rec.wall))
 	}
 
 	msg := new(dns.Msg)
@@ -229,7 +238,7 @@ func (s *Store) restoreRecord(rec *snapshotRecord, elapsed time.Duration, now ti
 	}
 	e.cd = rec.cd
 	e.compress = rec.compress
-	e.cutUntil = cutUntil
+	e.setLease(cut)
 	// The prefetch threshold is a share of the answer's full lifetime, not
 	// of what was left of it at the restart.
 	if rec.origTTL > e.origTTL {

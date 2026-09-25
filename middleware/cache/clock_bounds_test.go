@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"bytes"
 	"context"
 	"net/netip"
 	"testing"
@@ -148,30 +149,63 @@ func TestEmptyRarePartAllocatesNothing(t *testing.T) {
 	}
 }
 
-// A snapshot keeps a lease as a duration a restore counts on the monotonic
-// clock, so an answer bound by a wall-clock deadline is not saved.
-func TestSnapshotLeavesOutWallClockLeases(t *testing.T) {
-	dir := t.TempDir()
-	cfg := persistConfig(t, dir)
+// A snapshot keeps each bound of a lease on its own clock: the monotonic
+// deadline as the time it had left, aged by the time on disk, the
+// wall-clock one as the calendar instant it is. Under the hyperlocal root
+// every answer carries a wall-clock deadline, the root copy's signature
+// expiration, so an answer bound by one must be saved like any other.
+func TestSnapshotKeepsEachBoundOnItsClock(t *testing.T) {
 	now := time.Now()
+	wall := wallOnly(now.Add(30 * time.Minute))
+	src := newSnapshotStore(t, 1024, 2*time.Hour)
+	src.SetFromResponseWithCut(snapAnswer("both.test.", 3600, "192.0.2.1"), false,
+		lease.Of(now.Add(time.Hour), 1).Min(lease.Of(wall, 2)))
+	src.SetFromResponseWithCut(snapAnswer("wall.test.", 3600, "192.0.2.2"), false, lease.Of(wall, 2))
+	src.SetFromResponseWithCut(snapAnswer("soon.test.", 3600, "192.0.2.3"), false,
+		lease.Of(wallOnly(now.Add(5*time.Second)), 2))
 
-	before := New(cfg)
-	before.SetTrustAnchors(anchorsOf(anchorA))
-	before.store.SetFromResponseWithCut(snapAnswer("mono.test.", 300, "192.0.2.1"), false,
-		lease.Of(now.Add(time.Hour), 1))
-	before.store.SetFromResponseWithCut(snapAnswer("wall.test.", 300, "192.0.2.2"), false,
-		lease.Of(now.Add(time.Hour), 1).Min(lease.Of(wallOnly(now.Add(time.Hour)), 2)))
-	before.Persist(context.Background())
+	var b bytes.Buffer
+	saved, err := src.snapshot(&b, testFingerprint, snapshotLZ4, now, func(int) bool { return false })
+	if err != nil || saved.saved != 2 || saved.short != 1 {
+		t.Fatalf("snapshot = %+v, %v; want two saved and the one ending within seconds short", saved, err)
+	}
 
-	after := New(cfg)
-	after.SetTrustAnchors(anchorsOf(anchorA))
-	after.Restore()
-	if storedEntry(after.store, "mono.test.", false) == nil {
-		t.Fatal("an answer under a monotonic lease was not restored")
-	}
-	if storedEntry(after.store, "wall.test.", false) != nil {
-		t.Fatal("an answer under a wall-clock lease came back as a monotonic one")
-	}
+	t.Run("each bound restored on its own clock", func(t *testing.T) {
+		dst := newSnapshotStore(t, 1024, 2*time.Hour)
+		at := now.Add(10 * time.Minute)
+		if got, err := loadSnapshot(dst, b.Bytes(), at); err != nil || got.loaded != 2 {
+			t.Fatalf("restore = %+v, %v; want both answers", got, err)
+		}
+		both := storedEntry(dst, "both.test.", false)
+		if both == nil {
+			t.Fatal("the answer under both bounds was not restored")
+		}
+		cut := both.lease()
+		if !cut.Wall().Until.Equal(wall) {
+			t.Fatalf("wall-clock deadline %v, want the saved instant %v", cut.Wall().Until, wall)
+		}
+		if !lease.Monotonic(cut.Mono().Until) {
+			t.Fatalf("the monotonic deadline %v came back off the monotonic clock", cut.Mono().Until)
+		}
+		if left := cut.Mono().Until.Sub(at); left > 50*time.Minute || left < 49*time.Minute {
+			t.Fatalf("monotonic lease left %v, want an hour less ten minutes down", left)
+		}
+		only := storedEntry(dst, "wall.test.", false)
+		if only == nil || !only.lease().Wall().Until.Equal(wall) || !only.lease().Mono().Until.IsZero() {
+			t.Fatal("the answer under a wall-clock deadline alone did not come back under it alone")
+		}
+		if rem := only.remaining(at); rem > 20*time.Minute {
+			t.Fatalf("the wall-clock deadline no longer bounds the answer: %v left", rem)
+		}
+	})
+
+	t.Run("wall-clock deadline passed while down", func(t *testing.T) {
+		dst := newSnapshotStore(t, 1024, 2*time.Hour)
+		got, err := loadSnapshot(dst, b.Bytes(), now.Add(31*time.Minute))
+		if err != nil || got.loaded != 0 || got.expired != 2 {
+			t.Fatalf("restore = %+v, %v; want both expired", got, err)
+		}
+	})
 }
 
 // The RFC 8020/8198 denial caches count every expiry on the monotonic clock
