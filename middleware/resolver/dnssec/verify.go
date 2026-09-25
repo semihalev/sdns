@@ -33,18 +33,18 @@ func IsSupportedDSDigest(t uint8) bool {
 	return false
 }
 
-// IsSupportedDNSKEYAlgorithm reports whether miekg/dns' RRSIG.Verify can
-// process signatures of the given algorithm without returning ErrAlg.
+// IsSupportedDNSKEYAlgorithm reports whether cryptoVerify can process
+// signatures of the given algorithm without returning ErrAlg.
 // DS records advertising unsupported DNSKEY algorithms are unusable,
 // DNSKEY.ToDS will still hash them, but later RRSIG verification would
 // fail. Per RFC 6840 §5.2 such DS entries must be disregarded so an
 // unsupported-only DS RRset is treated as insecure rather than bogus.
 //
-// The list intentionally matches miekg/dns' switch in RRSIG.Verify
-// exactly. RSAMD5 (deprecated by RFC 8624) is *not* accepted there, so
-// classifying it as supported would let an RSAMD5 DS RRset appear
-// usable and then bogus out on verification instead of downgrading to
-// insecure.
+// The list is miekg/dns' switch in RRSIG.Verify, plus ML-DSA-44, which
+// this package verifies itself and the library does not know. RSAMD5
+// (deprecated by RFC 8624) is *not* accepted there, so classifying it as
+// supported would let an RSAMD5 DS RRset appear usable and then bogus out
+// on verification instead of downgrading to insecure.
 func IsSupportedDNSKEYAlgorithm(alg uint8) bool {
 	switch alg {
 	case dns.RSASHA1,
@@ -55,6 +55,8 @@ func IsSupportedDNSKEYAlgorithm(alg uint8) bool {
 		dns.ECDSAP384SHA384,
 		dns.ED25519:
 		return true
+	case MLDSA44:
+		return mldsa44Available
 	}
 	return false
 }

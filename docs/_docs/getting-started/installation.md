@@ -80,7 +80,7 @@ yay -S sdns-git                   # Arch (AUR)
 
 ## From source
 
-Go 1.26 or newer is required; the toolchain pinned in `go.mod` is 1.27.
+Go 1.27 or newer is required.
 
 ```bash
 git clone https://github.com/semihalev/sdns

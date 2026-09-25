@@ -23,6 +23,7 @@ import (
 
 	"github.com/semihalev/sdns/internal/emptyzones"
 	"github.com/semihalev/sdns/internal/rpz"
+	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 )
 
 // Validate reports what is wrong with a loaded configuration.
@@ -1419,6 +1420,15 @@ func creatable(dir string) error {
 // means the algorithm was recognised and the key parsed, which is all that is
 // being asked. Real keys of every supported algorithm reach those outcomes.
 func anchorKeyProblem(key *dns.DNSKEY) error {
+	// The dns library does not know ML-DSA-44 and would call it unusable;
+	// the resolver verifies it itself, so that verifier is asked instead.
+	if key.Algorithm == dnssec.MLDSA44 {
+		if err := dnssec.MLDSA44KeyProblem(key); err != nil {
+			return fmt.Errorf("public key is not usable for algorithm %d (MLDSA44): %v", key.Algorithm, err)
+		}
+		return nil
+	}
+
 	probe := &dns.RRSIG{
 		Hdr:         dns.RR_Header{Name: key.Hdr.Name, Rrtype: dns.TypeRRSIG, Class: dns.ClassINET},
 		TypeCovered: dns.TypeDNSKEY,

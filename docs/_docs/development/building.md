@@ -8,7 +8,7 @@ description: The build pipeline, the test suite, and the conventions a patch is 
 
 ## Requirements
 
-Go 1.26 or newer. `go.mod` pins the toolchain at 1.27.
+Go 1.27 or newer.
 
 ```bash
 git clone https://github.com/semihalev/sdns

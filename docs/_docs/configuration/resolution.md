@@ -39,6 +39,15 @@ validation. `rootkeys` holds the root trust anchors in DNSKEY presentation
 format; the generated file ships the published KSKs, and sdns tracks anchor
 rollovers on its own (RFC 5011) once running.
 
+Signatures are verified for RSA with SHA-1, SHA-256 and SHA-512, ECDSA P-256
+and P-384, Ed25519, and ML-DSA-44 (algorithm 18), the post-quantum signature of
+draft-westerbaan-dnssec-mldsa. A zone signed only with an algorithm outside
+that list, Ed448 among them, is treated as unsigned rather than failed, as RFC
+4035 requires. A zone signed with several algorithms validates when any one of
+its signatures does (RFC 6840 §5.11), so a zone whose ML-DSA-44 signatures are
+broken while its classic ones hold still validates. Some resolvers refuse that
+case, to guard against a future quantum downgrade; sdns follows the RFC.
+
 `rfc8198` lets a validated NSEC/NSEC3 record answer later negative queries
 without another authoritative lookup. `rfc9520` caches resolution failures and
 failed-authority state. Both default to on and both are kill switches rather

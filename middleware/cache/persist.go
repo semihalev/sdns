@@ -9,12 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/semihalev/sdns/internal/atomicfile"
+	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -124,6 +126,27 @@ func (c *Cache) Persist(ctx context.Context) {
 		"truncated", saved.truncated, "duration", elapsed.Round(time.Millisecond).String())
 }
 
+// validatorSupport lists the DNSSEC algorithms and DS digest types the
+// validator can verify. A zone signed only with something outside them is
+// treated as unsigned, so an answer a build cached as insecure because it
+// did not know the algorithm, a forged one included, must not be restored
+// into a build that does: it would be served without ever meeting the
+// check that would refuse it. A build that learns an algorithm, or one that
+// loses or gains it with the FIPS module it is built against, changes these
+// lists and the fingerprint with them.
+var validatorSupport = func() (algorithms, digests []string) {
+	for i := range 256 {
+		n := uint8(i) //nolint:gosec // bounded by the range
+		if dnssec.IsSupportedDNSKEYAlgorithm(n) {
+			algorithms = append(algorithms, strconv.Itoa(i))
+		}
+		if dnssec.IsSupportedDSDigest(n) {
+			digests = append(digests, strconv.Itoa(i))
+		}
+	}
+	return algorithms, digests
+}
+
 // snapshotFingerprint names the configuration a saved cache is valid
 // under: what decides which answers the cache is handed and whether they
 // were validated. A snapshot written under another is discarded whole.
@@ -169,6 +192,10 @@ func (c *Cache) snapshotFingerprint() [32]byte {
 		sort.Strings(anchors)
 	}
 	field("trustanchors", anchors...)
+
+	algorithms, digests := validatorSupport()
+	field("dnssecalgorithms", algorithms...)
+	field("dsdigests", digests...)
 
 	var fp [32]byte
 	h.Sum(fp[:0])

@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"crypto/ed25519"
+	"crypto/mldsa"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -1821,6 +1823,34 @@ func TestValidateRevokedAnchorIsAllowed(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "key-signing key") {
 		t.Fatalf("Validate() = %v, want the revoked key itself accepted", err)
+	}
+}
+
+// TestValidateMLDSA44Anchor pins that an ML-DSA-44 trust anchor is judged by
+// the verifier the resolver uses: the dns library does not know algorithm
+// 18 and would call every such key unusable.
+//
+// The key is a fixed encoding rather than a generated one, so the test also
+// runs against the FIPS 140-3 v1.0.0 module, which has no ML-DSA: there the
+// resolver cannot use such an anchor, and the check has to say so.
+func TestValidateMLDSA44Anchor(t *testing.T) {
+	raw := bytes.Repeat([]byte{0x5a}, mldsa.MLDSA44PublicKeySize)
+	_, err := mldsa.NewPublicKey(mldsa.MLDSA44(), raw)
+	supported := err == nil
+
+	good := ". 172800 IN DNSKEY 257 3 18 " + base64.StdEncoding.EncodeToString(raw)
+	err = (&Config{DNSSEC: "on", RootKeys: []string{good}}).Validate()
+	switch {
+	case supported && err != nil:
+		t.Fatalf("Validate() refused an ML-DSA-44 anchor: %v", err)
+	case !supported && (err == nil || !strings.Contains(err.Error(), "not usable for algorithm 18")):
+		t.Fatalf("Validate() = %v, want an ML-DSA-44 anchor refused where ML-DSA is unavailable", err)
+	}
+
+	short := ". 172800 IN DNSKEY 257 3 18 " + base64.StdEncoding.EncodeToString(raw[:len(raw)-1])
+	err = (&Config{DNSSEC: "on", RootKeys: []string{short}}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "not usable for algorithm 18") {
+		t.Fatalf("Validate() = %v, want a truncated ML-DSA-44 key refused", err)
 	}
 }
 
