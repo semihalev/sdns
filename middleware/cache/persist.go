@@ -122,7 +122,6 @@ func (c *Cache) Persist(ctx context.Context) {
 	metricSnapshotEntries.WithLabelValues("save", "saved").Add(float64(saved.saved))
 	metricSnapshotEntries.WithLabelValues("save", "short").Add(float64(saved.short))
 	metricSnapshotEntries.WithLabelValues("save", "scoped").Add(float64(saved.scoped))
-	metricSnapshotEntries.WithLabelValues("save", "wallclock").Add(float64(saved.wallClock))
 	zlog.Info("Cache saved", "path", c.snapshotPath(), "saved", saved.saved,
 		"truncated", saved.truncated, "duration", elapsed.Round(time.Millisecond).String())
 }
@@ -151,9 +150,9 @@ var validatorSupport = func() (algorithms, digests []string) {
 // snapshotSemantics changes when what a snapshot's records mean changes
 // while their layout does not, so a file from before is refused once.
 //
-//  1. An answer whose lease holds a wall-clock deadline is not saved. The
-//     record keeps a lease as a remaining duration, which a restore counts
-//     on the monotonic clock, and earlier builds saved such leases that way.
+//  1. A wall-clock deadline is never written as a remaining duration, which
+//     a restore counts on the monotonic clock; earlier builds saved such
+//     leases that way.
 const snapshotSemantics = 1
 
 // snapshotFingerprint names the configuration a saved cache is valid
