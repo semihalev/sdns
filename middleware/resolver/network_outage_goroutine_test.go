@@ -73,9 +73,11 @@ func startBlackholeAuthority(t testing.TB, answer func(dns.Question) *dns.Msg) *
 				reply.Ns = src.Ns
 				reply.Extra = src.Extra
 			}
-			if w.WriteMsg(reply) == nil {
-				f.answered.Add(1)
-			}
+			// Counted before the write: the client can read the reply and
+			// return from Resolve before WriteMsg returns here, and a write
+			// that fails leaves Resolve failing anyway.
+			f.answered.Add(1)
+			_ = w.WriteMsg(reply)
 		}),
 	}
 
