@@ -113,6 +113,36 @@ func TestRestoreUnderTheSameAnchorRespelled(t *testing.T) {
 	}
 }
 
+// A snapshot written by a build that verified fewer DNSSEC algorithms is
+// discarded: it may hold answers that build accepted as unsigned and this
+// one would refuse, as a build without ML-DSA-44 did. The saving build here
+// lacks the last algorithm this one verifies, whichever that is, so the
+// test holds on a FIPS build too.
+func TestRestoreRefusesAnotherValidator(t *testing.T) {
+	dir := t.TempDir()
+	cfg := persistConfig(t, dir)
+
+	current := validatorSupport
+	t.Cleanup(func() { validatorSupport = current })
+	validatorSupport = func() ([]string, []string) {
+		algorithms, digests := current()
+		return algorithms[:len(algorithms)-1], digests
+	}
+
+	before := New(cfg)
+	before.SetTrustAnchors(anchorsOf(anchorA))
+	before.store.SetFromResponse(snapAnswer("a.test.", 300, "192.0.2.1"), false, time.Time{})
+	before.Persist(context.Background())
+
+	validatorSupport = current
+	after := New(cfg)
+	after.SetTrustAnchors(anchorsOf(anchorA))
+	after.Restore()
+	if after.store.PositiveLen() != 0 {
+		t.Fatal("a snapshot from a validator that verified fewer algorithms was restored")
+	}
+}
+
 func TestPersistOffWritesNothing(t *testing.T) {
 	dir := t.TempDir()
 	cfg := persistConfig(t, dir)
