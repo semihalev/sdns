@@ -202,10 +202,11 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	if !req.Entry.scoped() && !requestCD && !req.RequestHadECS &&
 		!hasEDNSClientSubnet(req.Request) &&
 		!resp.CheckingDisabled {
+		until, shareable := sharedDenialDeadline(cut)
 		if negative, ok := middleware.ValidatedNegativeProofForResponse(ctx, resp); ok &&
+			shareable &&
 			negative.Aggressive &&
 			negative.Proof != nil {
-			until := admissionDeadline(cut, time.Now())
 			req.Cache.store.RecordDenialProof(
 				negative.Proof,
 				negative.Zone,

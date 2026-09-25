@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/middleware"
@@ -124,6 +126,26 @@ func TestStoreKeepsBothClocksOfALease(t *testing.T) {
 	}
 }
 
+// An entry with nothing rare to hold allocates nothing for it, however it
+// is told so: a heap copy made before the emptiness check would cost every
+// admission an allocation.
+func TestEmptyRarePartAllocatesNothing(t *testing.T) {
+	e := NewCacheEntry(snapAnswer("plain.test.", 300, "192.0.2.1"), time.Minute, 0)
+	mono := lease.Of(time.Now().Add(time.Minute), 1)
+	for name, set := range map[string]func(){
+		"monotonic lease": func() { e.setLease(mono) },
+		"no lease":        func() { e.setLease(lease.Lease{}) },
+		"no scope or EDE": func() { e.setRare(netip.Prefix{}, nil) },
+	} {
+		if n := testing.AllocsPerRun(100, set); n != 0 {
+			t.Errorf("%s: %v allocations, want 0", name, n)
+		}
+	}
+	if e.rare != nil {
+		t.Fatal("an empty rare part was installed")
+	}
+}
+
 // A snapshot keeps a lease as a duration a restore counts on the monotonic
 // clock, so an answer bound by a wall-clock deadline is not saved.
 func TestSnapshotLeavesOutWallClockLeases(t *testing.T) {
@@ -149,6 +171,87 @@ func TestSnapshotLeavesOutWallClockLeases(t *testing.T) {
 		t.Fatal("an answer under a wall-clock lease came back as a monotonic one")
 	}
 }
+
+// The RFC 8020/8198 denial caches count every expiry on the monotonic clock
+// from admission and cannot keep a wall-clock deadline, so a validated
+// denial under a lease holding one is served but not shared, on the miss
+// path and on a prefetch refresh alike. A monotonic lease still shares.
+func TestDenialUnderAWallClockLeaseIsNotShared(t *testing.T) {
+	bind := func(ctx context.Context, withWall bool) {
+		meta := middleware.ResponseMetaFrom(ctx)
+		now := time.Now()
+		meta.BoundCutFor(now.Add(time.Minute), 0x41)
+		if withWall {
+			meta.BoundCutFor(wallOnly(now.Add(10*time.Second)), 0x42)
+		}
+	}
+
+	for _, tc := range []struct {
+		name     string
+		withWall bool
+		shared   int
+	}{
+		{"monotonic lease", false, 1},
+		{"lease with a wall-clock deadline", true, 0},
+	} {
+		t.Run("miss path/"+tc.name, func(t *testing.T) {
+			cache := New(&config.Config{CacheSize: 1024, Expire: 300})
+			defer cache.Stop()
+			downstream := middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
+				resp := nxCutValidatedResponse(ch.Request.Msg(), nxCutDeniedName, nxCutZone)
+				nxCutMark(ctx, resp, nxCutDeniedName, nxCutZone)
+				bind(ctx, tc.withWall)
+				_ = ch.Writer.WriteMsg(resp)
+				ch.Cancel()
+			})
+
+			got := nxCutExchange(t, cache, downstream, nxCutRequest(nxCutDeniedName, dns.TypeA), "192.0.2.9:53000")
+			if got.Rcode != dns.RcodeNameError {
+				t.Fatalf("rcode = %s, want the NXDOMAIN served", dns.RcodeToString[got.Rcode])
+			}
+			if n := cache.store.NXDomainCutLen(); n != tc.shared {
+				t.Fatalf("RFC 8020 cuts = %d, want %d", n, tc.shared)
+			}
+			if tc.shared == 0 && cache.store.DenialProofLen() != 0 {
+				t.Fatal("an RFC 8198 proof was shared under a wall-clock lease")
+			}
+		})
+
+		t.Run("prefetch/"+tc.name, func(t *testing.T) {
+			cache := New(&config.Config{CacheSize: 1024, Expire: 300})
+			defer cache.Stop()
+			const denied = "prefetch.missing.secure.example."
+			req := nxCutRequest(denied, dns.TypeA)
+			key := CacheKey{Question: req.Question[0]}.Hash()
+			entry := NewCacheEntryWithKey(nxCutPositiveResponse(req), time.Minute, 0, key)
+			cache.positive.Set(key, entry)
+			cache.SetPrefetchQueryer(queryerFunc(func(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+				resp := nxCutValidatedResponse(req, denied, nxCutZone)
+				nxCutMark(ctx, resp, denied, nxCutZone)
+				bind(ctx, tc.withWall)
+				return resp, nil
+			}))
+
+			queue := NewPrefetchQueue(0, 1, cache.metrics)
+			defer queue.Stop()
+			queue.processPrefetch(PrefetchRequest{Request: req, Key: key, Cache: cache, Entry: entry})
+
+			if current, _ := cache.positive.Get(key); current == entry {
+				t.Fatal("the refresh was not stored")
+			}
+			if n := cache.store.NXDomainCutLen(); n != tc.shared {
+				t.Fatalf("RFC 8020 cuts = %d, want %d", n, tc.shared)
+			}
+			if tc.shared == 0 && cache.store.DenialProofLen() != 0 {
+				t.Fatal("an RFC 8198 proof was shared under a wall-clock lease")
+			}
+		})
+	}
+}
+
+type queryerFunc func(context.Context, *dns.Msg) (*dns.Msg, error)
+
+func (f queryerFunc) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, error) { return f(ctx, req) }
 
 // Serve-stale bounds what is derived from a stale answer by both clocks of
 // its lease, beside the stale window.

@@ -151,13 +151,17 @@ func (e *CacheEntry) setRare(scope netip.Prefix, ede *dns.EDNS0_EDE) {
 	e.putRare(entryRare{scope: scope, ede: ede, wallCut: wallCut})
 }
 
-// putRare installs r, or nothing when r holds nothing.
+// putRare installs r, or nothing when r holds nothing. The copy is made
+// only once r is known to hold something: taking r's own address would move
+// it to the heap on every call, the empty ones included.
 func (e *CacheEntry) putRare(r entryRare) {
 	if !r.scope.IsValid() && r.ede == nil && r.wallCut.Until.IsZero() {
 		e.rare = nil
 		return
 	}
-	e.rare = &r
+	held := new(entryRare)
+	*held = r
+	e.rare = held
 }
 
 // lease returns the delegation cut the entry is bounded by.

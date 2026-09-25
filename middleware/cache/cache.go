@@ -1679,16 +1679,16 @@ func boundRequestToEntryLifetime(ctx context.Context, entry *CacheEntry) {
 	meta.BoundLease(cut)
 }
 
-// admissionDeadline reads cut once, at now, as a monotonic deadline. The
-// denial caches count every expiry from their admission, a proof's own
-// signature expirations included, so a wall-clock deadline in the lease
-// is converted the same way they are. Zero for an unbounded lease.
-func admissionDeadline(cut lease.Lease, now time.Time) time.Time {
-	left, bounded := cut.Remaining(now)
-	if !bounded {
-		return time.Time{}
+// sharedDenialDeadline is the deadline the RFC 8020/8198 denial caches take
+// for cut. They count every expiry on the monotonic clock from admission,
+// so a lease holding a wall-clock deadline has no form they can keep, and a
+// denial under one is not shared at all: ok is false. A zero until is
+// unbounded.
+func sharedDenialDeadline(cut lease.Lease) (until time.Time, ok bool) {
+	if !cut.Wall().Until.IsZero() {
+		return time.Time{}, false
 	}
-	return now.Add(left)
+	return cut.Mono().Until, true
 }
 
 // boundRequestTo folds an absolute expiry that is already exact, a subtree
@@ -1960,10 +1960,11 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	if !w.clientScope.IsValid() && !w.requestHasECS &&
 		!w.requestTreeBypassesSharedDenial &&
 		!w.requestCD && !res.CheckingDisabled {
+		until, shareable := sharedDenialDeadline(cut)
 		if negative, ok := middleware.ValidatedNegativeProofForResponse(ctx, res); ok &&
+			shareable &&
 			negative.Aggressive &&
 			negative.Proof != nil {
-			until := admissionDeadline(cut, time.Now())
 			w.cache.store.RecordDenialProof(
 				negative.Proof,
 				negative.Zone,
