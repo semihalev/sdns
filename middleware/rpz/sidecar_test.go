@@ -336,7 +336,7 @@ func TestAdmissionDoorsLeaveEvaluatedSidecars(t *testing.T) {
 	resp.SetQuestion("direct.test.", dns.TypeA)
 	resp.Response = true
 	resp.Answer = []dns.RR{testA("direct.test.", "203.0.113.10")}
-	h.c.Store().(middleware.CutStore).SetFromResponseWithCut(resp, false, time.Time{}, 0)
+	h.c.Store().(middleware.CutStore).SetFromResponseWithCut(resp, false, middleware.Lease{})
 
 	sc := h.storedEntry(t, "direct.test.").Sidecar()
 	if sc == nil {
@@ -403,7 +403,7 @@ func TestChaseCountsAZoneOnceWithTheRankBest(t *testing.T) {
 		t.Fatal(err)
 	}
 	alias.Answer = []dns.RR{cn}
-	h.cacheStore().SetFromResponseWithCut(alias, false, time.Time{}, 0)
+	h.cacheStore().SetFromResponseWithCut(alias, false, middleware.Lease{})
 
 	target := new(dns.Msg)
 	target.SetQuestion("t.chase.test.", dns.TypeA)
@@ -411,7 +411,7 @@ func TestChaseCountsAZoneOnceWithTheRankBest(t *testing.T) {
 	// Two addresses under one zone's competing rules: the /24 says
 	// NXDOMAIN, the /32 says PASSTHRU, rule 4 picks the /32.
 	target.Answer = []dns.RR{testA("t.chase.test.", "203.0.113.5"), testA("t.chase.test.", "198.51.100.9")}
-	h.cacheStore().SetFromResponseWithCut(target, false, time.Time{}, 0)
+	h.cacheStore().SetFromResponseWithCut(target, false, middleware.Lease{})
 
 	counter := actionTotal.WithLabelValues("resp", rpzengine.TriggerResponseIP, "passthru", "enforced")
 	other := actionTotal.WithLabelValues("resp", rpzengine.TriggerResponseIP, "nxdomain", "enforced")
@@ -614,7 +614,7 @@ victim.example.com.rpz.test. IN CNAME .
 		resp.Response = true
 		resp.Answer = []dns.RR{testA("admit.test.", "198.51.100.1")}
 		admit = testing.AllocsPerRun(200, func() {
-			h.cacheStore().SetFromResponseWithCut(resp, false, time.Time{}, 0)
+			h.cacheStore().SetFromResponseWithCut(resp, false, middleware.Lease{})
 		})
 		return hit, admit
 	}
@@ -643,7 +643,7 @@ func TestExplicitNoneIsTheSharedSentinel(t *testing.T) {
 		resp.SetQuestion(name, dns.TypeA)
 		resp.Response = true
 		resp.Answer = []dns.RR{testA(name, "198.51.100.1")}
-		h.cacheStore().SetFromResponseWithCut(resp, false, time.Time{}, 0)
+		h.cacheStore().SetFromResponseWithCut(resp, false, middleware.Lease{})
 	}
 	one := h.storedEntry(t, "one.none.test.").Sidecar()
 	two := h.storedEntry(t, "two.none.test.").Sidecar()

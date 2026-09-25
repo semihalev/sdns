@@ -16,6 +16,7 @@ import (
 	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/ecs"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/internal/waitgroup"
 	"github.com/semihalev/sdns/middleware"
@@ -397,8 +398,7 @@ func (l *subQueryLineage) inherit() {
 		return
 	}
 	l.inherited = true
-	deadline, key := l.child.Cut()
-	l.parent.BoundCutFor(deadline, key)
+	l.parent.BoundLease(l.child.Cut())
 }
 
 // prefetchExchange routes prefetch refresh traffic through the
@@ -1635,11 +1635,7 @@ func (c *Cache) handleCacheHit(
 		if !internal && (len(msg.Answer) != answers || len(msg.Ns) != authority || msg.Rcode != rcode) {
 			now := time.Now().UTC()
 			mt, _ := dnsutil.ClassifyResponse(msg, now)
-			var cut time.Time
-			if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
-				cut, _ = meta.Cut()
-			}
-			honestOutgoing(msg, cut, mt, now)
+			honestOutgoing(msg, middleware.ResponseMetaFrom(ctx).Cut(), mt, now)
 		}
 	}
 
@@ -1659,14 +1655,40 @@ func boundRequestToEntryLifetime(ctx context.Context, entry *CacheEntry) {
 	if entry == nil {
 		return
 	}
-	hardUntil := entry.stored.Add(entry.ttl)
-	hardKey := uint64(0)
-	if !entry.cutUntil.IsZero() && !entry.cutUntil.After(hardUntil) {
-		hardUntil, hardKey = entry.cutUntil, entry.cutKey
+	meta := middleware.ResponseMetaFrom(ctx)
+	if meta == nil {
+		return
 	}
-	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
-		meta.BoundCutFor(hardUntil, hardKey)
+	hardUntil, hardKey := entry.stored.Add(entry.ttl), uint64(0)
+	// Almost every entry is unbounded or bound by a monotonic lease alone,
+	// on the clock its own expiry runs on, so the earlier of the two is the
+	// bound. On a tie the cut keeps its delegation identity.
+	if entry.rare == nil || entry.rare.wallCut.Until.IsZero() {
+		if entry.cutUntil.IsZero() || lease.Monotonic(entry.cutUntil) {
+			if !entry.cutUntil.IsZero() && !entry.cutUntil.After(hardUntil) {
+				hardUntil, hardKey = entry.cutUntil, entry.cutKey
+			}
+			meta.BoundCutFor(hardUntil, hardKey)
+			return
+		}
 	}
+	// A wall-clock deadline cannot be ordered against the monotonic ones:
+	// which binds depends on how the wall clock moves later, so both travel.
+	cut := entry.lease()
+	cut.Fold(hardUntil, hardKey)
+	meta.BoundLease(cut)
+}
+
+// admissionDeadline reads cut once, at now, as a monotonic deadline. The
+// denial caches count every expiry from their admission, a proof's own
+// signature expirations included, so a wall-clock deadline in the lease
+// is converted the same way they are. Zero for an unbounded lease.
+func admissionDeadline(cut lease.Lease, now time.Time) time.Time {
+	left, bounded := cut.Remaining(now)
+	if !bounded {
+		return time.Time{}
+	}
+	return now.Add(left)
 }
 
 // boundRequestTo folds an absolute expiry that is already exact, a subtree
@@ -1926,13 +1948,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	// meta sink by the resolver while producing it. Zero (no meta,
 	// or no learned delegation on the path) leaves the entry
 	// unbounded, forwarder and local answers keep today's shape.
-	var (
-		cutUntil time.Time
-		cutKey   uint64
-	)
-	if w.meta != nil {
-		cutUntil, cutKey = w.meta.Cut()
-	}
+	cut := w.meta.Cut()
 
 	// RFC 8020/8198 admission is an explicit resolver-to-cache trust seam.
 	// Never infer it from AD=1: forwarders and plugins can supply
@@ -1947,18 +1963,19 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		if negative, ok := middleware.ValidatedNegativeProofForResponse(ctx, res); ok &&
 			negative.Aggressive &&
 			negative.Proof != nil {
+			until := admissionDeadline(cut, time.Now())
 			w.cache.store.RecordDenialProof(
 				negative.Proof,
 				negative.Zone,
 				negative.Kind,
-				cutUntil,
+				until,
 			)
 			if negative.Proof.Rcode == dns.RcodeNameError {
 				w.cache.store.RecordNXDomainCut(
 					negative.Proof,
 					negative.Subject,
 					negative.Zone,
-					cutUntil,
+					until,
 				)
 			}
 		}
@@ -1968,16 +1985,16 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		if respScope, ok := ecs.ReadResponseScope(res); ok {
 			clamped := w.cache.ecsPolicy.ClampScope(respScope, w.clientScope)
 			scopedKey := CacheKey{Question: q, CD: res.CheckingDisabled, Scope: clamped}.Hash()
-			w.cache.store.SetFromResponseScoped(scopedKey, res, clamped, cutUntil, cutKey)
+			w.cache.store.SetFromResponseScoped(scopedKey, res, clamped, cut)
 		} else {
 			// No SCOPE in response (or SCOPE=0): authority says
 			// "global"; cache shared so future non-ECS clients hit.
 			key := CacheKey{Question: q, CD: res.CheckingDisabled}.Hash()
-			w.cache.store.SetFromResponseWithKey(key, res, cutUntil, cutKey)
+			w.cache.store.SetFromResponseWithKey(key, res, cut)
 		}
 	} else {
 		key := CacheKey{Question: q, CD: res.CheckingDisabled}.Hash()
-		w.cache.store.SetFromResponseWithKey(key, res, cutUntil, cutKey)
+		w.cache.store.SetFromResponseWithKey(key, res, cut)
 	}
 	// This is the final downstream response observed by the cache wrapper.
 	// A useful answer here means resolver/failover/forwarder recovery really
@@ -2031,7 +2048,7 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		// denial, so an expired NXDOMAIN, an empty NODATA and an alias chain
 		// ending in either all kept the bit while their TTLs were correctly
 		// clamped to nothing.
-		honestOutgoing(res, cutUntil, mt, time.Now().UTC())
+		honestOutgoing(res, cut, mt, time.Now().UTC())
 	}
 
 	return w.ResponseWriter.WriteMsg(res)
@@ -2110,11 +2127,11 @@ func (w *ResponseWriter) recursionWorkFailure(fallback *dns.Msg) *dns.Msg {
 // §3.2.3), and every TTL is lowered to the shortest bound the records are
 // subject to. The miss path runs it from WriteMsg; the hit path runs it after
 // an alias chase merged records the entry never vouched for.
-func honestOutgoing(res *dns.Msg, cutUntil time.Time, mt dnsutil.ResponseType, now time.Time) {
+func honestOutgoing(res *dns.Msg, cut lease.Lease, mt dnsutil.ResponseType, now time.Time) {
 	if dnsutil.HasExpiredSignatures(res, now) {
 		res.AuthenticatedData = false
 	}
-	clampTTLsToEffective(res, cutUntil, mt)
+	clampTTLsToEffective(res, cut, mt)
 }
 
 // clampTTLsToEffective lowers every record TTL in res to the shortest bound
@@ -2122,10 +2139,10 @@ func honestOutgoing(res *dns.Msg, cutUntil time.Time, mt dnsutil.ResponseType, n
 // and their signatures themselves permit. A past cut clamps to zero. The
 // answer is still delivered, but nothing downstream is invited to keep it.
 // OPT is hop metadata whose TTL field is not a TTL.
-func clampTTLsToEffective(res *dns.Msg, cutUntil time.Time, mt dnsutil.ResponseType) {
+func clampTTLsToEffective(res *dns.Msg, cut lease.Lease, mt dnsutil.ResponseType) {
 	ceiling := time.Duration(-1)
-	if !cutUntil.IsZero() {
-		ceiling = max(time.Until(cutUntil), 0)
+	if left, bounded := cut.Remaining(time.Now()); bounded {
+		ceiling = max(left, 0)
 	}
 
 	// Everything the entry will be bounded by, applied to the copy the client

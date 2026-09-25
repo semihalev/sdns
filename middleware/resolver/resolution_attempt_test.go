@@ -14,6 +14,7 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/authority"
 	internalcache "github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/middleware"
 )
 
@@ -602,7 +603,7 @@ func TestLookupV4NssAttemptLimitRemainsTupleLocal(t *testing.T) {
 		make(hostSet),
 		hosts,
 		false,
-		time.Now().Add(time.Minute),
+		lease.Until(time.Now().Add(time.Minute)),
 	)
 	if err != nil {
 		t.Fatalf("lookupV4Nss stopped after one tuple limit: %v", err)
@@ -625,7 +626,7 @@ func TestLookupV4NssAttemptLimitRemainsTupleLocal(t *testing.T) {
 		make(hostSet),
 		hosts,
 		false,
-		time.Now().Add(time.Minute),
+		lease.Until(time.Now().Add(time.Minute)),
 	)
 	if !errors.Is(err, middleware.ErrResolutionAttemptLimit) {
 		t.Fatalf("all tuple-limited lookup error = %v, want ErrResolutionAttemptLimit", err)
@@ -643,7 +644,7 @@ func TestLookupV4NssAttemptLimitRemainsTupleLocal(t *testing.T) {
 		make(hostSet),
 		hosts,
 		false,
-		time.Now().Add(time.Minute),
+		lease.Until(time.Now().Add(time.Minute)),
 	)
 	if !errors.Is(err, middleware.ErrMaxRecursion) {
 		t.Fatalf("queryer recursion error = %v, want ErrMaxRecursion", err)

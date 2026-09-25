@@ -13,6 +13,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	internalcache "github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 )
@@ -252,7 +253,7 @@ func TestECSCache_PreStage2EntriesStillHit(t *testing.T) {
 	req.SetQuestion("legacy.example.", dns.TypeA)
 	pre := reply(req, "192.0.2.50", 0)
 	sharedKey := internalcache.Key(req.Question[0], false)
-	c.store.SetFromResponseWithKey(sharedKey, pre, time.Time{}, 0)
+	c.store.SetFromResponseWithKey(sharedKey, pre, lease.Lease{})
 
 	// Plain client lookup hits without an upstream call.
 	h := &echoHandler{aRecord: "should-not-be-used", scopeBits: 0}
@@ -286,7 +287,7 @@ func TestECSCache_SupernetHit(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	key := CacheKey{Question: req.Question[0], CD: false, Scope: scope}.Hash()
-	c.store.SetFromResponseScoped(key, reply(req, "10.1.1.1", 22), scope, time.Time{}, 0)
+	c.store.SetFromResponseScoped(key, reply(req, "10.1.1.1", 22), scope, lease.Lease{})
 
 	// Client at 203.0.113.42, its /24 is 203.0.113.0, which falls
 	// inside 203.0.112.0/22. Lookup probes /24 (miss), /23 (miss),
@@ -368,13 +369,13 @@ func TestECSCache_PurgeRemovesScopedEntries(t *testing.T) {
 	for _, addr := range []string{"203.0.113.0/24", "198.51.100.0/24"} {
 		scope := netip.MustParsePrefix(addr)
 		key := CacheKey{Question: req.Question[0], CD: false, Scope: scope}.Hash()
-		c.store.SetFromResponseScoped(key, reply(req, "10.0.0.1", 24), scope, time.Time{}, 0)
+		c.store.SetFromResponseScoped(key, reply(req, "10.0.0.1", 24), scope, lease.Lease{})
 		if _, ok := c.store.LookupByKey(key); !ok {
 			t.Fatalf("scoped seed for %s did not land in cache", addr)
 		}
 	}
 	sharedKey := CacheKey{Question: req.Question[0], CD: false}.Hash()
-	c.store.SetFromResponseWithKey(sharedKey, reply(req, "10.0.0.99", 0), time.Time{}, 0)
+	c.store.SetFromResponseWithKey(sharedKey, reply(req, "10.0.0.99", 0), lease.Lease{})
 
 	c.store.Purge(req.Question[0])
 
@@ -681,7 +682,7 @@ func TestECSCache_PurgeIsCaseInsensitive(t *testing.T) {
 	req.SetQuestion("Mixed.Example.", dns.TypeA)
 	scope := netip.MustParsePrefix("203.0.113.0/24")
 	key := CacheKey{Question: req.Question[0], CD: false, Scope: scope}.Hash()
-	c.store.SetFromResponseScoped(key, reply(req, "10.0.0.1", 24), scope, time.Time{}, 0)
+	c.store.SetFromResponseScoped(key, reply(req, "10.0.0.1", 24), scope, lease.Lease{})
 	if !(func() bool { _, ok := c.store.LookupByKey(key); return ok }()) {
 		t.Fatalf("%s: func() bool { _, ok := c.store.LookupByKey(key); return ok }() is false", "seed did not land in cache")
 	}
@@ -727,7 +728,7 @@ func TestECSCache_CacheLimitTTLCapsScopedWrites(t *testing.T) {
 
 	scope := netip.MustParsePrefix("203.0.113.0/24")
 	key := CacheKey{Question: req.Question[0], CD: false, Scope: scope}.Hash()
-	c.store.SetFromResponseScoped(key, resp, scope, time.Time{}, 0)
+	c.store.SetFromResponseScoped(key, resp, scope, lease.Lease{})
 
 	entry, ok := c.store.LookupByKey(key)
 	if !(ok) {
@@ -741,7 +742,7 @@ func TestECSCache_CacheLimitTTLCapsScopedWrites(t *testing.T) {
 	// Unscoped writes must NOT be capped. The cap is per
 	// CacheConfig.ECSMaxTTL gated by `scoped == true`.
 	plainKey := CacheKey{Question: req.Question[0], CD: false}.Hash()
-	c.store.SetFromResponseWithKey(plainKey, resp, time.Time{}, 0)
+	c.store.SetFromResponseWithKey(plainKey, resp, lease.Lease{})
 	plain, ok := c.store.LookupByKey(plainKey)
 	if !(ok) {
 		t.Fatalf("ok is false")

@@ -91,9 +91,19 @@ func TestCopySurvivesRestart(t *testing.T) {
 	if !restored.Loaded().Equal(live.Loaded()) {
 		t.Fatalf("restored copy dated %v, want its transfer time %v", restored.Loaded(), live.Loaded())
 	}
-	if !restored.ValidUntil().Equal(live.ValidUntil()) {
-		t.Fatalf("horizon %v, want the one set at transfer %v", restored.ValidUntil(), live.ValidUntil())
+	// The live copy counts its SOA expire on the monotonic clock; a restart
+	// has only the transfer's calendar time to count from. Both must end at
+	// the same instant.
+	now := time.Now()
+	if d := horizonLeft(restored, now) - horizonLeft(live, now); d < -time.Millisecond || d > time.Millisecond {
+		t.Fatalf("horizon %+v, want the one set at transfer %+v", restored.ValidUntil(), live.ValidUntil())
 	}
+}
+
+// horizonLeft is how long the copy has left at now.
+func horizonLeft(s *Snapshot, now time.Time) time.Duration {
+	left, _ := s.ValidUntil().Remaining(now)
+	return left
 }
 
 // The SOA expire horizon is measured from the transfer. A copy whose expire
@@ -135,8 +145,8 @@ func TestRestoreHorizonRunsFromTheTransfer(t *testing.T) {
 		if s == nil {
 			t.Fatal("a copy inside its horizon was not restored")
 		}
-		if want := fetched.Add(1200 * time.Second); !s.ValidUntil().Equal(want) {
-			t.Fatalf("horizon %v, want transfer + expire %v", s.ValidUntil(), want)
+		if want := fetched.Add(1200 * time.Second); horizonLeft(s, now) != want.Sub(now) {
+			t.Fatalf("horizon %+v, want transfer + expire %v", s.ValidUntil(), want)
 		}
 	})
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/contextutil"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/internal/wire"
 )
 
@@ -23,11 +24,13 @@ import (
 // the ctx one, so deadlines observed anywhere in the tree accumulate
 // into the same place. Folding is min-only (BoundCut), which makes
 // cross-leg sharing safe: the worst case is an answer cached slightly
-// shorter than its own cut allowed, never longer.
-type responseCut struct {
-	deadline time.Time
-	key      uint64
-}
+// shorter than its own cut allowed, never longer. The minimum is taken
+// per clock (Lease): a monotonic deadline and a wall-clock one cannot be
+// ordered once and for all, so the tree keeps both.
+//
+// Lease is the delegation-cut bound a request tree accumulates, the
+// earliest deadline on each clock.
+type Lease = lease.Lease
 
 // cachedFailureResponseSet tracks the exact response pointers currently being
 // emitted from the RFC 9520 failure cache. Pointer identity is deliberate: a
@@ -141,17 +144,17 @@ type requestLedgers struct {
 }
 
 type ResponseMeta struct {
-	// cut is the earliest deadline observed for the request tree, guarded by
-	// its own mutex. Resolver work can fan out into concurrent NS-address
-	// sub-queries that share the request context, so a plain time.Time here
-	// races even though every update is min-only.
+	// cut is the earliest deadline on each clock observed for the request
+	// tree, guarded by its own mutex. Resolver work can fan out into
+	// concurrent NS-address sub-queries that share the request context, so
+	// a plain value here races even though every update is min-only.
 	//
 	// The value is held inline rather than behind an atomic pointer: every
 	// cache hit now folds its own lifetime in, so a publish that allocated
 	// an immutable deadline per call would put an allocation on the hottest
-	// path in the server. The critical section is two comparisons.
+	// path in the server. The critical section is a comparison per clock.
 	cutMu sync.Mutex
-	cut   responseCut
+	cut   Lease
 
 	// ledgers is this request tree's shared state. A root creates it on first
 	// use and drops it on Reset; a fork captures the same one at construction
@@ -264,37 +267,34 @@ func (m *ResponseMeta) BoundCutFor(deadline time.Time, key uint64) {
 	}
 
 	m.cutMu.Lock()
-	if m.cut.deadline.IsZero() || deadline.Before(m.cut.deadline) {
-		m.cut = responseCut{deadline: deadline, key: key}
-	}
+	m.cut.Fold(deadline, key)
 	m.cutMu.Unlock()
 }
 
-// Cut returns the earliest delegation-cut deadline observed for the request
-// tree and the delegation-cache key that supplied it. A zero deadline means
-// unbounded; in that case the key is also zero.
-func (m *ResponseMeta) Cut() (time.Time, uint64) {
+// BoundLease folds a lease into the response metadata, keeping the earliest
+// deadline on each clock with the identity that supplied it. Nil-safe, and
+// an unbounded lease changes nothing.
+func (m *ResponseMeta) BoundLease(l Lease) {
+	if m == nil || l.IsZero() {
+		return
+	}
+
+	m.cutMu.Lock()
+	m.cut.Merge(&l)
+	m.cutMu.Unlock()
+}
+
+// Cut returns the delegation-cut lease observed for the request tree, the
+// earliest deadline on each clock and the delegation-cache key that
+// supplied it. A zero lease means unbounded.
+func (m *ResponseMeta) Cut() Lease {
 	if m == nil {
-		return time.Time{}, 0
+		return Lease{}
 	}
 	m.cutMu.Lock()
-	deadline, key := m.cut.deadline, m.cut.key
+	cut := m.cut
 	m.cutMu.Unlock()
-	return deadline, key
-}
-
-// CutUntil returns the earliest delegation-cut deadline observed for the
-// request tree. Zero means unbounded.
-func (m *ResponseMeta) CutUntil() time.Time {
-	deadline, _ := m.Cut()
-	return deadline
-}
-
-// CutKey returns the delegation-cache key associated with CutUntil. It is
-// meaningful only when CutUntil is non-zero.
-func (m *ResponseMeta) CutKey() uint64 {
-	_, key := m.Cut()
-	return key
+	return cut
 }
 
 // Reset clears request metadata before a pooled Chain is reused.
@@ -304,7 +304,7 @@ func (m *ResponseMeta) CutKey() uint64 {
 func (m *ResponseMeta) Reset() {
 	if m != nil {
 		m.cutMu.Lock()
-		m.cut = responseCut{}
+		m.cut = Lease{}
 		m.cutMu.Unlock()
 		// Dropping the reference is the whole of it: the next request gets a
 		// new one on first use, and anything still holding this one, a

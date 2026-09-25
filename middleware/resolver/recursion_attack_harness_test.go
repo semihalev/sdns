@@ -15,6 +15,7 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/authority"
 	internalcache "github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/middleware"
 )
 
@@ -521,7 +522,7 @@ func BenchmarkRecursionAttackHarness_NXNSAddressFanout(b *testing.B) {
 					make(hostSet),
 					hosts,
 					true,
-					time.Now().Add(time.Minute),
+					lease.Until(time.Now().Add(time.Minute)),
 				)
 				b.StopTimer()
 				totalSubqueries += oracle.count() - before

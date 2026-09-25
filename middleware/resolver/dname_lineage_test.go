@@ -18,7 +18,7 @@ type dnameLineageQueryer struct {
 
 func (q *dnameLineageQueryer) Query(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
 	meta := middleware.ResponseMetaFrom(ctx)
-	q.observed = meta.CutUntil()
+	q.observed = meta.Cut().Mono().Until
 	meta.BoundCutFor(q.publish, 42)
 
 	resp := new(dns.Msg)
@@ -86,7 +86,8 @@ func TestDNAMETargetResolvesUnderItsOwnLineage(t *testing.T) {
 			"its own lineage", queryer.observed)
 	}
 
-	got, key := meta.Cut()
+	cut := meta.Cut().Mono()
+	got, key := cut.Until, cut.Key
 	if !got.Equal(targetDeadline) || key != 42 {
 		t.Fatalf("outer bound = (%v, %d) after the splice, want the target's "+
 			"(%v, 42): the records the client is served came from it",

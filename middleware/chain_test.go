@@ -55,19 +55,16 @@ func TestResponseMeta_ConcurrentBoundCut(t *testing.T) {
 	}
 	wg.Wait()
 
-	if got := meta.CutUntil(); !got.Equal(earliest) {
-		t.Fatalf("CutUntil = %v, want earliest concurrent deadline %v", got, earliest)
+	if got := meta.Cut().Mono(); !got.Until.Equal(earliest) {
+		t.Fatalf("cut = %v, want earliest concurrent deadline %v", got.Until, earliest)
 	}
-	if got := meta.CutKey(); got != earliestKey {
-		t.Fatalf("CutKey = %#x, want earliest cut key %#x", got, earliestKey)
+	if got := meta.Cut().Mono(); got.Key != earliestKey {
+		t.Fatalf("cut key = %#x, want earliest cut key %#x", got.Key, earliestKey)
 	}
 
 	meta.Reset()
-	if got := meta.CutUntil(); !got.IsZero() {
-		t.Fatalf("CutUntil after Reset = %v, want zero", got)
-	}
-	if got := meta.CutKey(); got != 0 {
-		t.Fatalf("CutKey after Reset = %#x, want zero", got)
+	if got := meta.Cut(); !got.IsZero() {
+		t.Fatalf("cut after Reset = %+v, want zero", got)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/edns"
@@ -435,9 +436,9 @@ func TestServeStaleCompletesCNAMEFromStaleTarget(t *testing.T) {
 			t.Fatalf("stale target lifetime was not folded into alias TTL: %d", ttl)
 		}
 	}
-	if cut, key := ch.Meta.Cut(); cut.IsZero() || cut.After(targetEntry.cutUntil) {
+	if cut := ch.Meta.Cut().Mono(); cut.Until.IsZero() || cut.Until.After(targetEntry.cutUntil) {
 		t.Fatalf("composed stale alias bound = (%v, %#x), must not outlive target (%v, %#x)",
-			cut, key, targetEntry.cutUntil, targetEntry.cutKey)
+			cut.Until, cut.Key, targetEntry.cutUntil, targetEntry.cutKey)
 	}
 }
 
@@ -1040,7 +1041,8 @@ func TestBoundRequestToStaleLifetime(t *testing.T) {
 			var meta middleware.ResponseMeta
 			ctx := middleware.WithResponseMeta(context.Background(), &meta)
 			boundRequestToStaleLifetime(ctx, entry, now)
-			gotUntil, gotKey := meta.Cut()
+			got := meta.Cut().Mono()
+			gotUntil, gotKey := got.Until, got.Key
 			if !gotUntil.Equal(tt.wantUntil) || gotKey != tt.wantKey {
 				t.Fatalf("stale bound = (%v, %#x), want (%v, %#x)",
 					gotUntil, gotKey, tt.wantUntil, tt.wantKey)
@@ -1064,8 +1066,7 @@ func TestServeStaleReadPreservesPrefetchCAS(t *testing.T) {
 		key,
 		entry,
 		staleTestAnswer(req, "192.0.2.54"),
-		time.Now().Add(time.Hour),
-		123,
+		lease.Of(time.Now().Add(time.Hour), 123),
 	) {
 		t.Fatal("stale read disturbed ReplaceIfCurrent pointer CAS")
 	}

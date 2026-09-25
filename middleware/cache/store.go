@@ -9,6 +9,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 )
@@ -567,12 +568,13 @@ func (s *Store) resetMatchingFailures(q dns.Question, cd bool, scope netip.Prefi
 // cutUntil bounds the entry to the delegation cut that produced it; zero
 // means unbounded. This compatibility entry point has no lineage identity.
 func (s *Store) SetFromResponse(resp *dns.Msg, keyCD bool, cutUntil time.Time) {
-	s.SetFromResponseWithCut(resp, keyCD, cutUntil, 0)
+	s.SetFromResponseWithCut(resp, keyCD, lease.Until(cutUntil))
 }
 
-// SetFromResponseWithCut is SetFromResponse plus the delegation identity that
-// supplied cutUntil, retained for the optional Phase-3 generation design.
-func (s *Store) SetFromResponseWithCut(resp *dns.Msg, keyCD bool, cutUntil time.Time, cutKey uint64) {
+// SetFromResponseWithCut is SetFromResponse bounded by a whole lease, its
+// deadline on each clock and the delegation identity that supplied it,
+// retained for the optional Phase-3 generation design.
+func (s *Store) SetFromResponseWithCut(resp *dns.Msg, keyCD bool, cut lease.Lease) {
 	if len(resp.Question) == 0 {
 		return
 	}
@@ -585,16 +587,15 @@ func (s *Store) SetFromResponseWithCut(resp *dns.Msg, keyCD bool, cutUntil time.
 		CacheKey{Question: q, CD: keyCD}.Hash(),
 		resp,
 		netip.Prefix{},
-		cutUntil,
-		cutKey,
+		cut,
 		keyCD,
 	)
 }
 
 // SetFromResponseWithKey is the pre-keyed form of SetFromResponse,
 // used by ResponseWriter.WriteMsg, which has the key already.
-func (s *Store) SetFromResponseWithKey(key uint64, resp *dns.Msg, cutUntil time.Time, cutKey uint64) {
-	s.setFromResponseWithKey(key, resp, netip.Prefix{}, cutUntil, cutKey, resp.CheckingDisabled)
+func (s *Store) SetFromResponseWithKey(key uint64, resp *dns.Msg, cut lease.Lease) {
+	s.setFromResponseWithKey(key, resp, netip.Prefix{}, cut, resp.CheckingDisabled)
 }
 
 // SetFromResponseScoped is SetFromResponseWithKey for entries that
@@ -604,11 +605,11 @@ func (s *Store) SetFromResponseWithKey(key uint64, resp *dns.Msg, cutUntil time.
 // audiences. The entry's PrefetchEligible is false, the prefetch worker
 // has no client IP to derive ECS from, so refreshing a scoped entry would
 // lose its scope and store the wrong-audience answer.
-func (s *Store) SetFromResponseScoped(key uint64, resp *dns.Msg, scope netip.Prefix, cutUntil time.Time, cutKey uint64) {
-	s.setFromResponseWithKey(key, resp, scope, cutUntil, cutKey, resp.CheckingDisabled)
+func (s *Store) SetFromResponseScoped(key uint64, resp *dns.Msg, scope netip.Prefix, cut lease.Lease) {
+	s.setFromResponseWithKey(key, resp, scope, cut, resp.CheckingDisabled)
 }
 
-func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Prefix, cutUntil time.Time, cutKey uint64, keyCD bool) {
+func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Prefix, cut lease.Lease, keyCD bool) {
 	// One clock for the whole admission: classification, the lifetime, the
 	// entry's stored instant and what it may carry all read now.
 	now := time.Now()
@@ -652,8 +653,7 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Pr
 		// in-tree path, but an entry filed under a CD the response no
 		// longer carries would be unreachable rather than merely misfiled.
 		e.cd = keyCD
-		e.cutUntil = cutUntil
-		e.cutKey = cutKey
+		e.setLease(cut)
 		s.stampSidecar(e, msg)
 		return e
 	}
@@ -707,7 +707,7 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Pr
 //     to a positive answer is dropped rather than promoted, the two
 //     caches can't be swapped atomically, and the negative entry's
 //     short TTL re-resolves naturally.
-func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg, cutUntil time.Time, cutKey uint64) bool {
+func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg, cut lease.Lease) bool {
 	if expected == nil || len(resp.Question) == 0 {
 		return false
 	}
@@ -729,8 +729,7 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 		}
 		entry.cd = expected.cd
 		entry.setRare(expected.scopeKey(), entry.edeOption())
-		entry.cutUntil = cutUntil
-		entry.cutKey = cutKey
+		entry.setLease(cut)
 		s.stampSidecar(entry, filtered)
 		return entry
 	}

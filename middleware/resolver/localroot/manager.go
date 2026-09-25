@@ -382,7 +382,7 @@ func (m *Manager) refreshOnce(ctx context.Context) error {
 				// Transfer again once the copy has spent half that
 				// horizon, so it keeps moving on a healthy source well
 				// before it threatens.
-				if m.now().Before(cur.loaded.Add(cur.expireAt.Sub(cur.loaded) / 2)) {
+				if horizon, _ := cur.expireAt.Remaining(cur.loaded); m.now().Before(cur.loaded.Add(horizon / 2)) {
 					return nil
 				}
 			}

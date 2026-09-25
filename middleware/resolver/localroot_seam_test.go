@@ -2,12 +2,14 @@ package resolver
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/authority"
 	"github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver/localroot"
 	"github.com/semihalev/sdns/middleware/resolver/localroot/roottest"
@@ -28,6 +30,14 @@ func localRootTestResolver(t *testing.T) (*Resolver, *roottest.Zone) {
 	}
 	r.localRoot.Store(mgr)
 	return r, z
+}
+
+// leaseLeft is how long l has left at now; an unbounded lease has forever.
+func leaseLeft(l lease.Lease, now time.Time) time.Duration {
+	if left, bounded := l.Remaining(now); bounded {
+		return left
+	}
+	return time.Duration(math.MaxInt64)
 }
 
 func localRootState(name string, qtype uint16, cd bool) *resolveState {
@@ -63,7 +73,7 @@ func TestLocalRootReferralBranch(t *testing.T) {
 	if len(rs.parentDS) != 1 {
 		t.Fatalf("parentDS carries %d records, want com.'s DS", len(rs.parentDS))
 	}
-	if rs.cutDeadline.IsZero() {
+	if rs.cut.IsZero() {
 		t.Fatal("referral did not bound the walk with a lease")
 	}
 
@@ -255,13 +265,18 @@ func TestLocalRootReferralLeaseBoundedByCopy(t *testing.T) {
 		t.Fatal("referral consult synthesized an answer")
 	}
 	snap := r.localRoot.Load().Active()
-	if rs.cutDeadline.After(snap.ValidUntil()) {
-		t.Fatalf("lease %v outlives the copy's horizon %v", rs.cutDeadline, snap.ValidUntil())
+	now := time.Now()
+	if leaseLeft(rs.cut, now) > leaseLeft(snap.ValidUntil(), now) {
+		t.Fatalf("lease %+v outlives the copy's horizon %+v", rs.cut, snap.ValidUntil())
 	}
 	// The test zone's NS TTL is 172800s against a one-hour signature
 	// window, so the horizon must be what bounded it.
-	if rs.cutDeadline.After(time.Now().Add(2 * time.Hour)) {
-		t.Fatalf("lease %v ignores the signature window", rs.cutDeadline)
+	if leaseLeft(rs.cut, now) > 2*time.Hour {
+		t.Fatalf("lease %+v ignores the signature window", rs.cut)
+	}
+	// The signature window is a calendar instant and stays one.
+	if !rs.cut.Wall().Until.Equal(snap.ValidUntil().Wall().Until) {
+		t.Fatalf("lease %+v lost the copy's signature expiration %+v", rs.cut, snap.ValidUntil().Wall())
 	}
 }
 
@@ -360,7 +375,7 @@ func TestLocalRootReferralTakesTheWinningDelegationWhole(t *testing.T) {
 		t.Fatalf("rival DS: %v", err)
 	}
 	rivalDeadline := time.Now().Add(3 * time.Minute)
-	r.delegations.SetUntilIfAbsent(key, []dns.RR{rivalDS}, rival, rivalDeadline)
+	r.delegations.SetUntilIfAbsent(key, []dns.RR{rivalDS}, rival, lease.Until(rivalDeadline))
 
 	rs := localRootState("www.example.com.", dns.TypeA, false)
 	if _, handled := r.consultLocalRoot(context.Background(), rs); handled {
@@ -374,8 +389,8 @@ func TestLocalRootReferralTakesTheWinningDelegationWhole(t *testing.T) {
 		t.Fatalf("parentDS = %v, want the winning delegation's DS, a mixed "+
 			"delegation validates one zone's answers against another's keys", rs.parentDS)
 	}
-	if !rs.cutDeadline.Equal(rivalDeadline) {
-		t.Fatalf("lease = %v, want the winning entry's %v", rs.cutDeadline, rivalDeadline)
+	if !rs.cut.Mono().Until.Equal(rivalDeadline) || !rs.cut.Wall().Until.IsZero() {
+		t.Fatalf("lease = %+v, want the winning entry's %v", rs.cut, rivalDeadline)
 	}
 }
 
@@ -588,7 +603,7 @@ func TestLocalRootLeaseBoundedBySecurityEvidence(t *testing.T) {
 		if _, handled := r.consultLocalRoot(context.Background(), rs); handled {
 			t.Fatal("referral consult synthesized an answer")
 		}
-		if got := time.Until(rs.cutDeadline); got > 61*time.Second {
+		if got := leaseLeft(rs.cut, time.Now()); got > 61*time.Second {
 			t.Fatalf("lease runs %v, want the DS RRset's 60s, a withdrawn key "+
 				"must not be trusted for the NS set's longer life", got.Round(time.Second))
 		}
@@ -608,7 +623,7 @@ func TestLocalRootLeaseBoundedBySecurityEvidence(t *testing.T) {
 		if _, handled := r.consultLocalRoot(context.Background(), rs); handled {
 			t.Fatal("referral consult synthesized an answer")
 		}
-		if got := time.Until(rs.cutDeadline); got > 91*time.Second {
+		if got := leaseLeft(rs.cut, time.Now()); got > 91*time.Second {
 			t.Fatalf("lease runs %v, want the denying NSEC's 90s", got.Round(time.Second))
 		}
 	})
@@ -769,7 +784,7 @@ func TestLocalRootAnswersBoundedByCopyHorizon(t *testing.T) {
 	if snap == nil {
 		t.Fatal("no active copy to serve from")
 	}
-	horizon := uint32(time.Until(snap.ValidUntil())/time.Second) + 1 //nolint:gosec // test window is an hour.
+	horizon := uint32(leaseLeft(snap.ValidUntil(), time.Now())/time.Second) + 1 //nolint:gosec // test window is an hour.
 
 	// The test zone signs with a one-hour window while its shortest published
 	// TTL is a day, so every record served here has to be clamped for the
@@ -936,13 +951,18 @@ func TestLocalRootAnswersBindTheRequestToTheCopy(t *testing.T) {
 			if !handled || answer == nil {
 				t.Fatalf("%s %s was not answered from the copy", tc.qname, dns.TypeToString[tc.qtype])
 			}
-			cut, _ := meta.Cut()
+			cut := meta.Cut()
 			if cut.IsZero() {
 				t.Fatalf("%s %s left the request tree unbounded", tc.qname, dns.TypeToString[tc.qtype])
 			}
-			if cut.After(horizon) {
-				t.Fatalf("%s %s bound the tree to %v, past the copy horizon %v",
-					tc.qname, dns.TypeToString[tc.qtype], cut, horizon)
+			// Each of the horizon's deadlines reaches the tree on its own
+			// clock; neither is folded into the other.
+			for _, pair := range [][2]lease.Bound{{cut.Mono(), horizon.Mono()}, {cut.Wall(), horizon.Wall()}} {
+				got, limit := pair[0], pair[1]
+				if !limit.Until.IsZero() && (got.Until.IsZero() || got.Until.After(limit.Until)) {
+					t.Fatalf("%s %s bound the tree to %+v, past the copy horizon %+v",
+						tc.qname, dns.TypeToString[tc.qtype], cut, horizon)
+				}
 			}
 		})
 	}
@@ -956,8 +976,8 @@ func TestLocalRootAnswersBindTheRequestToTheCopy(t *testing.T) {
 		if _, handled := r.consultLocalRoot(ctx, localRootState(".", dns.TypeZONEMD, false)); handled {
 			t.Fatal(". ZONEMD was answered from the copy")
 		}
-		if cut, _ := meta.Cut(); !cut.IsZero() {
-			t.Fatalf("a fallback bound the request tree to %v", cut)
+		if cut := meta.Cut(); !cut.IsZero() {
+			t.Fatalf("a fallback bound the request tree to %+v", cut)
 		}
 	})
 }

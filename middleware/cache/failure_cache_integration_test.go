@@ -12,6 +12,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/internal/waitgroup"
 	"github.com/semihalev/sdns/middleware"
@@ -741,7 +742,7 @@ func TestFailureCacheScopedSuccessDoesNotResetGlobalAudience(t *testing.T) {
 		A:   []byte{192, 0, 2, 20},
 	}}
 	scopedKey := CacheKey{Question: req.Question[0], Scope: scope}.Hash()
-	c.store.SetFromResponseScoped(scopedKey, scoped, scope, time.Time{}, 0)
+	c.store.SetFromResponseScoped(scopedKey, scoped, scope, lease.Lease{})
 
 	if hit, ok := c.store.LookupFailure(req, netip.Prefix{}); !ok || hit.Provenance != "global" {
 		t.Fatalf("scoped success reset global failure audience: %#v, %v", hit, ok)

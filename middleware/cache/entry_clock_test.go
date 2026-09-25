@@ -76,12 +76,12 @@ func TestDerivedAnswerInheritsAWallClockLease(t *testing.T) {
 
 	var meta middleware.ResponseMeta
 	boundRequestToEntryLifetime(middleware.WithResponseMeta(context.Background(), &meta), source)
-	cut, key := meta.Cut()
-	if cut.IsZero() || key != 7 {
-		t.Fatalf("the derived answer's bound = (%v, %d), want the source's lease", cut, key)
+	cut := meta.Cut()
+	if w := cut.Wall(); w.Until.IsZero() || w.Key != 7 {
+		t.Fatalf("the derived answer's bound = %+v, want the source's lease", cut)
 	}
 	derived := NewCacheEntry(snapAnswer("b.test.", 300, "192.0.2.2"), 300*time.Second, 0)
-	derived.cutUntil, derived.cutKey = cut, key
+	derived.setLease(cut)
 
 	later := clockAfter(t, admit, time.Second, 61*time.Second)
 	for name, e := range map[string]*CacheEntry{"source": source, "derived": derived} {

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/middleware"
 )
 
@@ -347,7 +348,7 @@ func TestSnapshotLeavesOut(t *testing.T) {
 	src.SetFromResponse(snapAnswer("short.test.", 5, "192.0.2.1"), false, time.Time{})
 	scoped := snapAnswer("scoped.test.", 300, "192.0.2.1")
 	scope := netip.MustParsePrefix("198.51.100.0/24")
-	src.SetFromResponseScoped(CacheKey{Question: scoped.Question[0], Scope: scope}.Hash(), scoped, scope, time.Time{}, 0)
+	src.SetFromResponseScoped(CacheKey{Question: scoped.Question[0], Scope: scope}.Hash(), scoped, scope, lease.Lease{})
 
 	var b bytes.Buffer
 	saved, err := src.snapshot(&b, testFingerprint, snapshotLZ4, time.Now(), func(int) bool { return false })

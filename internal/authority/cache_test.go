@@ -7,6 +7,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/lease"
 )
 
 func Test_Cache(t *testing.T) {
@@ -137,18 +138,18 @@ func Test_CacheSetUntil(t *testing.T) {
 	)
 
 	deadline := base.Add(10 * time.Second)
-	nscache.SetUntil(exact, nil, servers, deadline)
-	nscache.SetUntil(past, nil, servers, base.Add(-time.Second))
-	nscache.SetUntil(atNow, nil, servers, base)
-	nscache.SetUntil(capped, nil, servers, base.Add(24*time.Hour))
+	nscache.SetUntil(exact, nil, servers, lease.Until(deadline))
+	nscache.SetUntil(past, nil, servers, lease.Until(base.Add(-time.Second)))
+	nscache.SetUntil(atNow, nil, servers, lease.Until(base))
+	nscache.SetUntil(capped, nil, servers, lease.Until(base.Add(24*time.Hour)))
 
 	// The absolute deadline is stored exactly as supplied.
 	d, err := nscache.Get(exact)
 	if err != nil {
 		t.Fatalf("SetUntil entry should be cached: %v", err)
 	}
-	if !d.ExpiresAt.Equal(deadline) {
-		t.Fatalf("ExpiresAt = %v, want the supplied deadline %v (re-anchored?)", d.ExpiresAt, deadline)
+	if got := d.Lease.Mono().Until; !got.Equal(deadline) {
+		t.Fatalf("lease = %v, want the supplied deadline %v (re-anchored?)", got, deadline)
 	}
 
 	// Valid strictly before the deadline, expired exactly at it.
@@ -175,8 +176,8 @@ func Test_CacheSetUntil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("capped entry should be cached: %v", err)
 	}
-	if want := base.Add(12 * time.Hour); !d.ExpiresAt.Equal(want) {
-		t.Fatalf("ExpiresAt = %v, want ceiling %v", d.ExpiresAt, want)
+	if want, got := base.Add(12*time.Hour), d.Lease.Mono().Until; !got.Equal(want) {
+		t.Fatalf("lease = %v, want ceiling %v", got, want)
 	}
 }
 
@@ -191,7 +192,7 @@ func TestSetUntilIfAbsent(t *testing.T) {
 	const key = uint64(0x1234)
 
 	t.Run("absent slot accepts the provisional", func(t *testing.T) {
-		nscache.SetUntilIfAbsent(key, nil, provisional, time.Now().Add(time.Minute))
+		nscache.SetUntilIfAbsent(key, nil, provisional, lease.Until(time.Now().Add(time.Minute)))
 		d, err := nscache.Get(key)
 		if err != nil {
 			t.Fatalf("provisional not stored: %v", err)
@@ -202,15 +203,15 @@ func TestSetUntilIfAbsent(t *testing.T) {
 	})
 
 	t.Run("a live lease survives provisional writers", func(t *testing.T) {
-		lease := time.Now().Add(time.Hour)
-		nscache.SetUntil(key, nil, servers, lease)
+		until := time.Now().Add(time.Hour)
+		nscache.SetUntil(key, nil, servers, lease.Until(until))
 
 		done := make(chan struct{})
 		for i := 0; i < 8; i++ {
 			go func() {
 				defer func() { done <- struct{}{} }()
 				for j := 0; j < 200; j++ {
-					nscache.SetUntilIfAbsent(key, nil, provisional, time.Now().Add(time.Minute))
+					nscache.SetUntilIfAbsent(key, nil, provisional, lease.Until(time.Now().Add(time.Minute)))
 				}
 			}()
 		}
@@ -222,18 +223,18 @@ func TestSetUntilIfAbsent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("lease vanished: %v", err)
 		}
-		if d.Servers != servers || !d.ExpiresAt.Equal(lease) {
-			t.Fatalf("live lease displaced: servers=%v expires=%v", d.Servers == servers, d.ExpiresAt)
+		if d.Servers != servers || !d.Lease.Mono().Until.Equal(until) {
+			t.Fatalf("live lease displaced: servers=%v expires=%v", d.Servers == servers, d.Lease.Mono().Until)
 		}
 	})
 
 	t.Run("an expired slot accepts the provisional", func(t *testing.T) {
 		past := time.Now().Add(-2 * time.Hour)
 		nscache.now = func() time.Time { return past }
-		nscache.SetUntil(key, nil, servers, past.Add(time.Minute))
+		nscache.SetUntil(key, nil, servers, lease.Until(past.Add(time.Minute)))
 		nscache.now = time.Now
 
-		nscache.SetUntilIfAbsent(key, nil, provisional, time.Now().Add(time.Minute))
+		nscache.SetUntilIfAbsent(key, nil, provisional, lease.Until(time.Now().Add(time.Minute)))
 		d, err := nscache.Get(key)
 		if err != nil {
 			t.Fatalf("expired slot not replaced: %v", err)

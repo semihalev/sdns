@@ -122,6 +122,7 @@ func (c *Cache) Persist(ctx context.Context) {
 	metricSnapshotEntries.WithLabelValues("save", "saved").Add(float64(saved.saved))
 	metricSnapshotEntries.WithLabelValues("save", "short").Add(float64(saved.short))
 	metricSnapshotEntries.WithLabelValues("save", "scoped").Add(float64(saved.scoped))
+	metricSnapshotEntries.WithLabelValues("save", "wallclock").Add(float64(saved.wallClock))
 	zlog.Info("Cache saved", "path", c.snapshotPath(), "saved", saved.saved,
 		"truncated", saved.truncated, "duration", elapsed.Round(time.Millisecond).String())
 }
@@ -147,6 +148,14 @@ var validatorSupport = func() (algorithms, digests []string) {
 	return algorithms, digests
 }
 
+// snapshotSemantics changes when what a snapshot's records mean changes
+// while their layout does not, so a file from before is refused once.
+//
+//  1. An answer whose lease holds a wall-clock deadline is not saved. The
+//     record keeps a lease as a remaining duration, which a restore counts
+//     on the monotonic clock, and earlier builds saved such leases that way.
+const snapshotSemantics = 1
+
 // snapshotFingerprint names the configuration a saved cache is valid
 // under: what decides which answers the cache is handed and whether they
 // were validated. A snapshot written under another is discarded whole.
@@ -163,6 +172,7 @@ func (c *Cache) snapshotFingerprint() [32]byte {
 	}
 	cfg := c.cfg
 	field("format", fmt.Sprint(snapshotVersion))
+	field("semantics", fmt.Sprint(snapshotSemantics))
 	field("dnssec", cfg.DNSSEC)
 	field("rootservers", cfg.RootServers...)
 	field("root6servers", cfg.Root6Servers...)

@@ -9,6 +9,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/authority"
 	"github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/lease"
 )
 
 // TestGlueCacheHonorsTTL pins the horizon on nameserver addresses. The glue
@@ -73,7 +74,7 @@ func TestGlueCacheHitDoesNotRenewHorizon(t *testing.T) {
 	hosts := hostSet{host: struct{}{}}
 	q := dns.Question{Name: "www.renew.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 
-	if err := r.lookupV4Nss(context.Background(), q, authservers, 1, nil, hostSet{}, hosts, true, time.Time{}); err != nil {
+	if err := r.lookupV4Nss(context.Background(), q, authservers, 1, nil, hostSet{}, hosts, true, lease.Lease{}); err != nil {
 		t.Fatalf("lookupV4Nss: %v", err)
 	}
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/lease"
 )
 
 func newTestStore(t *testing.T) *Store {
@@ -94,7 +95,7 @@ func TestCacheHitRejectsCollisionAcrossScopeAndCD(t *testing.T) {
 		// The entry belongs to 203.0.113.0/24; the key is the one a
 		// plain, ECS-less client computes.
 		sharedKey := CacheKey{Question: req.Question[0], CD: false}.Hash()
-		c.store.SetFromResponseScoped(sharedKey, reply(req, "10.9.9.9", 24), scope, time.Time{}, 0)
+		c.store.SetFromResponseScoped(sharedKey, reply(req, "10.9.9.9", 24), scope, lease.Lease{})
 
 		if _, ok := c.store.LookupByKeyVerified(sharedKey, CacheKey{Question: req.Question[0]}); ok {
 			t.Fatal("shared-key lookup accepted an entry scoped to another audience")
@@ -131,7 +132,7 @@ func TestCacheHitRejectsCollisionAcrossScopeAndCD(t *testing.T) {
 		cdResp := reply(req, "10.9.9.9", 0)
 		cdResp.CheckingDisabled = true
 		sharedKey := CacheKey{Question: req.Question[0], CD: false}.Hash()
-		c.store.SetFromResponseWithKey(sharedKey, cdResp, time.Time{}, 0)
+		c.store.SetFromResponseWithKey(sharedKey, cdResp, lease.Lease{})
 
 		if _, ok := c.store.LookupByKeyVerified(sharedKey, CacheKey{Question: req.Question[0]}); ok {
 			t.Fatal("CD=0 lookup accepted an entry admitted under CD=1")
