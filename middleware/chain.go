@@ -141,6 +141,10 @@ type requestLedgers struct {
 	// validatedNegativeProofs is immutable, exact-response NXDOMAIN or NODATA
 	// provenance produced by this resolver.
 	validatedNegativeProofs atomic.Pointer[validatedNegativeProofResponseSet]
+
+	// validationFailures is the exact SERVFAIL responses this request tree's
+	// own DNSSEC validation produced, see MarkValidationFailureResponse.
+	validationFailures atomic.Pointer[validationFailureSet]
 }
 
 type ResponseMeta struct {
@@ -313,6 +317,62 @@ func (m *ResponseMeta) Reset() {
 		// into the next.
 		m.ledgers.Store(nil)
 	}
+}
+
+// MarkValidationFailureResponse marks msg as a SERVFAIL this request's own
+// DNSSEC validation produced: a verdict that the data is bogus, not a failure
+// to reach it. Failover must never replace such a response with another
+// resolver's answer, which would hand the client the very data validation
+// refused, unvalidated. The mark lives in the request tree's shared state, so
+// it reaches the failover wrapper across the detached context the resolver
+// runs on. Pointer identity: a copied or independently built message never
+// carries it.
+func MarkValidationFailureResponse(ctx context.Context, msg *dns.Msg) {
+	meta := ResponseMetaFrom(ctx)
+	if meta == nil || msg == nil {
+		return
+	}
+	host := meta.ensureLedgerHost()
+	set := host.validationFailures.Load()
+	if set == nil {
+		candidate := &validationFailureSet{messages: make(map[*dns.Msg]struct{})}
+		if host.validationFailures.CompareAndSwap(nil, candidate) {
+			set = candidate
+		} else {
+			set = host.validationFailures.Load()
+		}
+	}
+	set.mu.Lock()
+	set.messages[msg] = struct{}{}
+	set.mu.Unlock()
+}
+
+// IsValidationFailureResponse reports whether msg is a response
+// MarkValidationFailureResponse marked in this request tree.
+func IsValidationFailureResponse(ctx context.Context, msg *dns.Msg) bool {
+	if msg == nil {
+		return false
+	}
+	host := ResponseMetaFrom(ctx).ledgerHost()
+	if host == nil {
+		return false
+	}
+	set := host.validationFailures.Load()
+	if set == nil {
+		return false
+	}
+	set.mu.Lock()
+	_, marked := set.messages[msg]
+	set.mu.Unlock()
+	return marked
+}
+
+// validationFailureSet holds the exact SERVFAIL responses a request tree's
+// own validation produced. It lives as long as the tree's ledgers and grows
+// by one entry per refused response in it.
+type validationFailureSet struct {
+	mu       sync.Mutex
+	messages map[*dns.Msg]struct{}
 }
 
 // MarkCachedFailureResponse marks msg as a response currently being emitted

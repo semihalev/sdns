@@ -1368,7 +1368,10 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 					)
 					if werr != nil {
 						zlog.Warn("DNSSEC verify failed (wildcard answer)", "query", dnsutil.FormatQuestion(q), "error", werr.Error())
-						return nil, werr
+						if isDNSSECWorkError(werr) {
+							return nil, werr
+						}
+						return nil, asBogus(werr)
 					}
 					ok = wildcardSecure
 				}
@@ -1381,11 +1384,14 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 					lastErr = dnssec.ErrNoSignatures
 				}
 				zlog.Warn("DNSSEC verify failed (answer)", "query", dnsutil.FormatQuestion(q), "error", lastErr.Error())
-				return nil, lastErr
+				return nil, asBogus(lastErr)
 			}
 		}
 	}
 
+	// A target refused by validation makes the composed answer that same
+	// verdict: failover must leave the alias alone as it does the target.
+	targetVerdict := targetMsg != nil && middleware.IsValidationFailureResponse(ctx, targetMsg)
 	if targetMsg != nil {
 		// Splice the target response into resp *after* DNSSEC check.
 		// The internal recursion already validated the target zone
@@ -1428,11 +1434,17 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 				middleware.PropagateValidatedNegativeProofResponse(ctx, targetMsg, resp)
 			}
 			resp.Ns = append(resp.Ns, targetMsg.Ns...)
+			if targetVerdict {
+				middleware.MarkValidationFailureResponse(ctx, resp)
+			}
 			return resp, nil
 		}
 	}
 
 	resp = r.clearAdditional(req, resp, extra...)
+	if targetVerdict {
+		middleware.MarkValidationFailureResponse(ctx, resp)
+	}
 
 	return resp, nil
 }
@@ -1518,7 +1530,7 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 					lastErr = dnssec.ErrNoSignatures
 				}
 				zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", dnsutil.FormatQuestion(q), "error", lastErr.Error())
-				return nil, lastErr
+				return nil, asBogus(lastErr)
 			}
 
 			if r.dnssec && verified {
@@ -4332,7 +4344,10 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 		}
 
 		zlog.Warn("DNSSEC verify failed (delegation)", "query", dnsutil.FormatQuestion(q), "error", err.Error())
-		return nil, err
+		if isDNSSECWorkError(err) {
+			return nil, err
+		}
+		return nil, asBogus(err)
 	}
 
 	// Try each candidate signer (most specific first) until one
@@ -4402,7 +4417,7 @@ func (r *Resolver) validateDelegation(ctx context.Context, req, resp *dns.Msg, q
 		if lastErr == nil {
 			lastErr = dnssec.ErrDSRecords
 		}
-		return nil, lastErr
+		return nil, asBogus(lastErr)
 	}
 	if !verified {
 		return finalDS, nil

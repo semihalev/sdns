@@ -3,10 +3,12 @@ package resolver
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 )
 
@@ -103,6 +105,145 @@ func TestHermeticDNSSECBogusFailsClosed(t *testing.T) {
 	if ede.InfoCode != dns.ExtendedErrorCodeRRSIGsMissing {
 		t.Fatalf("EDE code = %d (%s), want RRSIGsMissing",
 			ede.InfoCode, dns.ExtendedErrorCodeToString[ede.InfoCode])
+	}
+}
+
+// A SERVFAIL that validation produced is marked as the validator's verdict,
+// so failover leaves it alone instead of asking another resolver, which
+// would hand the client the refused data unvalidated.
+func TestHermeticDNSSECBogusIsMarkedAsAVerdict(t *testing.T) {
+	net := newHermeticNet(t)
+	net.Delegate("nosig.test.").ServeUnsigned(mustRR(t, "www.nosig.test. 300 IN A 192.0.2.50"))
+	net.DelegateWrongDS("wrongds.test.").Serve(mustRR(t, "www.wrongds.test. 300 IN A 192.0.2.60"))
+	net.Delegate("badsig.test.").ServeTampered(
+		[]dns.RR{mustRR(t, "www.badsig.test. 300 IN A 192.0.2.70")},
+		mustRR(t, "www.badsig.test. 300 IN A 198.51.100.70"))
+	net.DelegateTamperedDS("badds.test.").Serve(mustRR(t, "www.badds.test. 300 IN A 192.0.2.90"))
+
+	for _, name := range []string{"www.nosig.test.", "www.wrongds.test.", "www.badsig.test.", "www.badds.test."} {
+		req := new(dns.Msg)
+		req.SetEdns0(dnsutil.DefaultMsgSize, true)
+		req.SetQuestion(name, dns.TypeA)
+		ctx := middleware.WithResponseMeta(context.Background(), new(middleware.ResponseMeta))
+
+		resp := net.Handler().handle(ctx, req)
+		if resp.Rcode != dns.RcodeServerFailure {
+			t.Fatalf("%s: rcode = %s, want SERVFAIL", name, dns.RcodeToString[resp.Rcode])
+		}
+		if !middleware.IsValidationFailureResponse(ctx, resp) {
+			t.Fatalf("%s: the bogus SERVFAIL is not marked, failover would replace it", name)
+		}
+		if middleware.IsValidationFailureResponse(ctx, resp.Copy()) {
+			t.Fatalf("%s: a copy carries the mark", name)
+		}
+	}
+}
+
+// A DNAME whose target fails validation composes an outer SERVFAIL that is
+// the target's verdict, and carries its mark: failover must not ask another
+// resolver for the alias any more than for the target. The control, a sound
+// target, shows the answer really comes through the DNAME.
+func TestHermeticDNSSECBogusDNAMETargetIsAVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		bogus bool
+	}{{"sound target", false}, {"target with a bad signature", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			net := newHermeticNet(t)
+			target := net.Delegate("target.test.")
+			served := mustRR(t, "www.target.test. 300 IN A 192.0.2.80")
+			if tc.bogus {
+				target.ServeTampered([]dns.RR{served}, mustRR(t, "www.target.test. 300 IN A 198.51.100.80"))
+			} else {
+				target.Serve(served)
+			}
+			alias := net.Delegate("alias.test.")
+			dname := mustRR(t, "alias.test. 300 IN DNAME target.test.")
+			alias.server.serve("www.alias.test.", dns.TypeA,
+				dname, alias.key.sign(t, []dns.RR{dname}),
+				mustRR(t, "www.alias.test. 300 IN CNAME www.target.test."))
+
+			req := new(dns.Msg)
+			req.SetEdns0(dnsutil.DefaultMsgSize, true)
+			req.SetQuestion("www.alias.test.", dns.TypeA)
+			ctx := middleware.WithResponseMeta(context.Background(), new(middleware.ResponseMeta))
+			resp := net.Handler().handle(ctx, req)
+
+			if !tc.bogus {
+				if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) < 2 {
+					t.Fatalf("rcode = %s with %d answers, want the DNAME and the target",
+						dns.RcodeToString[resp.Rcode], len(resp.Answer))
+				}
+				return
+			}
+			if resp.Rcode != dns.RcodeServerFailure {
+				t.Fatalf("rcode = %s, want SERVFAIL", dns.RcodeToString[resp.Rcode])
+			}
+			if !middleware.IsValidationFailureResponse(ctx, resp) {
+				t.Fatal("the alias's SERVFAIL does not carry the target's verdict, failover would replace it")
+			}
+		})
+	}
+}
+
+// A signature that is present and does not verify comes back from the DNS
+// library as a bare dns.ErrSig. It is refused as bogus, and says so: the
+// client is told DNSSEC Bogus, not a failure of no particular kind.
+func TestHermeticDNSSECBadSignatureIsBogus(t *testing.T) {
+	net := newHermeticNet(t)
+	net.Delegate("badsig.test.").ServeTampered(
+		[]dns.RR{mustRR(t, "www.badsig.test. 300 IN A 192.0.2.70")},
+		mustRR(t, "www.badsig.test. 300 IN A 198.51.100.70"))
+
+	resp := hermeticAsk(t, net.Handler(), "www.badsig.test.", dns.TypeA)
+	if resp.Rcode != dns.RcodeServerFailure || len(resp.Answer) != 0 {
+		t.Fatalf("rcode = %s with %d answers, want an empty SERVFAIL",
+			dns.RcodeToString[resp.Rcode], len(resp.Answer))
+	}
+	if ede := dnsutil.GetEDE(resp); ede == nil || ede.InfoCode != dns.ExtendedErrorCodeDNSBogus {
+		t.Fatalf("EDE = %+v, want DNSSEC Bogus", ede)
+	}
+}
+
+// Only the verification errors the DNS library returns bare become bogus;
+// a failure to fetch what verification needs is no verdict and keeps its
+// own meaning.
+func TestAsBogus(t *testing.T) {
+	for _, err := range []error{dns.ErrSig, dns.ErrAlg, dns.ErrRdata, fmt.Errorf("wrapped: %w", dns.ErrSig)} {
+		got := asBogus(err)
+		if code, _ := dnsutil.ErrorToEDE(got); code != dns.ExtendedErrorCodeDNSBogus || !errors.Is(got, err) {
+			t.Errorf("asBogus(%v) = %v (code %d), want DNSSEC Bogus wrapping it", err, got, code)
+		}
+	}
+	for _, err := range []error{
+		context.DeadlineExceeded, NewNetworkError(errors.New("unreachable")),
+		dnssec.ErrNoSignatures, errMaxDepth,
+	} {
+		if got := asBogus(err); got != err {
+			t.Errorf("asBogus(%v) = %v, want it unchanged", err, got)
+		}
+	}
+}
+
+// Only a validation verdict is one; a failure to reach or finish the
+// resolution may still fail over.
+func TestIsValidationFailure(t *testing.T) {
+	for _, err := range []error{
+		dnssec.ErrNoSignatures, dnssec.ErrMismatchingDS, dnssec.ErrMissingDNSKEY,
+		dnssec.ErrInvalidSignaturePeriod, dnssec.ErrNSECMissingCoverage,
+		fmt.Errorf("wrapped: %w", dnssec.ErrNoSignatures),
+	} {
+		if !isValidationFailure(err) {
+			t.Errorf("%v is not taken for a validation failure", err)
+		}
+	}
+	for _, err := range []error{
+		errMaxDepth, context.DeadlineExceeded, NewNetworkError(errors.New("unreachable")),
+		NewNoReachableAuthorityError("none"),
+	} {
+		if isValidationFailure(err) {
+			t.Errorf("%v is taken for a validation failure", err)
+		}
 	}
 }
 

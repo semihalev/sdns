@@ -1,12 +1,14 @@
 package cache
 
 import (
+	"context"
 	"errors"
 	"net/netip"
 	"time"
 
 	"github.com/miekg/dns"
 	internalcache "github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/middleware"
 )
 
 const (
@@ -33,6 +35,12 @@ var (
 // Admission policy belongs to the caller; the cache only retains the value for
 // observability and for consumers that need to distinguish failure sources.
 type FailureProvenance string
+
+// FailureProvenanceValidation marks a failure this resolver's own DNSSEC
+// validation produced, a verdict that the data is bogus. A replay of it
+// carries the same mark the original SERVFAIL did, so failover leaves it
+// alone. It is taken only from that mark, never from an upstream's EDE.
+const FailureProvenanceValidation FailureProvenance = "validation"
 
 // FailureKind identifies whether a hit is question-specific or zone-wide.
 type FailureKind uint8
@@ -78,6 +86,17 @@ type FailureHit struct {
 	Question   FailureQuestionKey
 	Zone       FailureZoneKey
 	witness    []denialWitnessPair
+}
+
+// replay is Response for a request tree: a cached validation failure comes
+// back marked as the verdict it was, so failover, and a DNAME composing an
+// answer from it, treat the replay as they treated the original.
+func (h FailureHit) replay(ctx context.Context, req *dns.Msg) *dns.Msg {
+	resp := h.Response(req)
+	if h.Provenance == FailureProvenanceValidation {
+		middleware.MarkValidationFailureResponse(ctx, resp)
+	}
+	return resp
 }
 
 // Response builds a clean SERVFAIL response for a cached failure. EDE 13 is
@@ -152,6 +171,11 @@ type FailureCache struct {
 	initialTTL time.Duration
 	maxTTL     time.Duration
 	now        func() time.Time
+
+	// beforeFirstRecord, nil outside tests, runs after a record has found
+	// no generation for its key and before it installs one: the window two
+	// first records for one question race through.
+	beforeFirstRecord func(FailureProvenance)
 }
 
 // NewFailureCache constructs a bounded failure cache.
@@ -473,11 +497,37 @@ func (c *FailureCache) record(hash uint64, candidate *failureEntry) FailureHit {
 			first := *candidate
 			first.streak = 1
 			first.retryAfter = now.Add(c.initialTTL)
-			c.entries.Add(hash, &first)
-			return first.hit()
+			// Conditional, so two first records racing for one question
+			// cannot both land and let the later erase the other: the loser
+			// goes round again and meets the winner as an active generation,
+			// where a verdict it carries is taken. A colliding entry for
+			// another question is replaced only as it was examined.
+			if c.beforeFirstRecord != nil {
+				c.beforeFirstRecord(candidate.provenance)
+			}
+			if !ok && c.entries.AddIfAbsent(hash, &first) ||
+				ok && c.entries.CompareAndSwap(hash, current, &first) {
+				return first.hit()
+			}
+			continue
 		}
 		if now.Before(current.retryAfter) {
-			return current.hit()
+			// Two lookups that missed together can complete in either
+			// order. A validation verdict arriving second must not be lost
+			// to the generic failure that landed first: the generation
+			// takes the verdict's provenance, and nothing else changes, not
+			// its deadline, streak or witness. A generic failure arriving
+			// second changes nothing, so the verdict, once in, stays.
+			if candidate.provenance != FailureProvenanceValidation ||
+				current.provenance == FailureProvenanceValidation {
+				return current.hit()
+			}
+			upgraded := *current
+			upgraded.provenance = FailureProvenanceValidation
+			if c.entries.CompareAndSwap(hash, current, &upgraded) {
+				return upgraded.hit()
+			}
+			continue
 		}
 
 		next := *current

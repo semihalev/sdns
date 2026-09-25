@@ -496,6 +496,19 @@ func (z *hermeticZone) ServeUnsigned(rrs ...dns.RR) {
 	z.server.serve(hdr.Name, hdr.Rrtype, rrs...)
 }
 
+// ServeTampered publishes signed, the zone's real signature over signedAs,
+// the RRset rrs instead: the signature is present and made by the right key,
+// and does not verify, a bogus answer the DNS library refuses with a bare
+// dns.ErrSig.
+func (z *hermeticZone) ServeTampered(signedAs []dns.RR, rrs ...dns.RR) {
+	z.tb.Helper()
+	if len(rrs) == 0 || !z.signed {
+		z.tb.Fatal("ServeTampered needs records and a signed zone")
+	}
+	hdr := rrs[0].Header()
+	z.server.serve(hdr.Name, hdr.Rrtype, append(append([]dns.RR{}, rrs...), z.key.sign(z.tb, signedAs))...)
+}
+
 // ServeEmptyNonTerminals publishes the interior labels of a name the way a
 // real zone holds them: they exist and carry no records. delegate() does this
 // for the labels above a cut; a deep name needs it below one too.
@@ -811,6 +824,26 @@ func (n *hermeticNet) DelegateInsecure(zone string) *hermeticZone {
 // the answer, which a validator must also refuse.
 func (n *hermeticNet) DelegateWrongDS(zone string) *hermeticZone {
 	return n.delegate(zone, true, true, true)
+}
+
+// DelegateTamperedDS publishes, in the referral and at the parent, a DS whose
+// digest was altered after the parent signed it: the signature is present,
+// made by the parent's key, and does not verify, a bogus referral the DNS
+// library refuses with a bare dns.ErrSig.
+func (n *hermeticNet) DelegateTamperedDS(zone string) *hermeticZone {
+	n.tb.Helper()
+	z := n.delegate(zone, true, true, false)
+	signed := z.ds[0].(*dns.DS)
+	sig := n.rootKey.sign(n.tb, []dns.RR{signed})
+	tampered := dns.Copy(signed).(*dns.DS)
+	tampered.Digest = strings.Repeat("0", len(signed.Digest))
+	n.root.serve(z.name, dns.TypeDS, tampered, sig)
+	n.root.mu.Lock()
+	referral := n.root.children[z.name]
+	referral.ns = []dns.RR{referral.ns[0], tampered, sig}
+	n.root.mu.Unlock()
+	z.ds = []dns.RR{tampered}
+	return z
 }
 
 func (n *hermeticNet) delegate(zone string, signed, publishDS, wrongDS bool) *hermeticZone {

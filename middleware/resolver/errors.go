@@ -1,6 +1,7 @@
 package resolver
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/miekg/dns"
@@ -66,6 +67,25 @@ func NewNoReachableAuthorityError(message string) *dnsutil.EDEError {
 	return &dnsutil.EDEError{
 		Code:    dns.ExtendedErrorCodeNoReachableAuthority,
 		Message: message,
+	}
+}
+
+// asBogus gives the DNSSEC Bogus code to a verification error the DNS
+// library returns bare: a signature that does not verify (dns.ErrSig), one
+// under an algorithm it cannot verify (dns.ErrAlg), a record it cannot put
+// in canonical form (dns.ErrRdata). With the code the client is told why,
+// the failure is counted as a DNSSEC one, and failover knows it for a
+// verdict. Anything else passes through unchanged: the same return also
+// carries a failure to fetch the DS, which is no verdict about the data.
+// The original error stays reachable through errors.Is.
+func asBogus(err error) error {
+	if !errors.Is(err, dns.ErrSig) && !errors.Is(err, dns.ErrAlg) && !errors.Is(err, dns.ErrRdata) {
+		return err
+	}
+	return &dnsutil.EDEError{
+		Code:    dns.ExtendedErrorCodeDNSBogus,
+		Message: "DNSSEC validation failed",
+		Err:     err,
 	}
 }
 
