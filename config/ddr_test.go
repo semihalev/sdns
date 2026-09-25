@@ -145,6 +145,12 @@ func TestValidateDDR(t *testing.T) {
 		{"link-local hint", func(c *Config) {
 			c.DDR.Enabled, c.DDR.Name, c.BindTLS, c.DDR.IPv4Hint = true, "dns.example.", ":853", []string{"169.254.1.1"}
 		}, "not an address a client can connect to"},
+		{"limited broadcast hint", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.BindTLS, c.DDR.IPv4Hint = true, "dns.example.", ":853", []string{"255.255.255.255"}
+		}, "not an address a client can connect to"},
+		{"multicast hint", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.BindTLS, c.DDR.IPv6Hint = true, "dns.example.", ":853", []string{"ff02::1"}
+		}, "not an address a client can connect to"},
 		{"hint listed twice", func(c *Config) {
 			c.DDR.Enabled, c.DDR.Name, c.BindTLS, c.DDR.IPv4Hint = true, "dns.example.", ":853", []string{"198.51.100.1", "198.51.100.1"}
 		}, "listed twice"},

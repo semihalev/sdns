@@ -71,8 +71,9 @@ taken from a listener's bind address: behind a load balancer, NAT, anycast or
 a reverse proxy the address sdns is bound to is not the one clients reach.
 Without hints clients resolve the advertised name, which must then point at
 where they connect; with them they can connect without that lookup. A private
-address is a fine hint for a resolver on a home or office network; loopback,
-link-local and unspecified addresses are refused by `sdns -t`. A listener bound
+address is a fine hint for a resolver on a home or office network; anything
+that is not global unicast, loopback, link-local, multicast, unspecified or
+the IPv4 limited broadcast, is refused by `sdns -t`. A listener bound
 to a loopback address is not advertised at all: a client would only ever
 reach its own machine there.
 Only listeners that are actually up are
