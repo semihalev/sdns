@@ -53,8 +53,8 @@ func wallOnly(t time.Time) time.Time { return time.Unix(0, t.UnixNano()) }
 // with a monotonic reading ignores the wall clock.
 func TestLeaseKeepsItsClock(t *testing.T) {
 	admit := time.Now()
-	byWall := &CacheEntry{stored: admit, ttl: time.Hour, cutUntil: wallOnly(admit.Add(10 * time.Second))}
-	byMono := &CacheEntry{stored: admit, ttl: time.Hour, cutUntil: admit.Add(10 * time.Second)}
+	byWall := &CacheEntry{storedAt: clockOffset(admit), ttl: time.Hour, cutUntil: wallOnly(admit.Add(10 * time.Second))}
+	byMono := &CacheEntry{storedAt: clockOffset(admit), ttl: time.Hour, cutUntil: admit.Add(10 * time.Second)}
 
 	later := clockAfter(t, admit, time.Second, 61*time.Second)
 	if _, lease := byWall.remainingBounds(later); lease > -50*time.Second {
@@ -75,7 +75,7 @@ func TestDerivedAnswerInheritsAWallClockLease(t *testing.T) {
 	source.cutKey = 7
 
 	var meta middleware.ResponseMeta
-	boundRequestToEntryLifetime(middleware.WithResponseMeta(context.Background(), &meta), source)
+	boundEntryAt(middleware.WithResponseMeta(context.Background(), &meta), source, time.Now())
 	cut := meta.Cut()
 	if w := cut.Wall(); w.Until.IsZero() || w.Key != 7 {
 		t.Fatalf("the derived answer's bound = %+v, want the source's lease", cut)
@@ -102,7 +102,7 @@ func TestStaleTTLTakesTheWallClockLease(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("a.test.", dns.TypeA)
 	entry := NewCacheEntry(snapAnswer("a.test.", 300, "192.0.2.1"), time.Minute, 0)
-	entry.stored = admit.Add(-2 * time.Minute)
+	entry.storedAt = clockOffset(admit.Add(-2 * time.Minute))
 	entry.cutUntil = wallOnly(admit.Add(10 * time.Second))
 
 	now := clockAfter(t, admit, time.Second, 7*time.Second) // three seconds of lease left

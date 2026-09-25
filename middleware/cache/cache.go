@@ -1305,7 +1305,12 @@ func (c *Cache) serveHitFromWire(
 	if w.Internal() || isStaleAliasChase(ctx) {
 		return false
 	}
-	if entry == nil || entry.remaining(time.Now()) <= 0 {
+	if entry == nil {
+		return false
+	}
+	now := time.Now()
+	rem, ttlRem := entry.lifetime(now)
+	if rem <= 0 {
 		return false
 	}
 	// The deterministic declines run before the limiter spends anything:
@@ -1381,7 +1386,7 @@ func (c *Cache) serveHitFromWire(
 		if gate != nil {
 			gate.CountWireHit(sc)
 		}
-		boundRequestToEntryLifetime(ctx, entry)
+		boundRequestToEntryLifetime(ctx, entry, now, ttlRem)
 		c.metrics.Hit()
 		wireFastServed.Inc()
 		ch.Cancel()
@@ -1395,7 +1400,7 @@ func (c *Cache) serveHitFromWire(
 		if gate != nil {
 			gate.CountWireHit(sc)
 		}
-		boundRequestToEntryLifetime(ctx, entry)
+		boundRequestToEntryLifetime(ctx, entry, now, ttlRem)
 		c.metrics.Hit()
 		ch.Cancel()
 		return true
@@ -1436,7 +1441,9 @@ func (c *Cache) handleCacheHit(
 	// them eligible for the serve-stale policy. Do this before spending an
 	// entry rate-limit token so the later fallback is not charged twice (and
 	// cannot be suppressed by a token spent on a response we did not serve).
-	if entry.remaining(time.Now()) <= 0 {
+	now := time.Now()
+	rem, ttlRem := entry.lifetime(now)
+	if rem <= 0 {
 		return false
 	}
 	// A stale alias completion may consume a still-fresh target entry, but
@@ -1559,7 +1566,7 @@ func (c *Cache) handleCacheHit(
 			// rest on that. Bound only after the write reported success, and
 			// never after a fallback: the Msg path below binds once it has a
 			// message of its own.
-			boundRequestToEntryLifetime(ctx, entry)
+			boundRequestToEntryLifetime(ctx, entry, now, ttlRem)
 			wireFastServed.Inc()
 			ch.Cancel()
 			served = true
@@ -1577,7 +1584,7 @@ func (c *Cache) handleCacheHit(
 			if policyGate != nil {
 				policyGate.CountWireHit(policySC)
 			}
-			boundRequestToEntryLifetime(ctx, entry)
+			boundRequestToEntryLifetime(ctx, entry, now, ttlRem)
 			ch.Cancel()
 			served = true
 		}
@@ -1613,7 +1620,7 @@ func (c *Cache) handleCacheHit(
 
 	// The message materialized, so the entry was live: bind the request tree
 	// to its lifetime before the chase below can derive anything from it.
-	boundRequestToEntryLifetime(ctx, entry)
+	boundRequestToEntryLifetime(ctx, entry, now, ttlRem)
 
 	// Resolve CNAME chains if needed (matching V1 behavior).
 	// The depth counter bounds nested chases across the Queryer
@@ -1651,7 +1658,12 @@ func (c *Cache) handleCacheHit(
 // it inherited, not the lease alone. A cached answer near the end of its TTL
 // has the shorter claim, and passing only the lease would let the TTL floor
 // re-publish it under whatever is being assembled.
-func boundRequestToEntryLifetime(ctx context.Context, entry *CacheEntry) {
+//
+// now and ttlRemaining are the instant the hit read the entry at and the
+// TTL it found left, so the hit reads the entry's clock once. The expiry is
+// rebuilt from now, never from the process epoch: an instant derived from
+// the epoch would carry the wall reading of process start.
+func boundRequestToEntryLifetime(ctx context.Context, entry *CacheEntry, now time.Time, ttlRemaining time.Duration) {
 	if entry == nil {
 		return
 	}
@@ -1659,7 +1671,7 @@ func boundRequestToEntryLifetime(ctx context.Context, entry *CacheEntry) {
 	if meta == nil {
 		return
 	}
-	hardUntil, hardKey := entry.stored.Add(entry.ttl), uint64(0)
+	hardUntil, hardKey := now.Add(ttlRemaining), uint64(0)
 	// Almost every entry is unbounded or bound by a monotonic lease alone,
 	// on the clock its own expiry runs on, so the earlier of the two is the
 	// bound. On a tie the cut keeps its delegation identity.
@@ -1677,6 +1689,16 @@ func boundRequestToEntryLifetime(ctx context.Context, entry *CacheEntry) {
 	cut := entry.lease()
 	cut.Fold(hardUntil, hardKey)
 	meta.BoundLease(cut)
+}
+
+// boundEntryAt is boundRequestToEntryLifetime for a caller that has not
+// read the entry's lifetime yet.
+func boundEntryAt(ctx context.Context, entry *CacheEntry, now time.Time) {
+	if entry == nil {
+		return
+	}
+	ttlRemaining, _ := entry.remainingBounds(now)
+	boundRequestToEntryLifetime(ctx, entry, now, ttlRemaining)
 }
 
 // sharedDenialDeadline is the deadline the RFC 8020/8198 denial caches take

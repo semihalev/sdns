@@ -115,7 +115,7 @@ func TestCacheEntry_CutUntil(t *testing.T) {
 func TestCacheEntryRemainingBoundsStayIndependent(t *testing.T) {
 	now := time.Now()
 	entry := NewCacheEntry(cutTestMsg("bounds.example.", dns.RcodeSuccess, 60), time.Minute, 0)
-	entry.stored = now.Add(-20 * time.Second)
+	entry.storedAt = clockOffset(now.Add(-20 * time.Second))
 	entry.cutUntil = now.Add(10 * time.Second)
 
 	ttlRemaining, leaseRemaining := entry.remainingBounds(now)
