@@ -30,8 +30,8 @@ func TestSubqueryPositiveHitDoesNotBindRequest(t *testing.T) {
 	if _, ok := s.GetWithContext(ctx, req); !ok {
 		t.Fatal("expected a positive hit")
 	}
-	if cut, _ := meta.Cut(); !cut.IsZero() {
-		t.Fatalf("positive consult bound the request tree to %v", cut)
+	if cut := meta.Cut(); !cut.IsZero() {
+		t.Fatalf("positive consult bound the request tree to %+v", cut)
 	}
 }
 
@@ -65,7 +65,7 @@ func TestSubqueryNegativeHitStillBindsRequest(t *testing.T) {
 	if _, ok := s.GetWithContext(ctx, req); !ok {
 		t.Fatal("expected a NODATA hit")
 	}
-	if cut, _ := meta.Cut(); cut.IsZero() {
+	if cut := meta.Cut(); cut.IsZero() {
 		t.Fatal("denial consult no longer bounds the request tree")
 	}
 }

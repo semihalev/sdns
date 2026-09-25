@@ -185,8 +185,8 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	// storing the stale refresh would resurrect the old answer past
 	// the parent's decision. Only the exact entry that claimed the
 	// prefetch may be replaced.
-	cutUntil, cutKey := meta.Cut()
-	if !req.Cache.store.ReplaceIfCurrent(req.Key, req.Entry, resp, cutUntil, cutKey) {
+	cut := meta.Cut()
+	if !req.Cache.store.ReplaceIfCurrent(req.Key, req.Entry, resp, cut) {
 		zlog.Debug("Prefetch dropped, entry superseded", "query", dnsutil.FormatQuestion(req.Request.Question[0]))
 		return
 	}
@@ -202,21 +202,23 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	if !req.Entry.scoped() && !requestCD && !req.RequestHadECS &&
 		!hasEDNSClientSubnet(req.Request) &&
 		!resp.CheckingDisabled {
+		until, shareable := sharedDenialDeadline(cut)
 		if negative, ok := middleware.ValidatedNegativeProofForResponse(ctx, resp); ok &&
+			shareable &&
 			negative.Aggressive &&
 			negative.Proof != nil {
 			req.Cache.store.RecordDenialProof(
 				negative.Proof,
 				negative.Zone,
 				negative.Kind,
-				cutUntil,
+				until,
 			)
 			if negative.Proof.Rcode == dns.RcodeNameError {
 				req.Cache.store.RecordNXDomainCut(
 					negative.Proof,
 					negative.Subject,
 					negative.Zone,
-					cutUntil,
+					until,
 				)
 			}
 		}

@@ -7,6 +7,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/authority"
 	"github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 	"github.com/semihalev/sdns/middleware/resolver/localroot"
@@ -133,7 +134,7 @@ func (r *Resolver) consultLocalRoot(ctx context.Context, rs *resolveState) (answ
 // than one a delegation entry supplied, the same shape the cache's own
 // boundRequestTo uses.
 func noteCopyHorizon(ctx context.Context, snap *localroot.Snapshot) {
-	noteCut(ctx, snap.ValidUntil(), 0)
+	noteCut(ctx, snap.ValidUntil())
 }
 
 // boundToCopy finishes a response built from the local copy: every record is
@@ -157,7 +158,8 @@ func noteCopyHorizon(ctx context.Context, snap *localroot.Snapshot) {
 // A horizon less than a second away yields TTL 0, which is the honest answer:
 // serve it, and tell the client not to hold it.
 func boundToCopy(resp *dns.Msg, snap *localroot.Snapshot) {
-	ttl := uint32(max(time.Until(snap.ValidUntil()), 0) / time.Second) //nolint:gosec // bounded above by the SOA expire interval.
+	left, _ := snap.ValidUntil().Remaining(time.Now())
+	ttl := uint32(max(left, 0) / time.Second) //nolint:gosec // bounded above by the SOA expire interval.
 	resp.Answer = copyBoundedTTL(resp.Answer, ttl)
 	resp.Ns = copyBoundedTTL(resp.Ns, ttl)
 	// Extra carries the priming glue; the OPT record is attached further
@@ -293,16 +295,16 @@ func (r *Resolver) installLocalRootReferral(
 	if security := observedAt.Add(time.Duration(ref.SecurityTTL) * time.Second); security.Before(deadline) {
 		deadline = security
 	}
-	if until := snap.ValidUntil(); until.Before(deadline) {
-		deadline = until
-	}
+	// The horizon keeps its signature expiration on the wall clock, so the
+	// lease is not folded into one deadline here.
+	cut := lease.Until(deadline).Min(snap.ValidUntil())
 	// The store returns whatever is live under the key, this call's entry,
 	// or the one a racing walk published first, and the walk takes that
 	// delegation whole. Servers, DS set and lease belong to one entry:
 	// pairing a winner's servers with this call's DS chain would validate
 	// one delegation's answers against another's keys, so there is no
 	// separate readback to get wrong.
-	live := r.delegations.SetUntilIfAbsent(key, ref.DS, servers, deadline)
+	live := r.delegations.SetUntilIfAbsent(key, ref.DS, servers, cut)
 	if live == nil {
 		return false
 	}
@@ -311,8 +313,8 @@ func (r *Resolver) installLocalRootReferral(
 	rs.parentDS = live.DSSet
 	rs.level = 1
 	rs.isRoot = false
-	rs.cutDeadline, rs.cutKey = minCut(rs.cutDeadline, rs.cutKey, live.ExpiresAt, key)
-	noteCut(ctx, rs.cutDeadline, rs.cutKey)
+	rs.cut = rs.cut.Min(live.Lease.Keyed(key))
+	noteCut(ctx, rs.cut)
 	return true
 }
 

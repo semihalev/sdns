@@ -41,15 +41,18 @@ keeps only the lifetime it had left, less the time sdns was down, and its
 delegation lease is aged the same way, separately; an answer whose lease ran
 out while sdns was down is gone, not stale. Each then goes through the same
 admission as an upstream answer, under the limits and the signature rules in
-force at the new start, which can only shorten it. ECS-scoped answers and
-answers with less than ten seconds left are not saved.
+force at the new start, which can only shorten it. ECS-scoped answers,
+answers with less than ten seconds left, and answers bound by a signature
+expiration from the local root copy, a calendar instant the file cannot keep
+as one, are not saved.
 
 The file is LZ4 compressed and carries a CRC-32C over everything in it. It is
 set aside whole, and the cache starts empty as it would have without it, when
 the checksum fails, when it was written in the future by the clock's account,
 or when it was written under different trust anchors, DNSSEC mode, root,
-fallback or forwarder servers, forward zones or empty zones. A file that is
-merely damaged costs a cold start, never a wrong answer.
+fallback or forwarder servers, forward zones or empty zones, or by a build
+that read the file's records differently. A file that is merely damaged costs
+a cold start, never a wrong answer.
 
 **What it costs.** For a million answers, two thirds of them signed, saving takes
 under a second and loading about two, on ordinary hardware; the file is around

@@ -9,6 +9,44 @@ import (
 	"github.com/miekg/dns"
 )
 
+// A request tree's cut keeps a deadline on each clock, and every way the cut
+// travels, a fork folded back, a detached copy, keeps both; Reset clears
+// both.
+func TestCutKeepsBothClocksWhereverItTravels(t *testing.T) {
+	now := time.Now()
+	mono := now.Add(time.Minute)
+	wall := time.Unix(0, now.Add(2*time.Minute).UnixNano())
+	both := func(t *testing.T, name string, cut Lease) {
+		t.Helper()
+		if !cut.Mono().Until.Equal(mono) || cut.Mono().Key != 1 ||
+			!cut.Wall().Until.Equal(wall) || cut.Wall().Key != 2 {
+			t.Fatalf("%s: cut = %+v, want both clocks", name, cut)
+		}
+	}
+
+	root := new(ResponseMeta)
+	root.BoundCutFor(mono, 1)
+	child := root.ForkCut()
+	child.BoundCutFor(wall, 2)
+	if !root.Cut().Wall().Until.IsZero() {
+		t.Fatal("a fork's bound reached the tree before it was folded back")
+	}
+	root.BoundLease(child.Cut())
+	both(t, "folded fork", root.Cut())
+
+	// A later deadline on either clock changes nothing.
+	root.BoundCutFor(mono.Add(time.Second), 3)
+	root.BoundCutFor(wall.Add(time.Second), 4)
+	both(t, "later bounds", root.Cut())
+
+	both(t, "detached copy", root.detachedCopy().Cut())
+
+	root.Reset()
+	if !root.Cut().IsZero() {
+		t.Fatalf("cut after Reset = %+v, want unbounded", root.Cut())
+	}
+}
+
 // TestForkDoesNotCrossRequestGenerations pins the isolation a pooled root
 // requires. A root meta is reset and reused by the next request, and a fork
 // of the request before it can still be alive. It must keep reading the
@@ -119,18 +157,18 @@ func TestForkCutSeparatesLineageAndSharesLedgers(t *testing.T) {
 	// The child's own bound stays with the child until it is merged back.
 	childDeadline := time.Now().Add(time.Second)
 	child.BoundCutFor(childDeadline, 7)
-	if got, _ := parent.Cut(); !got.IsZero() {
+	if got := parent.Cut(); !got.IsZero() {
 		t.Fatalf("the sub-query's deadline reached the request tree on its "+
-			"own: parent bound to %v", got)
+			"own: parent bound to %+v", got)
 	}
-	if got, key := child.Cut(); !got.Equal(childDeadline) || key != 7 {
-		t.Fatalf("child cut = (%v, %d), want (%v, 7)", got, key, childDeadline)
+	if got := child.Cut().Mono(); !got.Until.Equal(childDeadline) || got.Key != 7 {
+		t.Fatalf("child cut = (%v, %d), want (%v, 7)", got.Until, got.Key, childDeadline)
 	}
 
 	// A bound the tree already carries does not shorten the sub-query.
 	parentDeadline := time.Now().Add(time.Millisecond)
 	parent.BoundCutFor(parentDeadline, 3)
-	if got, _ := child.Cut(); !got.Equal(childDeadline) {
+	if got := child.Cut().Mono().Until; !got.Equal(childDeadline) {
 		t.Fatalf("the request tree's deadline shortened the sub-query: "+
 			"child bound to %v, want its own %v", got, childDeadline)
 	}

@@ -8,6 +8,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/authority"
 	internalcache "github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/lease"
 )
 
 // TestLookupV4NssDefersRosterBehindGlue pins the endpoint floor: the walk
@@ -36,7 +37,7 @@ func TestLookupV4NssDefersRosterBehindGlue(t *testing.T) {
 	}
 
 	err := r.lookupV4Nss(context.Background(), q, servers, internalcache.Key(q), nil,
-		foundv4, hosts, false, time.Now().Add(time.Minute))
+		foundv4, hosts, false, lease.Until(time.Now().Add(time.Minute)))
 	if err != nil {
 		t.Fatalf("lookupV4Nss: %v", err)
 	}
@@ -86,7 +87,7 @@ func TestEnrichShedsWithoutPools(t *testing.T) {
 	err := r.lookupV4Nss(context.Background(), q, servers, internalcache.Key(q), nil,
 		hostSet{"glued.child.example.": {}, "glued2.child.example.": {}},
 		hostSet{"glued.child.example.": {}, "glued2.child.example.": {}, "healthy.child.example.": {}},
-		false, time.Now().Add(time.Minute))
+		false, lease.Until(time.Now().Add(time.Minute)))
 	if err != nil {
 		t.Fatalf("lookupV4Nss: %v", err)
 	}

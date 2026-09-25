@@ -10,6 +10,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 )
@@ -152,7 +153,7 @@ func TestStore_CutUntil_OverridesMinTTLFloor(t *testing.T) {
 	// A cut already in the past: the entry may be stored, but must
 	// never be served, even though the MinTTL floor lifted its TTL
 	// to 5s.
-	s.SetFromResponseWithKey(key, resp, time.Now().Add(-time.Millisecond), 0)
+	s.SetFromResponseWithKey(key, resp, lease.Until(time.Now().Add(-time.Millisecond)))
 
 	req := new(dns.Msg)
 	req.SetQuestion("ghost.example.", dns.TypeA)
@@ -161,7 +162,7 @@ func TestStore_CutUntil_OverridesMinTTLFloor(t *testing.T) {
 	}
 
 	// A future cut inside the floor: served, but with the cut-capped TTL.
-	s.SetFromResponseWithKey(key, resp, time.Now().Add(2*time.Second), 0)
+	s.SetFromResponseWithKey(key, resp, lease.Until(time.Now().Add(2*time.Second)))
 	msg, ok := s.Get(req)
 	if !ok {
 		t.Fatal("entry with a future cut must be served")
@@ -183,7 +184,7 @@ func TestStore_CutUntil_CoversNegativeCDAndECS(t *testing.T) {
 		resp := cutTestNXMsg("missing.example.", 300)
 		key := CacheKey{Question: resp.Question[0], CD: false}.Hash()
 		cut := time.Now().Add(2 * time.Second)
-		s.SetFromResponseWithKey(key, resp, cut, cutKey)
+		s.SetFromResponseWithKey(key, resp, lease.Of(cut, cutKey))
 
 		entry, ok := s.LookupByKey(key)
 		if !ok {
@@ -193,7 +194,7 @@ func TestStore_CutUntil_CoversNegativeCDAndECS(t *testing.T) {
 			t.Fatalf("negative cut = (%v, %#x), want (%v, %#x)", entry.cutUntil, entry.cutKey, cut, cutKey)
 		}
 
-		s.SetFromResponseWithKey(key, resp, time.Now().Add(-time.Millisecond), cutKey)
+		s.SetFromResponseWithKey(key, resp, lease.Of(time.Now().Add(-time.Millisecond), cutKey))
 		if _, ok := s.LookupByKey(key); ok {
 			t.Fatal("negative answer survived past its delegation cut")
 		}
@@ -203,8 +204,8 @@ func TestStore_CutUntil_CoversNegativeCDAndECS(t *testing.T) {
 		resp := cutTestMsg("cd.example.", dns.RcodeSuccess, 300)
 		falseCut, trueCut := time.Now().Add(time.Minute), time.Now().Add(2*time.Minute)
 		const falseKey, trueKey = uint64(0x201), uint64(0x202)
-		s.SetFromResponseWithCut(resp, false, falseCut, falseKey)
-		s.SetFromResponseWithCut(resp, true, trueCut, trueKey)
+		s.SetFromResponseWithCut(resp, false, lease.Of(falseCut, falseKey))
+		s.SetFromResponseWithCut(resp, true, lease.Of(trueCut, trueKey))
 
 		for _, tc := range []struct {
 			cd       bool
@@ -230,7 +231,7 @@ func TestStore_CutUntil_CoversNegativeCDAndECS(t *testing.T) {
 		key := CacheKey{Question: resp.Question[0], CD: false, Scope: scope}.Hash()
 		cut := time.Now().Add(2 * time.Second)
 		const cutKey = uint64(0x301)
-		s.SetFromResponseScoped(key, resp, scope, cut, cutKey)
+		s.SetFromResponseScoped(key, resp, scope, lease.Of(cut, cutKey))
 		entry, ok := s.LookupByKey(key)
 		if !ok {
 			t.Fatal("ECS-scoped entry missing")
@@ -238,7 +239,7 @@ func TestStore_CutUntil_CoversNegativeCDAndECS(t *testing.T) {
 		if !entry.cutUntil.Equal(cut) || entry.cutKey != cutKey {
 			t.Fatalf("ECS cut = (%v, %#x), want (%v, %#x)", entry.cutUntil, entry.cutKey, cut, cutKey)
 		}
-		s.SetFromResponseScoped(key, resp, scope, time.Now().Add(-time.Millisecond), cutKey)
+		s.SetFromResponseScoped(key, resp, scope, lease.Of(time.Now().Add(-time.Millisecond), cutKey))
 		if _, ok := s.LookupByKey(key); ok {
 			t.Fatal("ECS-scoped entry survived past its delegation cut")
 		}
@@ -259,19 +260,19 @@ func TestStore_ReplaceIfCurrent(t *testing.T) {
 	q := dns.Question{Name: "cas.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	key := CacheKey{Question: q, CD: false}.Hash()
 
-	s.SetFromResponseWithKey(key, cutTestMsg("cas.example.", dns.RcodeSuccess, 60), time.Time{}, 0)
+	s.SetFromResponseWithKey(key, cutTestMsg("cas.example.", dns.RcodeSuccess, 60), lease.Lease{})
 	claimed, ok := s.LookupByKey(key)
 	if !ok {
 		t.Fatal("seed entry missing")
 	}
 
 	// Nil expected never stores.
-	if s.ReplaceIfCurrent(key, nil, cutTestMsg("cas.example.", dns.RcodeSuccess, 60), time.Time{}, 0) {
+	if s.ReplaceIfCurrent(key, nil, cutTestMsg("cas.example.", dns.RcodeSuccess, 60), lease.Lease{}) {
 		t.Fatal("ReplaceIfCurrent with nil expected must be a no-op")
 	}
 
 	// Current entry matches: refresh lands.
-	if !s.ReplaceIfCurrent(key, claimed, cutTestMsg("cas.example.", dns.RcodeSuccess, 120), time.Time{}, 0) {
+	if !s.ReplaceIfCurrent(key, claimed, cutTestMsg("cas.example.", dns.RcodeSuccess, 120), lease.Lease{}) {
 		t.Fatal("refresh of the still-current entry must succeed")
 	}
 	replaced, _ := s.LookupByKey(key)
@@ -283,7 +284,7 @@ func TestStore_ReplaceIfCurrent(t *testing.T) {
 	// This is the late-prefetch-overwrite guard, `claimed` plays the
 	// role of the entry a slow prefetch captured before newer state
 	// (here `replaced`, in reality a withdrawal NXDOMAIN) landed.
-	if s.ReplaceIfCurrent(key, claimed, cutTestMsg("cas.example.", dns.RcodeSuccess, 60), time.Time{}, 0) {
+	if s.ReplaceIfCurrent(key, claimed, cutTestMsg("cas.example.", dns.RcodeSuccess, 60), lease.Lease{}) {
 		t.Fatal("a stale refresh must not overwrite newer state")
 	}
 	if cur, _ := s.LookupByKey(key); cur != replaced {
@@ -291,7 +292,7 @@ func TestStore_ReplaceIfCurrent(t *testing.T) {
 	}
 
 	// SERVFAIL refresh never displaces a positive entry.
-	if s.ReplaceIfCurrent(key, replaced, cutTestMsg("cas.example.", dns.RcodeServerFailure, 0), time.Time{}, 0) {
+	if s.ReplaceIfCurrent(key, replaced, cutTestMsg("cas.example.", dns.RcodeServerFailure, 0), lease.Lease{}) {
 		t.Fatal("a SERVFAIL refresh must never displace a positive entry")
 	}
 	if _, ok := s.LookupByKey(key); !ok {
@@ -302,7 +303,7 @@ func TestStore_ReplaceIfCurrent(t *testing.T) {
 	// an active RFC 9520 failure is never refreshed in the background.
 	negQ := dns.Question{Name: "neg.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	negKey := CacheKey{Question: negQ, CD: false}.Hash()
-	s.SetFromResponseWithKey(negKey, cutTestMsg("neg.example.", dns.RcodeServerFailure, 0), time.Time{}, 0)
+	s.SetFromResponseWithKey(negKey, cutTestMsg("neg.example.", dns.RcodeServerFailure, 0), lease.Lease{})
 	req := new(dns.Msg)
 	req.SetQuestion(negQ.Name, negQ.Qtype)
 	hit, ok := s.LookupFailure(req, netip.Prefix{})
@@ -326,8 +327,7 @@ func TestStore_ReplaceIfCurrent(t *testing.T) {
 		legacyKey,
 		legacyEntry,
 		cutTestMsg(legacyQ.Name, dns.RcodeServerFailure, 0),
-		time.Time{},
-		0,
+		lease.Lease{},
 	) {
 		t.Fatal("manually seeded legacy SERVFAIL was not replaced")
 	}
@@ -345,7 +345,7 @@ func TestStore_ReplaceIfCurrent_ConcurrentSingleWinner(t *testing.T) {
 
 	q := dns.Question{Name: "cas-race.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
 	key := CacheKey{Question: q, CD: false}.Hash()
-	s.SetFromResponseWithKey(key, cutTestMsg(q.Name, dns.RcodeSuccess, 60), time.Time{}, 0)
+	s.SetFromResponseWithKey(key, cutTestMsg(q.Name, dns.RcodeSuccess, 60), lease.Lease{})
 	expected, ok := s.LookupByKey(key)
 	if !ok {
 		t.Fatal("seed entry missing")
@@ -359,7 +359,7 @@ func TestStore_ReplaceIfCurrent_ConcurrentSingleWinner(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			if s.ReplaceIfCurrent(key, expected, cutTestMsg(q.Name, dns.RcodeSuccess, 120), time.Time{}, 0) {
+			if s.ReplaceIfCurrent(key, expected, cutTestMsg(q.Name, dns.RcodeSuccess, 120), lease.Lease{}) {
 				winners.Add(1)
 			}
 		}()
@@ -467,8 +467,8 @@ func TestWriteMsg_CNAMEChainUsesShortestCut(t *testing.T) {
 	if len(w.Msg().Answer) != 2 {
 		t.Fatalf("CNAME chase response answers = %d, want CNAME + A", len(w.Msg().Answer))
 	}
-	if got := ch.Meta.CutUntil(); !got.Equal(shortCut) || ch.Meta.CutKey() != shortKey {
-		t.Fatalf("request-tree cut = (%v, %#x), want shortest target cut (%v, %#x)", got, ch.Meta.CutKey(), shortCut, shortKey)
+	if got := ch.Meta.Cut().Mono(); !got.Until.Equal(shortCut) || got.Key != shortKey {
+		t.Fatalf("request-tree cut = (%v, %#x), want shortest target cut (%v, %#x)", got.Until, got.Key, shortCut, shortKey)
 	}
 
 	for _, name := range []string{"alias.long.", "target.short."} {

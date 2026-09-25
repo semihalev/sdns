@@ -4,10 +4,10 @@ import (
 	"context"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 )
@@ -103,7 +103,7 @@ func TestEveryAdmissionDoorStampsTheSidecar(t *testing.T) {
 
 	// Door 1: the SetFromResponse funnel (writer and resolver paths).
 	resp := seamResponse("door1.test.", seamA("door1.test."))
-	c.store.SetFromResponseWithCut(resp, false, time.Time{}, 0)
+	c.store.SetFromResponseWithCut(resp, false, lease.Lease{})
 	key := CacheKey{Question: resp.Question[0], CD: false}.Hash()
 	entry, ok := c.store.LookupByKey(key)
 	if !ok || entry.Sidecar() == nil {
@@ -114,7 +114,7 @@ func TestEveryAdmissionDoorStampsTheSidecar(t *testing.T) {
 	}
 
 	// Door 2: the prefetch replacement.
-	if !c.store.ReplaceIfCurrent(key, entry, seamResponse("door1.test.", seamA("door1.test.")), time.Time{}, 0) {
+	if !c.store.ReplaceIfCurrent(key, entry, seamResponse("door1.test.", seamA("door1.test.")), lease.Lease{}) {
 		t.Fatal("replacement declined")
 	}
 	replaced, ok := c.store.LookupByKey(key)
@@ -143,7 +143,7 @@ func TestUnwiredSeamLeavesEntriesUnstamped(t *testing.T) {
 	defer c.Stop()
 
 	resp := seamResponse("plain.test.", seamA("plain.test."))
-	c.store.SetFromResponseWithCut(resp, false, time.Time{}, 0)
+	c.store.SetFromResponseWithCut(resp, false, lease.Lease{})
 	entry, ok := c.store.LookupByKey(CacheKey{Question: resp.Question[0], CD: false}.Hash())
 	if !ok {
 		t.Fatal("entry missing")
@@ -265,9 +265,9 @@ func TestChaseGateSeesEverySegmentInOrder(t *testing.T) {
 		Hdr:    dns.RR_Header{Name: "alias.seam.test.", Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
 		Target: "target.seam.test.",
 	})
-	c.store.SetFromResponseWithCut(alias, false, time.Time{}, 0)
+	c.store.SetFromResponseWithCut(alias, false, lease.Lease{})
 	target := seamResponse("target.seam.test.", seamA("target.seam.test."))
-	c.store.SetFromResponseWithCut(target, false, time.Time{}, 0)
+	c.store.SetFromResponseWithCut(target, false, lease.Lease{})
 
 	req, _ := wireTestRequest(t, "alias.seam.test.", dns.TypeA, false)
 	w := mock.NewWriter("udp", "192.0.2.9:53000")
@@ -324,7 +324,7 @@ func TestRawPathGateKeepsADeclinedHitOffBytes(t *testing.T) {
 	c.SetSidecarPolicy(p)
 
 	resp := seamResponse("raw.seam.test.", seamA("raw.seam.test."))
-	c.store.SetFromResponseWithCut(resp, false, time.Time{}, 0)
+	c.store.SetFromResponseWithCut(resp, false, lease.Lease{})
 
 	served := wireFastServed.Value()
 	req, _ := wireTestRequest(t, "raw.seam.test.", dns.TypeA, false)
@@ -493,7 +493,7 @@ func TestRawFallbackAfterApprovalCountsNothing(t *testing.T) {
 	c.SetSidecarPolicy(p)
 
 	resp := seamResponse("rawfall.test.", seamA("rawfall.test."))
-	c.store.SetFromResponseWithCut(resp, false, time.Time{}, 0)
+	c.store.SetFromResponseWithCut(resp, false, lease.Lease{})
 
 	req, _ := wireTestRequest(t, "rawfall.test.", dns.TypeA, false)
 	w := mock.NewWriter("udp", "192.0.2.9:53000")
@@ -570,11 +570,11 @@ func gatedHitAllocs(t *testing.T, c *Cache, qname string) float64 {
 // harness.
 func TestGatedByteHitsAllocateNoMoreThanUngated(t *testing.T) {
 	prime := func(c *Cache) {
-		c.store.SetFromResponseWithCut(seamResponse("exact.pin.test.", seamA("exact.pin.test.")), false, time.Time{}, 0)
+		c.store.SetFromResponseWithCut(seamResponse("exact.pin.test.", seamA("exact.pin.test.")), false, lease.Lease{})
 		c.store.SetFromResponseWithCut(seamResponse("alias.pin.test.", &dns.CNAME{
 			Hdr:    dns.RR_Header{Name: "alias.pin.test.", Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
 			Target: "exact.pin.test.",
-		}), false, time.Time{}, 0)
+		}), false, lease.Lease{})
 	}
 
 	base := New(&config.Config{CacheSize: 1024, Expire: 600})

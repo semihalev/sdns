@@ -11,6 +11,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/authority"
 	"github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/lease"
 )
 
 // startMockAuth starts a UDP authoritative server on a random loopback port
@@ -337,8 +338,8 @@ func TestMinRRSetTTL_ZeroWins(t *testing.T) {
 
 func TestMinCut_PreservesAncestorIdentityOnEqualDeadline(t *testing.T) {
 	deadline := time.Now().Add(time.Minute)
-	gotDeadline, gotKey := minCut(deadline, 0x601, deadline, 0x602)
-	if !gotDeadline.Equal(deadline) || gotKey != 0x601 {
-		t.Fatalf("equal minCut = (%v, %#x), want ancestor (%v, %#x)", gotDeadline, gotKey, deadline, uint64(0x601))
+	got := lease.Of(deadline, 0x601).Min(lease.Of(deadline, 0x602)).Mono()
+	if !got.Until.Equal(deadline) || got.Key != 0x601 {
+		t.Fatalf("equal cut = (%v, %#x), want ancestor (%v, %#x)", got.Until, got.Key, deadline, uint64(0x601))
 	}
 }

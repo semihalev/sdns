@@ -14,6 +14,7 @@ import (
 	"github.com/semihalev/sdns/internal/authority"
 	internalcache "github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/middleware"
 )
 
@@ -121,7 +122,7 @@ func TestRecursionWorkNXNSInternalBudget(t *testing.T) {
 		authservers := &authority.Servers{Zone: "victim.test.", CheckingDisable: true}
 
 		err := r.lookupV4Nss(ctx, q, authservers, internalcache.Key(q, true), nil,
-			make(hostSet), hosts, true, time.Now().Add(time.Minute))
+			make(hostSet), hosts, true, lease.Until(time.Now().Add(time.Minute)))
 		if err != nil {
 			t.Fatalf("lookupV4Nss error = %v, want one cheap success", err)
 		}
@@ -146,7 +147,7 @@ func TestRecursionWorkNXNSInternalBudget(t *testing.T) {
 		authservers := &authority.Servers{Zone: "victim.test.", CheckingDisable: true}
 
 		err := r.lookupV4Nss(ctx, q, authservers, internalcache.Key(q, true), nil,
-			make(hostSet), hosts, true, time.Now().Add(time.Minute))
+			make(hostSet), hosts, true, lease.Until(time.Now().Add(time.Minute)))
 		if !errors.Is(err, middleware.ErrRecursionWorkLimit) {
 			t.Fatalf("lookupV4Nss error = %v, want recursion work limit", err)
 		}

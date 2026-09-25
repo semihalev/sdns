@@ -61,7 +61,7 @@ func TestDetachedContextOutlivesTheSlab(t *testing.T) {
 		t.Fatal("the detached context points at the job's own meta; the next " +
 			"request to take this slab shares state with the last one")
 	}
-	if got := h.meta.CutUntil(); !got.Equal(cut) {
+	if got := h.meta.Cut().Mono().Until; !got.Equal(cut) {
 		t.Fatalf("detached cut %v, want %v, state did not transfer", got, cut)
 	}
 
@@ -75,7 +75,7 @@ func TestDetachedContextOutlivesTheSlab(t *testing.T) {
 	ch.Meta.BoundCut(time.Now().Add(time.Second))
 
 	// What the first request held must be untouched by any of that.
-	if got := h.meta.CutUntil(); !got.Equal(cut) {
+	if got := h.meta.Cut().Mono().Until; !got.Equal(cut) {
 		t.Fatalf("retained cut became %v after the slab was reused; want %v", got, cut)
 	}
 	if ResponseMetaFrom(h.ctx) == &ch.Meta {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/edns"
@@ -60,7 +61,7 @@ func wireFastTestPipeline(tb testing.TB, entryMsg *dns.Msg) (*Cache, *edns.EDNS)
 	e := edns.New(cfg)
 
 	key := CacheKey{Question: entryMsg.Question[0], CD: entryMsg.CheckingDisabled}.Hash()
-	c.store.SetFromResponseWithKey(key, entryMsg, time.Time{}, 0)
+	c.store.SetFromResponseWithKey(key, entryMsg, lease.Lease{})
 	return c, e
 }
 

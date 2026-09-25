@@ -15,8 +15,8 @@ const minSnapshotLifetime = 10 * time.Second
 
 // snapshotSaved counts what Snapshot wrote and why it passed over the rest.
 type snapshotSaved struct {
-	saved, scoped, short int
-	truncated            bool // the walk ran out of time
+	saved, scoped, short, wallClock int
+	truncated                       bool // the walk ran out of time
 }
 
 // Snapshot writes the positive answers the cache holds to w. Each keeps the
@@ -26,7 +26,8 @@ type snapshotSaved struct {
 //
 // ECS-scoped answers are left out: their audience is a client prefix, and a
 // restart is no reason to trust a geo answer longer. So are answers with
-// less than minSnapshotLifetime left.
+// less than minSnapshotLifetime left, and answers bound by a wall-clock
+// deadline, which a record cannot keep on its own clock.
 //
 // The entries are gathered under the cache's segment locks and written
 // after they are released, so a slow disk never holds up a cache write.
@@ -58,6 +59,13 @@ func (s *Store) snapshot(w io.Writer, fingerprint [32]byte, compression uint16, 
 		}
 		if e.scoped() {
 			out.scoped++
+			continue
+		}
+		// A record keeps its lease as a duration, which a restore counts on
+		// the monotonic clock. A wall-clock deadline would come back as
+		// something it is not, so an answer bound by one is left out.
+		if !e.lease().Wall().Until.IsZero() {
+			out.wallClock++
 			continue
 		}
 		ttl, lease := e.remainingBounds(now)

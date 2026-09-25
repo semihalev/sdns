@@ -111,7 +111,9 @@ type ContextStore interface {
 // identity before Phase 3 needs it; the built-in cache implements both.
 type CutStore interface {
 	Store
-	SetFromResponseWithCut(resp *dns.Msg, keyCD bool, cutUntil time.Time, cutKey uint64)
+	// SetFromResponseWithCut stores resp bounded by cut, the earliest
+	// deadline on each clock with the delegation identity that supplied it.
+	SetFromResponseWithCut(resp *dns.Msg, keyCD bool, cut Lease)
 }
 
 // ResolutionFailureStore is the optional RFC 9520 extension implemented by

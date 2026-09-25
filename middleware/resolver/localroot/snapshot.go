@@ -16,15 +16,19 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsname"
+	"github.com/semihalev/sdns/internal/lease"
 )
 
 // Snapshot is one immutable, verified copy of the root zone, indexed for the
 // three lookups the resolver makes. It is built once and never mutated; the
 // manager publishes it with an atomic pointer swap.
 type Snapshot struct {
-	serial   uint32
-	loaded   time.Time
-	expireAt time.Time
+	serial uint32
+	loaded time.Time
+	// expireAt holds the SOA expire interval, counted from the transfer on
+	// the monotonic clock, and the earliest signature expiration, a
+	// wall-clock instant, each on its own clock.
+	expireAt lease.Lease
 
 	// anchorFP identifies the trust anchor set this copy was verified
 	// against. The copy is evidence only for as long as those anchors are
@@ -59,20 +63,21 @@ func (s *Snapshot) Loaded() time.Time { return s.loaded }
 // expire interval (RFC 1035 secondary semantics) or the earliest RRSIG
 // expiration in the zone, whichever comes first, and must no longer be
 // served.
-func (s *Snapshot) Expired(now time.Time) bool { return now.After(s.expireAt) }
+func (s *Snapshot) Expired(now time.Time) bool {
+	left, bounded := s.expireAt.Remaining(now)
+	return bounded && left < 0
+}
 
 // ValidUntil is the copy's serving horizon; nothing derived from the copy
 // may claim a longer life.
-func (s *Snapshot) ValidUntil() time.Time { return s.expireAt }
+func (s *Snapshot) ValidUntil() lease.Lease { return s.expireAt }
 
 // BoundTo shortens the horizon to at most until. The caller uses it for a
 // bound the records themselves cannot express, the expiration of the
 // signature that authenticated the zone digest, which is what makes the
 // whole copy evidence in the first place.
 func (s *Snapshot) BoundTo(until time.Time) {
-	if until.Before(s.expireAt) {
-		s.expireAt = until
-	}
+	s.expireAt = s.expireAt.Min(lease.Until(until))
 }
 
 // SOA returns the apex SOA and its RRSIGs.
@@ -437,7 +442,7 @@ func buildSnapshot(rrs []dns.RR, now time.Time) (*Snapshot, error) {
 	// the lie the verification gate exists to prevent. (RRSIG Expiration is
 	// a uint32 UNIX instant; the root re-signs on a ~2-week window, so the
 	// serial-arithmetic wrap is not reachable while the maths below holds.)
-	s.expireAt = now.Add(time.Duration(s.soa.Expire) * time.Second)
+	s.expireAt = lease.Until(now.Add(time.Duration(s.soa.Expire) * time.Second))
 	for _, rr := range rrs {
 		sig, ok := rr.(*dns.RRSIG)
 		if !ok {
@@ -457,9 +462,7 @@ func buildSnapshot(rrs []dns.RR, now time.Time) (*Snapshot, error) {
 			dns.CanonicalName(sig.Header().Name) == "." {
 			continue
 		}
-		if exp := time.Unix(int64(sig.Expiration), 0); exp.Before(s.expireAt) {
-			s.expireAt = exp
-		}
+		s.expireAt = s.expireAt.Min(lease.Until(time.Unix(int64(sig.Expiration), 0)))
 	}
 
 	if nsecSet := apex[dns.TypeNSEC]; len(nsecSet) == 1 {

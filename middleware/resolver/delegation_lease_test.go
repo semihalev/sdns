@@ -8,6 +8,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/authority"
+	"github.com/semihalev/sdns/internal/lease"
 )
 
 // TestProvisionalStoreDoesNotClobberDelegationLease guards the lease against
@@ -29,13 +30,13 @@ func TestProvisionalStoreDoesNotClobberDelegationLease(t *testing.T) {
 	authservers.List = append(authservers.List,
 		authority.NewServerFromAddrPort(netip.MustParseAddrPort("192.0.2.1:53")))
 
-	lease := time.Now().Add(time.Hour)
-	r.delegations.SetUntil(key, nil, authservers, lease)
+	until := time.Now().Add(time.Hour)
+	r.delegations.SetUntil(key, nil, authservers, lease.Until(until))
 
 	r.addIPv4Cache(map[string]nsAddrs{host: {addrs: []netip.Addr{netip.MustParseAddr("192.0.2.2")}, ttl: 300}})
 
 	q := dns.Question{Name: "www.lease.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
-	if _, err := r.resolveV4Host(context.Background(), q, authservers, key, nil, host, false, time.Time{}); err != nil {
+	if _, err := r.resolveV4Host(context.Background(), q, authservers, key, nil, host, false, lease.Lease{}); err != nil {
 		t.Fatalf("resolveV4Host: %v", err)
 	}
 
@@ -43,8 +44,8 @@ func TestProvisionalStoreDoesNotClobberDelegationLease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("delegation vanished: %v", err)
 	}
-	if d.ExpiresAt.Before(lease.Add(-time.Second)) {
+	if got := d.Lease.Mono().Until; got.Before(until.Add(-time.Second)) {
 		t.Fatalf("lease clobbered: expires in %v, want the stored hour",
-			time.Until(d.ExpiresAt).Round(time.Second))
+			time.Until(got).Round(time.Second))
 	}
 }

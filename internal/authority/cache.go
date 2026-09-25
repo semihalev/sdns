@@ -5,21 +5,24 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/lease"
 )
 
 // Delegation represents a cache entry holding the authoritative
 // servers for a zone plus the DS RRset that proves the delegation.
 //
-// ExpiresAt is a single immutable absolute expiry (monotonic clock
-// retained). Storing the absolute deadline, rather than a duration
-// re-anchored at insertion, is what lets a descendant delegation inherit
-// an ancestor's shorter lease without a scheduler pause between "compute
-// remaining" and "store" silently re-inflating it (GHSA-mqfw-f48p-2vc8,
-// Phoenix downward-delegation variant).
+// Lease is the immutable absolute expiry, always bounded. Storing the
+// absolute deadlines, rather than a duration re-anchored at insertion, is
+// what lets a descendant delegation inherit an ancestor's shorter lease
+// without a scheduler pause between "compute remaining" and "store"
+// silently re-inflating it (GHSA-mqfw-f48p-2vc8, Phoenix
+// downward-delegation variant). A delegation served from a verified root
+// copy also inherits the copy's signature expiration, a wall-clock
+// instant, and the lease keeps it on that clock.
 type Delegation struct {
-	Servers   *Servers
-	DSSet     []dns.RR
-	ExpiresAt time.Time
+	Servers *Servers
+	DSSet   []dns.RR
+	Lease   lease.Lease
 }
 
 // Cache type.
@@ -47,9 +50,10 @@ func (n *Cache) Get(key uint64) (*Delegation, error) {
 		return nil, cache.ErrCacheNotFound
 	}
 
-	// now() and ExpiresAt both retain the monotonic clock reading, so a
-	// wall-clock step cannot extend or prematurely expire the lease.
-	if !n.now().Before(d.ExpiresAt) {
+	// now() retains the monotonic clock reading, so a wall-clock step
+	// cannot extend or prematurely expire a monotonic deadline, and a
+	// wall-clock one ends when the wall clock reaches it.
+	if d.Lease.Expired(n.now()) {
 		return nil, cache.ErrCacheExpired
 	}
 
@@ -73,7 +77,7 @@ func (n *Cache) Set(key uint64, dsSet []dns.RR, servers *Servers, ttl time.Durat
 		ttl = maximumTTL
 	}
 
-	n.store(key, dsSet, servers, n.now().Add(ttl))
+	n.store(key, dsSet, servers, lease.Until(n.now().Add(ttl)))
 }
 
 // (*Cache).SetUntil stores a delegation with an ABSOLUTE expiry, capped at
@@ -82,16 +86,24 @@ func (n *Cache) Set(key uint64, dsSet []dns.RR, servers *Servers, ttl time.Durat
 // rather than reconstructed from time.Until(deadline): any delay (including a
 // scheduler pause) between computing the remaining duration and Set's
 // now.Add(ttl) would otherwise restart the lease.
-func (n *Cache) SetUntil(key uint64, dsSet []dns.RR, servers *Servers, expiresAt time.Time) {
-	now := n.now()
-	if !expiresAt.After(now) {
+func (n *Cache) SetUntil(key uint64, dsSet []dns.RR, servers *Servers, expiresAt lease.Lease) {
+	expiresAt, ok := n.admit(expiresAt)
+	if !ok {
 		return
-	}
-	if ceiling := now.Add(maximumTTL); expiresAt.After(ceiling) {
-		expiresAt = ceiling
 	}
 
 	n.store(key, dsSet, servers, expiresAt)
+}
+
+// admit caps a lease at the 12h ceiling and refuses one that is unbounded
+// or already past: a delegation always has a lease, and caching an expired
+// one is pointless.
+func (n *Cache) admit(expiresAt lease.Lease) (lease.Lease, bool) {
+	now := n.now()
+	if expiresAt.IsZero() || expiresAt.Expired(now) {
+		return lease.Lease{}, false
+	}
+	return expiresAt.Min(lease.Until(now.Add(maximumTTL))), true
 }
 
 // (*Cache).SetUntilIfAbsent is SetUntil for provisional writers: it stores
@@ -109,19 +121,16 @@ func (n *Cache) SetUntil(key uint64, dsSet []dns.RR, servers *Servers, expiresAt
 // with a loser's DS chain would validate one delegation's answers against
 // another's keys. A nil return means nothing is live (a past deadline is
 // not stored).
-func (n *Cache) SetUntilIfAbsent(key uint64, dsSet []dns.RR, servers *Servers, expiresAt time.Time) *Delegation {
-	now := n.now()
-	if !expiresAt.After(now) {
+func (n *Cache) SetUntilIfAbsent(key uint64, dsSet []dns.RR, servers *Servers, expiresAt lease.Lease) *Delegation {
+	expiresAt, ok := n.admit(expiresAt)
+	if !ok {
 		return nil
-	}
-	if ceiling := now.Add(maximumTTL); expiresAt.After(ceiling) {
-		expiresAt = ceiling
 	}
 
 	d := &Delegation{
-		Servers:   servers,
-		DSSet:     dsSet,
-		ExpiresAt: expiresAt,
+		Servers: servers,
+		DSSet:   dsSet,
+		Lease:   expiresAt,
 	}
 	for {
 		cur, ok := n.cache.Get(key)
@@ -132,7 +141,7 @@ func (n *Cache) SetUntilIfAbsent(key uint64, dsSet []dns.RR, servers *Servers, e
 			// Lost the insert race; re-examine what landed.
 			continue
 		}
-		if n.now().Before(cur.ExpiresAt) {
+		if !cur.Lease.Expired(n.now()) {
 			return cur
 		}
 		if n.cache.CompareAndSwap(key, cur, d) {
@@ -142,11 +151,11 @@ func (n *Cache) SetUntilIfAbsent(key uint64, dsSet []dns.RR, servers *Servers, e
 	}
 }
 
-func (n *Cache) store(key uint64, dsSet []dns.RR, servers *Servers, expiresAt time.Time) {
+func (n *Cache) store(key uint64, dsSet []dns.RR, servers *Servers, expiresAt lease.Lease) {
 	n.cache.Add(key, &Delegation{
-		Servers:   servers,
-		DSSet:     dsSet,
-		ExpiresAt: expiresAt,
+		Servers: servers,
+		DSSet:   dsSet,
+		Lease:   expiresAt,
 	})
 }
 

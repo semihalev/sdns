@@ -11,6 +11,7 @@ import (
 	"github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/middleware"
 	// Aliased: this file's local "wire" is the packed body itself.
 	wirepack "github.com/semihalev/sdns/internal/wire"
@@ -117,6 +118,10 @@ type entryRare struct {
 	// PrefetchEligible() reflects this.
 	scope netip.Prefix
 	ede   *dns.EDNS0_EDE // Preserved EDE information
+	// wallCut is the lease's wall-clock deadline when the lease holds one
+	// on each clock; cutUntil then holds the monotonic one. Only an answer
+	// under a delegation from the verified root copy inherits both.
+	wallCut lease.Bound
 }
 
 // scopeKey is the ECS scope the entry was keyed under, the zero Prefix for
@@ -139,11 +144,51 @@ func (e *CacheEntry) edeOption() *dns.EDNS0_EDE {
 // setRare records a scope and an EDE, allocating the rare part only when
 // there is something to hold.
 func (e *CacheEntry) setRare(scope netip.Prefix, ede *dns.EDNS0_EDE) {
-	if !scope.IsValid() && ede == nil {
+	var wallCut lease.Bound
+	if e.rare != nil {
+		wallCut = e.rare.wallCut
+	}
+	e.putRare(entryRare{scope: scope, ede: ede, wallCut: wallCut})
+}
+
+// putRare installs r, or nothing when r holds nothing. The copy is made
+// only once r is known to hold something: taking r's own address would move
+// it to the heap on every call, the empty ones included.
+func (e *CacheEntry) putRare(r entryRare) {
+	if !r.scope.IsValid() && r.ede == nil && r.wallCut.Until.IsZero() {
 		e.rare = nil
 		return
 	}
-	e.rare = &entryRare{scope: scope, ede: ede}
+	held := new(entryRare)
+	*held = r
+	e.rare = held
+}
+
+// lease returns the delegation cut the entry is bounded by.
+func (e *CacheEntry) lease() lease.Lease {
+	var cut lease.Lease
+	cut.Fold(e.cutUntil, e.cutKey)
+	if e.rare != nil {
+		cut.Fold(e.rare.wallCut.Until, e.rare.wallCut.Key)
+	}
+	return cut
+}
+
+// setLease bounds the entry by cut. cutUntil takes the monotonic deadline,
+// or the wall-clock one when that is all there is, so zero still means
+// unbounded; a wall-clock deadline beside a monotonic one goes to rare.
+func (e *CacheEntry) setLease(cut lease.Lease) {
+	first, second := cut.Mono(), cut.Wall()
+	if first.Until.IsZero() {
+		first, second = second, lease.Bound{}
+	}
+	e.cutUntil, e.cutKey = first.Until, first.Key
+	var r entryRare
+	if e.rare != nil {
+		r = *e.rare
+	}
+	r.wallCut = second
+	e.putRare(r)
 }
 
 // Sidecar returns the entry's stamped policy state; nil means the entry
@@ -237,6 +282,11 @@ func (e *CacheEntry) remainingBounds(now time.Time) (ttlRemaining, leaseRemainin
 	ttlRemaining = e.ttl - now.Sub(e.stored)
 	if !e.cutUntil.IsZero() {
 		leaseRemaining = e.cutUntil.Sub(now)
+		// Each deadline is read on its own clock; which one binds is
+		// only ever decided here, at now.
+		if e.rare != nil && !e.rare.wallCut.Until.IsZero() {
+			leaseRemaining = min(leaseRemaining, e.rare.wallCut.Until.Sub(now))
+		}
 	}
 	return ttlRemaining, leaseRemaining
 }

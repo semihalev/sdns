@@ -142,31 +142,31 @@ func TestPhoenixT2_NestedDelegationInheritsAncestorDeadline(t *testing.T) {
 	}
 
 	t.Logf("ghostzone ExpiresAt=%s  sub ExpiresAt=%s  (Δ=%s)",
-		ghostDeleg.ExpiresAt, subDeleg.ExpiresAt, subDeleg.ExpiresAt.Sub(ghostDeleg.ExpiresAt))
+		ghostDeleg.Lease.Mono().Until, subDeleg.Lease.Mono().Until, subDeleg.Lease.Mono().Until.Sub(ghostDeleg.Lease.Mono().Until))
 
 	// The nested cut must never outlive its ancestor, despite the 12h
 	// referral. In this topology the inherited deadline is stored verbatim
 	// (SetUntil, no re-anchoring), so the two must be EXACTLY equal. Any
 	// drift means the deadline was recomputed or the wrong minimum won.
-	if !subDeleg.ExpiresAt.Equal(ghostDeleg.ExpiresAt) {
+	if !subDeleg.Lease.Mono().Until.Equal(ghostDeleg.Lease.Mono().Until) {
 		t.Fatalf("Phoenix T2: nested sub.ghostzone. cut (ExpiresAt=%s) != ancestor ghostzone. "+
 			"(ExpiresAt=%s), the inherited deadline was re-anchored or the 12h child referral won",
-			subDeleg.ExpiresAt, ghostDeleg.ExpiresAt)
+			subDeleg.Lease.Mono().Until, ghostDeleg.Lease.Mono().Until)
 	}
 	// And it must be far below the 12h it advertised.
-	if subDeleg.ExpiresAt.After(time.Now().Add(time.Hour)) {
-		t.Fatalf("Phoenix T2: nested cut cached for far longer than the ancestor lease: ExpiresAt=%s", subDeleg.ExpiresAt)
+	if subDeleg.Lease.Mono().Until.After(time.Now().Add(time.Hour)) {
+		t.Fatalf("Phoenix T2: nested cut cached for far longer than the ancestor lease: ExpiresAt=%s", subDeleg.Lease.Mono().Until)
 	}
 
 	// Phase 1b: the answer's reported cache bound must be the deepest
 	// cut on the path, exactly the (inherited) sub delegation deadline.
-	if !meta.CutUntil().Equal(subDeleg.ExpiresAt) {
-		t.Fatalf("ResponseMeta.CutUntil = %s, want the answering cut's deadline %s",
-			meta.CutUntil(), subDeleg.ExpiresAt)
+	if !meta.Cut().Mono().Until.Equal(subDeleg.Lease.Mono().Until) {
+		t.Fatalf("ResponseMeta cut = %s, want the answering cut's deadline %s",
+			meta.Cut().Mono().Until, subDeleg.Lease.Mono().Until)
 	}
 	ghostKey := cache.Key(dns.Question{Name: "ghostzone.", Qtype: dns.TypeNS, Qclass: dns.ClassINET}, true)
-	if got := meta.CutKey(); got != ghostKey {
-		t.Fatalf("ResponseMeta.CutKey = %#x, want shortest ancestor ghostzone key %#x", got, ghostKey)
+	if got := meta.Cut().Mono().Key; got != ghostKey {
+		t.Fatalf("ResponseMeta cut key = %#x, want shortest ancestor ghostzone key %#x", got, ghostKey)
 	}
 }
 
@@ -299,9 +299,9 @@ func TestPhoenixT2_CachedHitCarriesCurrentReferralDeadline(t *testing.T) {
 	if gerr != nil {
 		t.Fatalf("ghostzone. delegation not cached: %v", gerr)
 	}
-	if ghostDeleg.ExpiresAt.Before(time.Now().Add(time.Hour)) {
+	if ghostDeleg.Lease.Mono().Until.Before(time.Now().Add(time.Hour)) {
 		t.Fatalf("test harness: seeded 2h ghostzone. entry was replaced (ExpiresAt=%s), "+
-			"the cached-hit branch was not exercised", ghostDeleg.ExpiresAt)
+			"the cached-hit branch was not exercised", ghostDeleg.Lease.Mono().Until)
 	}
 
 	// The descent below the cached hit must carry the CURRENT 3s referral
@@ -311,11 +311,11 @@ func TestPhoenixT2_CachedHitCarriesCurrentReferralDeadline(t *testing.T) {
 		t.Fatalf("sub.ghostzone. delegation not cached: %v", serr)
 	}
 
-	t.Logf("seeded ghostzone ExpiresAt=%s  sub ExpiresAt=%s", ghostDeleg.ExpiresAt, subDeleg.ExpiresAt)
+	t.Logf("seeded ghostzone ExpiresAt=%s  sub ExpiresAt=%s", ghostDeleg.Lease.Mono().Until, subDeleg.Lease.Mono().Until)
 
-	if subDeleg.ExpiresAt.After(time.Now().Add(time.Minute)) {
+	if subDeleg.Lease.Mono().Until.After(time.Now().Add(time.Minute)) {
 		t.Fatalf("Phoenix T2 cached-hit: nested sub.ghostzone. cut cached until %s, the freshly "+
 			"observed 3s referral deadline was discarded in favour of the 2h cached lease",
-			subDeleg.ExpiresAt)
+			subDeleg.Lease.Mono().Until)
 	}
 }

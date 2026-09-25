@@ -359,8 +359,8 @@ func TestStoreGetWithContextLeavesPositiveUnbound(t *testing.T) {
 		t.Fatal("the resolver-private lookup missed")
 	}
 
-	if got, _ := meta.Cut(); !got.IsZero() {
-		t.Fatalf("positive consult bound the request tree to %v", got)
+	if got := meta.Cut(); !got.IsZero() {
+		t.Fatalf("positive consult bound the request tree to %+v", got)
 	}
 }
 

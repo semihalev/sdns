@@ -7,6 +7,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/middleware"
 )
 
@@ -17,9 +18,8 @@ type staleAliasChaseKeyType struct{}
 var staleAliasChaseKey = &staleAliasChaseKeyType{}
 
 type staleEntryResponse struct {
-	msg      *dns.Msg
-	until    time.Time
-	boundKey uint64
+	msg *dns.Msg
+	cut lease.Lease
 }
 
 func withStaleAliasChase(ctx context.Context) context.Context {
@@ -172,15 +172,11 @@ func (c *Cache) staleResponseFromEntry(
 		return staleEntryResponse{}
 	}
 
-	hardUntil := now.Add(staleAnswerTTL)
-	hardKey := uint64(0)
-	if !entry.cutUntil.IsZero() && entry.cutUntil.Before(hardUntil) {
-		hardUntil, hardKey = entry.cutUntil, entry.cutKey
-	}
+	cut := lease.Until(now.Add(staleAnswerTTL)).Min(entry.lease())
 	// DNS TTLs have one-second granularity. Rounding a positive sub-second
 	// lease up would outlive the delegation; rounding down would emit TTL 0,
 	// which RFC 8767 section 4 forbids. Decline the stale candidate instead.
-	responseTTL := hardUntil.Sub(now)
+	responseTTL, _ := cut.Remaining(now)
 	if responseTTL < time.Second {
 		return staleEntryResponse{}
 	}
@@ -211,7 +207,7 @@ func (c *Cache) staleResponseFromEntry(
 		dnsutil.SetEDE(resp, dns.ExtendedErrorCodeStaleAnswer, "Stale Answer")
 	}
 
-	return staleEntryResponse{msg: resp, until: hardUntil, boundKey: hardKey}
+	return staleEntryResponse{msg: resp, cut: cut}
 }
 
 // completeStaleAlias mirrors the ordinary Msg hit's alias completion. The
@@ -233,7 +229,7 @@ func (c *Cache) completeStaleAlias(
 		return nil
 	}
 
-	aliasLifetime := time.Until(candidate.until)
+	aliasLifetime, _ := candidate.cut.Remaining(time.Now())
 	if aliasLifetime < time.Second {
 		return nil
 	}
@@ -260,7 +256,7 @@ func (c *Cache) completeStaleAlias(
 	} else {
 		chaseMeta = new(middleware.ResponseMeta)
 	}
-	chaseMeta.BoundCutFor(candidate.until, candidate.boundKey)
+	chaseMeta.BoundLease(candidate.cut)
 	chaseCtx := middleware.WithResponseMeta(ctx, chaseMeta)
 	chaseCtx = withStaleAliasChase(chaseCtx)
 	resp = c.additionalAnswer(withCnameChaseDepth(chaseCtx, depth+1), resp)
@@ -273,22 +269,20 @@ func (c *Cache) completeStaleAlias(
 	// their shortest advertised lifetime together with every exact lineage
 	// bound accumulated by the chase, then give the whole composed response
 	// one non-zero TTL that cannot outlive any of its parts.
-	hardUntil, hardKey := chaseMeta.Cut()
+	cut := chaseMeta.Cut()
+	now := time.Now()
 	if ttl, found := minimumRecordTTL(resp); found {
-		ttlUntil := time.Now().Add(time.Duration(ttl) * time.Second)
-		if hardUntil.IsZero() || ttlUntil.Before(hardUntil) {
-			hardUntil, hardKey = ttlUntil, 0
-		}
+		cut = cut.Min(lease.Until(now.Add(time.Duration(ttl) * time.Second)))
 	}
-	remaining := time.Until(hardUntil)
-	if hardUntil.IsZero() || remaining < time.Second {
+	remaining, bounded := cut.Remaining(now)
+	if !bounded || remaining < time.Second {
 		return nil
 	}
 	setStaleTTLs(resp.Answer, remaining)
 	setStaleTTLs(resp.Ns, remaining)
 	setStaleTTLs(resp.Extra, remaining)
 	if outer := middleware.ResponseMetaFrom(ctx); outer != nil {
-		outer.BoundCutFor(hardUntil, hardKey)
+		outer.BoundLease(cut)
 	}
 	return resp
 }
@@ -386,12 +380,7 @@ func boundRequestToStaleLifetime(ctx context.Context, entry *CacheEntry, now tim
 	if entry == nil {
 		return
 	}
-	hardUntil := now.Add(staleAnswerTTL)
-	hardKey := uint64(0)
-	if !entry.cutUntil.IsZero() && entry.cutUntil.Before(hardUntil) {
-		hardUntil, hardKey = entry.cutUntil, entry.cutKey
-	}
 	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
-		meta.BoundCutFor(hardUntil, hardKey)
+		meta.BoundLease(lease.Until(now.Add(staleAnswerTTL)).Min(entry.lease()))
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 )
@@ -140,7 +141,7 @@ func TestZeroLifetimeDenialIsNotAdmitted(t *testing.T) {
 			name: "scoped admission",
 			admit: func(_ *testing.T, s *Store, _ *Cache, key uint64, _, resp *dns.Msg) {
 				s.SetFromResponseScoped(key, resp, netip.MustParsePrefix("203.0.113.0/24"),
-					time.Time{}, 0)
+					lease.Lease{})
 			},
 			occupy: func(s *Store, _ *Cache) int { return s.PositiveLen() },
 		},
@@ -203,7 +204,7 @@ func TestZeroLifetimeDenialDoesNotReplace(t *testing.T) {
 	}
 
 	_, exhausted := denialResponse("fading.example.org.", true, 0, 0)
-	if store.ReplaceIfCurrent(key, existing, exhausted, time.Time{}, 0) {
+	if store.ReplaceIfCurrent(key, existing, exhausted, lease.Lease{}) {
 		t.Fatal("a zero-lifetime denial replaced a live entry")
 	}
 
@@ -381,7 +382,7 @@ func TestSignedAnswerKeepsItsCeilingThroughAdmission(t *testing.T) {
 			req, resp = signedAnswer("signed.example.org.", tc.recordTTL, tc.sigTTL, tc.origTTL, tc.expiresIn)
 			scope := netip.MustParsePrefix("203.0.113.0/24")
 			want := CacheKey{Question: req.Question[0], CD: false, Scope: scope}
-			store.SetFromResponseScoped(want.Hash(), resp, scope, time.Time{}, 0)
+			store.SetFromResponseScoped(want.Hash(), resp, scope, lease.Lease{})
 			entry, ok = store.LookupByKeyVerified(want.Hash(), want)
 			if !ok {
 				t.Fatal("scoped admission stored nothing")
@@ -414,7 +415,7 @@ func TestSignedAnswerKeepsItsCeilingThroughAdmission(t *testing.T) {
 			}
 			key = CacheKey{Question: req.Question[0], CD: false}.Hash()
 			_, refreshed := signedAnswer("signed.example.org.", tc.recordTTL, tc.sigTTL, tc.origTTL, tc.expiresIn)
-			if !store.ReplaceIfCurrent(key, existing, refreshed, time.Time{}, 0) {
+			if !store.ReplaceIfCurrent(key, existing, refreshed, lease.Lease{}) {
 				t.Fatal("the refresh was refused")
 			}
 			entry, ok = store.Lookup(req)
@@ -805,52 +806,52 @@ func TestClampRoundsLikeAHit(t *testing.T) {
 	// second is not applied to it on either path: the answer still goes
 	// out, from the first response and from a hit alike, with nothing to
 	// keep.
-	for _, lease := range []time.Duration{100 * time.Millisecond, 500 * time.Millisecond, 999 * time.Millisecond} {
+	for _, grant := range []time.Duration{100 * time.Millisecond, 500 * time.Millisecond, 999 * time.Millisecond} {
 		res := build()
-		clampTTLsToEffective(res, time.Now().Add(lease), dnsutil.TypeSuccess)
+		clampTTLsToEffective(res, lease.Until(time.Now().Add(grant)), dnsutil.TypeSuccess)
 		if got := res.Answer[0].Header().Ttl; got != 0 {
-			t.Errorf("a %v lease clamped the first response to %d, want 0: the grant is under a second", lease, got)
+			t.Errorf("a %v lease clamped the first response to %d, want 0: the grant is under a second", grant, got)
 		}
 
 		entry := NewCacheEntryWithKey(build(), time.Hour, 0, 0)
-		entry.cutUntil = time.Now().Add(lease)
+		entry.cutUntil = time.Now().Add(grant)
 		req := new(dns.Msg)
 		req.SetQuestion("rounding.example.", dns.TypeA)
 		served := entry.ToMsg(req)
 		if served == nil {
-			t.Fatalf("a hit under a %v lease was not served; the grant has time left", lease)
+			t.Fatalf("a hit under a %v lease was not served; the grant has time left", grant)
 		}
 		if got := served.Answer[0].Header().Ttl; got != 0 {
-			t.Errorf("a hit under a %v lease served TTL %d, want 0: rounded past the grant", lease, got)
+			t.Errorf("a hit under a %v lease served TTL %d, want 0: rounded past the grant", grant, got)
 		}
 	}
 
 	// A lease with whole seconds left is served at those seconds, on both
 	// paths, never rounded past them.
-	for _, lease := range []time.Duration{1500 * time.Millisecond, 2999 * time.Millisecond} {
+	for _, grant := range []time.Duration{1500 * time.Millisecond, 2999 * time.Millisecond} {
 		res := build()
-		clampTTLsToEffective(res, time.Now().Add(lease), dnsutil.TypeSuccess)
-		want := uint32(lease / time.Second) //nolint:gosec // G115 - a test lease of seconds
+		clampTTLsToEffective(res, lease.Until(time.Now().Add(grant)), dnsutil.TypeSuccess)
+		want := uint32(grant / time.Second) //nolint:gosec // G115 - a test lease of seconds
 		if got := res.Answer[0].Header().Ttl; got != want {
-			t.Errorf("a %v lease clamped the first response to %d, want %d", lease, got, want)
+			t.Errorf("a %v lease clamped the first response to %d, want %d", grant, got, want)
 		}
 
 		entry := NewCacheEntryWithKey(build(), time.Hour, 0, 0)
-		entry.cutUntil = time.Now().Add(lease)
+		entry.cutUntil = time.Now().Add(grant)
 		req := new(dns.Msg)
 		req.SetQuestion("rounding.example.", dns.TypeA)
 		served := entry.ToMsg(req)
 		if served == nil {
-			t.Fatalf("a hit under a %v lease was not served", lease)
+			t.Fatalf("a hit under a %v lease was not served", grant)
 		}
 		if got := served.Answer[0].Header().Ttl; got != want {
-			t.Errorf("a hit under a %v lease served TTL %d, want %d", lease, got, want)
+			t.Errorf("a hit under a %v lease served TTL %d, want %d", grant, got, want)
 		}
 	}
 
 	// A lease already spent is zero on both paths.
 	res := build()
-	clampTTLsToEffective(res, time.Now().Add(-time.Second), dnsutil.TypeSuccess)
+	clampTTLsToEffective(res, lease.Until(time.Now().Add(-time.Second)), dnsutil.TypeSuccess)
 	if got := res.Answer[0].Header().Ttl; got != 0 {
 		t.Errorf("a spent lease clamped to %d, want 0", got)
 	}

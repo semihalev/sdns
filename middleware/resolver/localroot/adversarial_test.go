@@ -495,8 +495,8 @@ func TestSnapshotHorizonIgnoresUnverifiedZONEMDSignature(t *testing.T) {
 	}
 	// The horizon still follows the signatures that are authenticated: the
 	// test zone signs with a one-hour window.
-	if snap.ValidUntil().After(now.Add(2 * time.Hour)) {
-		t.Fatalf("horizon %v ignores the authenticated signatures", snap.ValidUntil())
+	if horizonLeft(snap, now) > 2*time.Hour {
+		t.Fatalf("horizon %+v ignores the authenticated signatures", snap.ValidUntil())
 	}
 }
 
@@ -630,9 +630,9 @@ func TestHorizonFollowsTheVerifyingZONEMDSignature(t *testing.T) {
 	if snap == nil {
 		t.Fatal("no copy active")
 	}
-	if got := snap.ValidUntil(); got.After(now.Add(2 * time.Minute)) {
-		t.Fatalf("horizon %v outlives the signature that authenticated the digest (%v)",
-			got, time.Unix(int64(short.Expiration), 0))
+	if horizonLeft(snap, now) > 2*time.Minute {
+		t.Fatalf("horizon %+v outlives the signature that authenticated the digest (%v)",
+			snap.ValidUntil(), time.Unix(int64(short.Expiration), 0))
 	}
 	if !snap.Expired(now.Add(2 * time.Minute)) {
 		t.Fatal("the copy is still active past the ZONEMD signature's expiration")

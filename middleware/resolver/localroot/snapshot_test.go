@@ -113,8 +113,8 @@ func TestSnapshotExpiry(t *testing.T) {
 	if !snap.Expired(now.Add(61 * time.Minute)) {
 		t.Fatal("not expired past the signature window, the SOA expire must not extend dead signatures")
 	}
-	if !snap.ValidUntil().Before(now.Add(2 * time.Hour)) {
-		t.Fatalf("ValidUntil = %v, not bounded by the signature window", snap.ValidUntil())
+	if horizonLeft(snap, now) >= 2*time.Hour {
+		t.Fatalf("ValidUntil = %+v, not bounded by the signature window", snap.ValidUntil())
 	}
 }
 
