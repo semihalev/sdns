@@ -47,6 +47,10 @@ type DDR struct {
 	target   string
 	soaNS    string
 
+	// v4hint and v6hint are the configured address hints, carried in every
+	// record; nil carries none.
+	v4hint, v6hint []net.IP
+
 	// serving reports whether a listener of a transport is up. The server
 	// sets it once the listeners are bound; until then, and for a DDR
 	// driven without a server, every configured listener is advertised.
@@ -58,10 +62,11 @@ type DDR struct {
 // DoH is one service on two listeners, HTTP/2 over TCP and HTTP/3 over
 // QUIC, which bind and fail independently.
 //
-// No record carries an address hint. The address a listener is bound to is
-// not the one clients reach whenever anything stands in between, a load
-// balancer, NAT, anycast, a reverse proxy, and the server cannot tell. The
-// client resolves the target name instead, which the operator controls.
+// A service carries no address of its own. The address a listener is bound
+// to is not the one clients reach whenever anything stands in between, a
+// load balancer, NAT, anycast, a reverse proxy, and the server cannot tell.
+// Address hints come from the configuration alone; without them the client
+// resolves the target name, which the operator controls.
 type service struct {
 	alpns []alpnListener
 	port  uint16 // zero when it is the transport's default
@@ -88,6 +93,12 @@ func New(cfg *config.Config) *DDR {
 		return d
 	}
 	d.target, d.soaNS = target, target
+	if d.v4hint, d.v6hint, err = cfg.DDRHints(); err != nil {
+		// Refused by the config gate as well; a caller that skipped it
+		// advertises no hint rather than a wrong one.
+		zlog.Warn("DDR carries no address hints", "error", err.Error())
+		d.v4hint, d.v6hint = nil, nil
+	}
 
 	// Preference order: DoH first, the transport every client that
 	// implements DDR speaks, then DoT, then DoQ. The network is the one the
@@ -214,6 +225,12 @@ func (d *DDR) records(owner string) []dns.RR {
 		rr.Value = append(rr.Value, &dns.SVCBAlpn{Alpn: alpn})
 		if svc.port != 0 {
 			rr.Value = append(rr.Value, &dns.SVCBPort{Port: svc.port})
+		}
+		if len(d.v4hint) > 0 {
+			rr.Value = append(rr.Value, &dns.SVCBIPv4Hint{Hint: d.v4hint})
+		}
+		if len(d.v6hint) > 0 {
+			rr.Value = append(rr.Value, &dns.SVCBIPv6Hint{Hint: d.v6hint})
 		}
 		if svc.path {
 			rr.Value = append(rr.Value, &dns.SVCBDoHPath{Template: dohPath})

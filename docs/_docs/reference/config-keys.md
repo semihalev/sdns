@@ -147,6 +147,8 @@ See [Response Policy Zones]({{ '/docs/features/rpz/' | relative_url }}).
 | `name` | `""` | Designated resolver name; empty takes the certificate's first DNS name |
 | `doh_port` | `0` | The port a reverse proxy publishes DoH on; 0 takes the DoH listener's own. Required to advertise a DoH listener bound to loopback |
 | `doh_alpn` | `[]` | The HTTP versions the proxy serves, `"h2"` and/or `"h3"`; empty takes the listener's own |
+| `ipv4hint` | `[]` | IPv4 addresses clients reach the resolver at, carried as hints; empty carries none |
+| `ipv6hint` | `[]` | IPv6 addresses clients reach the resolver at, carried as hints; empty carries none |
 
 See [Encrypted transports]({{ '/docs/features/encrypted-transports/' | relative_url }}).
 

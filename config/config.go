@@ -470,6 +470,13 @@ type DDRConfig struct {
 	// clients cannot reach the address itself.
 	DoHPort int      `toml:"doh_port"`
 	DoHALPN []string `toml:"doh_alpn"`
+	// IPv4Hint and IPv6Hint are the addresses clients reach the target at,
+	// carried in every record. Empty carries none, and clients resolve the
+	// target name instead. They are never taken from a listener's bind
+	// address, which is not the one clients reach behind a load balancer,
+	// NAT or a reverse proxy.
+	IPv4Hint []string `toml:"ipv4hint"`
+	IPv6Hint []string `toml:"ipv6hint"`
 }
 
 // ECSConfig holds the EDNS Client Subnet middleware configuration
@@ -1257,6 +1264,13 @@ name = ""
 # with doh_port set, since clients cannot reach the address itself.
 doh_port = 0
 doh_alpn = []
+
+# The addresses clients reach the resolver at, carried as hints so they can
+# connect without resolving the name first. Empty carries none, and clients
+# resolve the name. Never taken from a listener's bind address, which is not
+# the one clients reach behind a load balancer, NAT or a reverse proxy.
+ipv4hint = []
+ipv6hint = []
 
 # ============================
 # DNS64 (RFC 6147)

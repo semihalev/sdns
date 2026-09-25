@@ -154,6 +154,37 @@ func TestOnlyConfiguredListenersAreAdvertised(t *testing.T) {
 	}
 }
 
+// Configured hints, and only they, are carried, in every record: the bound
+// address never stands in for them.
+func TestConfiguredHintsAreCarried(t *testing.T) {
+	cfg := enabled("192.0.2.53:443", "192.0.2.53:853", "")
+	cfg.DDR.IPv4Hint = []string{"198.51.100.1", "198.51.100.2"}
+	cfg.DDR.IPv6Hint = []string{"2001:db8::1"}
+	rrs := advertised(t, New(cfg))
+	if len(rrs) != 2 {
+		t.Fatalf("records %v, want DoH and DoT", rrs)
+	}
+	for _, rr := range rrs {
+		v4, ok4 := param[*dns.SVCBIPv4Hint](rr)
+		v6, ok6 := param[*dns.SVCBIPv6Hint](rr)
+		if !ok4 || len(v4.Hint) != 2 || v4.Hint[0].String() != "198.51.100.1" || v4.Hint[1].String() != "198.51.100.2" {
+			t.Fatalf("%v: ipv4hint %v, want the configured two", rr, v4)
+		}
+		if !ok6 || len(v6.Hint) != 1 || v6.Hint[0].String() != "2001:db8::1" {
+			t.Fatalf("%v: ipv6hint %v, want the configured one", rr, v6)
+		}
+	}
+
+	// A value the config gate refuses, reached by a caller that skipped it,
+	// carries no hint rather than a wrong one.
+	cfg.DDR.IPv4Hint = []string{"127.0.0.1"}
+	for _, rr := range advertised(t, New(cfg)) {
+		if _, ok := param[*dns.SVCBIPv4Hint](rr); ok {
+			t.Fatalf("%v carries a refused hint", rr)
+		}
+	}
+}
+
 // TestZoneIsAlwaysLocal pins RFC 9462 §6: every name in resolver.arpa is
 // answered here and never sent on, with NODATA (not NXDOMAIN) for anything
 // but the discovery record, and the same with discovery switched off. The

@@ -65,10 +65,14 @@ name    = ""        # empty takes the certificate's first DNS name
 
 sdns answers with one record per listener you configured, in the order DoH,
 DoT, DoQ, each with its ALPN, its port when it is not the transport's default,
-and for DoH the path template `/dns-query{?dns}`. No record carries an address
-hint: behind a load balancer, NAT, anycast or a reverse proxy the address sdns
-is bound to is not the one clients reach, so they resolve the advertised name
-instead, and that name must point at where clients connect. A listener bound
+and for DoH the path template `/dns-query{?dns}`. Address hints are carried
+only when you set them, `ipv4hint` and `ipv6hint` under `[ddr]`, and never
+taken from a listener's bind address: behind a load balancer, NAT, anycast or
+a reverse proxy the address sdns is bound to is not the one clients reach.
+Without hints clients resolve the advertised name, which must then point at
+where they connect; with them they can connect without that lookup. A private
+address is a fine hint for a resolver on a home or office network; loopback,
+link-local and unspecified addresses are refused by `sdns -t`. A listener bound
 to a loopback address is not advertised at all: a client would only ever
 reach its own machine there.
 Only listeners that are actually up are

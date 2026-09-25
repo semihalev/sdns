@@ -819,6 +819,9 @@ func (c *Config) validateDDR(add func(string, ...any)) {
 		}
 		seen[alpn] = true
 	}
+	if _, _, err := c.DDRHints(); err != nil {
+		add("%v", err)
+	}
 	if (c.DDR.DoHPort != 0 || len(c.DDR.DoHALPN) > 0) && c.BindDOH == "" {
 		add("ddr.doh_port, ddr.doh_alpn: there is no DoH listener to publish; set binddoh")
 	}
