@@ -344,16 +344,20 @@ func Test_BlockList_Batch(t *testing.T) {
 	keys := []string{
 		"a.example.",
 		"b.example.",
-		"a.example.", // duplicate, should still count as added (idempotent set)
+		"A.Example", // the same name again, already there
 		"*.evil.com.",
 	}
 	added := bl.SetBatch(keys)
-	// a.example added once, b.example, *.evil.com → 4 calls all
-	// reach the map; setLocked returns true for each. The count is
-	// "calls that took effect" rather than "unique keys", which is
-	// fine for the API caller, they get what they asked for.
-	if !reflect.DeepEqual(4, added) {
-		t.Errorf("added = %v, want %v", added, 4)
+	// The count is the entries the batch added, as RemoveBatch counts
+	// the ones it removed: a name already there adds nothing.
+	if !reflect.DeepEqual(3, added) {
+		t.Errorf("added = %v, want %v", added, 3)
+	}
+	if bl.SetBatch([]string{"b.example.", "*.evil.com."}) != 0 {
+		t.Error("a batch of entries already there reports some added")
+	}
+	if bl.Set("b.example.") || bl.Set("*.evil.com.") {
+		t.Error("Set reports an entry already there as added")
 	}
 	if !(bl.Exists("a.example.")) {
 		t.Errorf("bl.Exists('a.example.') is false")
