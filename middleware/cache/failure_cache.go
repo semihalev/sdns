@@ -496,7 +496,22 @@ func (c *FailureCache) record(hash uint64, candidate *failureEntry) FailureHit {
 			return first.hit()
 		}
 		if now.Before(current.retryAfter) {
-			return current.hit()
+			// Two lookups that missed together can complete in either
+			// order. A validation verdict arriving second must not be lost
+			// to the generic failure that landed first: the generation
+			// takes the verdict's provenance, and nothing else changes, not
+			// its deadline, streak or witness. A generic failure arriving
+			// second changes nothing, so the verdict, once in, stays.
+			if candidate.provenance != FailureProvenanceValidation ||
+				current.provenance == FailureProvenanceValidation {
+				return current.hit()
+			}
+			upgraded := *current
+			upgraded.provenance = FailureProvenanceValidation
+			if c.entries.CompareAndSwap(hash, current, &upgraded) {
+				return upgraded.hit()
+			}
+			continue
 		}
 
 		next := *current
