@@ -124,7 +124,7 @@ func TestExpiredWireHitDoesNotChargeEntryLimiter(t *testing.T) {
 		A:   []byte{192, 0, 2, 63},
 	}}
 	entry := NewCacheEntryWithKey(resp, time.Minute, 1, 0x87670001)
-	entry.stored = time.Now().Add(-2 * time.Minute)
+	entry.storedAt = clockOffset(time.Now().Add(-2 * time.Minute))
 	limiter := entry.GetRateLimiter()
 	if limiter == nil {
 		t.Fatal("test needs a rate-limited entry")
@@ -163,7 +163,7 @@ func TestExpiredMsgHitDoesNotChargeEntryLimiter(t *testing.T) {
 	}}
 	key := CacheKey{Question: req.Question[0]}.Hash()
 	entry := NewCacheEntryWithKey(resp, time.Minute, 1, key)
-	entry.stored = time.Now().Add(-2 * time.Minute)
+	entry.storedAt = clockOffset(time.Now().Add(-2 * time.Minute))
 	limiter := entry.GetRateLimiter()
 	if limiter == nil {
 		t.Fatal("test needs a rate-limited entry")

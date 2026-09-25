@@ -35,7 +35,7 @@ func TestWireFastPathTTLDecays(t *testing.T) {
 
 	// Age the entry rather than sleeping: the serve path derives the TTL
 	// from stored+ttl, so moving stored back is exactly equivalent.
-	entry.stored = entry.stored.Add(-aged)
+	entry.storedAt -= aged
 
 	want := uint32(entry.remaining(time.Now()).Seconds()) //nolint:gosec // bounded by the entry TTL
 	if want == 0 || want >= storedT {
@@ -85,7 +85,7 @@ func TestWireFastPathTTLMatchesMsgPath(t *testing.T) {
 		if !ok {
 			t.Fatal("entry not stored")
 		}
-		entry.stored = entry.stored.Add(-90 * time.Second)
+		entry.storedAt -= 90 * time.Second
 
 		req := new(dns.Msg)
 		req.SetQuestion(qname, dns.TypeA)

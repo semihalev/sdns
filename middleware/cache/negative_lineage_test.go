@@ -24,7 +24,7 @@ const (
 // entryExpiry is the absolute instant past which an entry may not be served:
 // its own lifetime, further bounded by the delegation lease it inherited.
 func entryExpiry(e *CacheEntry) time.Time {
-	expiry := e.stored.Add(e.ttl)
+	expiry := processEpoch.Add(e.storedAt + e.ttl)
 	if !e.cutUntil.IsZero() && e.cutUntil.Before(expiry) {
 		return e.cutUntil
 	}
@@ -122,7 +122,7 @@ func assertChainInheritsTargetLifetime(
 	// the merged answer would never be stored and the rule below would go
 	// untested. That case is covered on its own in
 	// TestExhaustedTargetLeavesNoCachedChain.
-	targetEntry.stored = targetEntry.stored.Add(-targetEntry.ttl + targetRemaining)
+	targetEntry.storedAt += -targetEntry.ttl + targetRemaining
 	targetExpiry := entryExpiry(targetEntry)
 
 	// The alias is resolved, and its chase finds the target in cache.
@@ -212,7 +212,7 @@ func TestExhaustedTargetLeavesNoCachedChain(t *testing.T) {
 	}
 	// Spend all but a fraction of a second, which is what the chase sees as
 	// a zero TTL.
-	targetEntry.stored = targetEntry.stored.Add(-targetEntry.ttl + 100*time.Millisecond)
+	targetEntry.storedAt += -targetEntry.ttl + 100*time.Millisecond
 
 	c.SetQueryer(&internalQueryer{handlers: []middleware.Handler{c, targetHandler}})
 	outerHandler := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
@@ -471,7 +471,7 @@ func TestChildEntryKeepsItsOwnLifetime(t *testing.T) {
 	}
 	// Age the alias to a second of remaining life, and drop the target so the
 	// chase below has to resolve it fresh.
-	aliasEntry.stored = aliasEntry.stored.Add(-aliasEntry.ttl + time.Second)
+	aliasEntry.storedAt += -aliasEntry.ttl + time.Second
 	targetKey := CacheKey{Question: dns.Question{
 		Name: target, Qtype: dns.TypeA, Qclass: dns.ClassINET,
 	}, CD: false}.Hash()

@@ -44,8 +44,10 @@ type CacheEntry struct {
 	// The fields every hit reads come first, so they share the entry's
 	// first two cache lines; the layout packs to 176 bytes with no padding.
 
-	stored time.Time
-	ttl    time.Duration
+	// storedAt is the admission instant as an offset on the process clock,
+	// see clockOffset.
+	storedAt time.Duration
+	ttl      time.Duration
 
 	// cutUntil bounds the entry's effective lifetime to the
 	// delegation cut that produced the answer (GHSA-mqfw-f48p-2vc8,
@@ -218,6 +220,17 @@ func (e *CacheEntry) remaining(now time.Time) time.Duration {
 	return rem
 }
 
+// lifetime returns remaining at now together with the TTL part alone, so
+// a hit that bounds the request tree reads the clock offset once.
+func (e *CacheEntry) lifetime(now time.Time) (rem, ttlRemaining time.Duration) {
+	ttlRemaining, leaseRem := e.remainingBounds(now)
+	rem = ttlRemaining
+	if !e.cutUntil.IsZero() && leaseRem < rem {
+		rem = leaseRem
+	}
+	return rem, ttlRemaining
+}
+
 // servedTTL is the TTL a hit writes at now: servedSeconds of the entry's
 // remaining lifetime, with one exception. When the delegation lease is the
 // binding bound it is a security bound, the parent's grant
@@ -279,7 +292,7 @@ func (e *CacheEntry) remainingBounds(now time.Time) (ttlRemaining, leaseRemainin
 	// whose own lifetime is under a second alive for a full one. Whether the
 	// entry is alive is a question about time; what TTL to write is a question
 	// about the wire format, and servedSeconds answers that one.
-	ttlRemaining = e.ttl - now.Sub(e.stored)
+	ttlRemaining = e.ttl - (clockOffset(now) - e.storedAt)
 	if !e.cutUntil.IsZero() {
 		leaseRemaining = e.cutUntil.Sub(now)
 		// Each deadline is read on its own clock; which one binds is
@@ -289,6 +302,16 @@ func (e *CacheEntry) remainingBounds(now time.Time) (ttlRemaining, leaseRemainin
 		}
 	}
 	return ttlRemaining, leaseRemaining
+}
+
+// processEpoch anchors every storedAt. It carries a monotonic reading, so
+// an offset taken from an instant that carries one too, which every
+// production read does, is monotonic: a wall-clock step cannot move it.
+var processEpoch = time.Now()
+
+// clockOffset maps an instant onto the process clock.
+func clockOffset(t time.Time) time.Duration {
+	return t.Sub(processEpoch)
 }
 
 // NewCacheEntry creates a new cache entry from a DNS message.
@@ -400,7 +423,7 @@ func newCacheEntryAt(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64,
 		// The anchoring instant, monotonic reading kept. Converting to UTC
 		// strips it and would let a backward wall-clock adjustment extend
 		// both the TTL and an inherited delegation cut.
-		stored:     now,
+		storedAt:   clockOffset(now),
 		ttl:        ttl,
 		origTTL:    uint32(ttl.Seconds()),
 		rateLimit:  clampRateLimit(rateLimit),

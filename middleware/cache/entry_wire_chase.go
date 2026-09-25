@@ -127,7 +127,9 @@ func (c *Cache) serveChaseHit(
 		return true
 	}
 
-	switch err := leaser.CommitWire(body, info); {
+	err := leaser.CommitWire(body, info)
+	now := time.Now()
+	switch {
 	case err == nil:
 		if gate != nil {
 			gate.CountWireChase(chain)
@@ -136,7 +138,7 @@ func (c *Cache) serveChaseHit(
 		// inherits every segment's cache-lifetime bound, the wire twin of
 		// the Msg chase's lineage inheritance.
 		for i := range n {
-			boundRequestToEntryLifetime(ctx, segs[i].entry)
+			boundEntryAt(ctx, segs[i].entry, now)
 		}
 		c.metrics.Hit()
 		wireChaseServed.Inc()
@@ -150,7 +152,7 @@ func (c *Cache) serveChaseHit(
 			gate.CountWireChase(chain)
 		}
 		for i := range n {
-			boundRequestToEntryLifetime(ctx, segs[i].entry)
+			boundEntryAt(ctx, segs[i].entry, now)
 		}
 		c.metrics.Hit()
 		ch.Cancel()

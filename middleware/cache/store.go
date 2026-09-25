@@ -279,7 +279,7 @@ func (s *Store) GetWithContext(ctx context.Context, req *dns.Msg) (*dns.Msg, boo
 		msg := entry.ToMsg(req)
 		if msg != nil {
 			if msg.Rcode != dns.RcodeSuccess || len(msg.Answer) == 0 {
-				boundRequestToEntryLifetime(ctx, entry)
+				boundEntryAt(ctx, entry, time.Now())
 			}
 			return msg, true
 		}

@@ -458,7 +458,7 @@ func TestServedTTLIsNeverZero(t *testing.T) {
 	if !ok {
 		t.Fatal("the denial was not admitted")
 	}
-	entry.stored = entry.stored.Add(-entry.ttl + 991*time.Millisecond)
+	entry.storedAt += -entry.ttl + 991*time.Millisecond
 
 	out := entry.ToMsg(req)
 	if out == nil {

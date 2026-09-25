@@ -19,7 +19,9 @@ import (
 func deriveAt(t *testing.T, source *CacheEntry, hit time.Time) *CacheEntry {
 	t.Helper()
 	var meta middleware.ResponseMeta
-	boundRequestToEntryLifetime(middleware.WithResponseMeta(context.Background(), &meta), source)
+	// The hit reads the source at hit: its expiry reaches the tree rebuilt
+	// from that instant, the way every hit path passes it.
+	boundEntryAt(middleware.WithResponseMeta(context.Background(), &meta), source, hit)
 
 	msg := snapAnswer("derived.test.", source.servedTTL(hit), "192.0.2.2")
 	mt, _ := dnsutil.ClassifyResponse(msg, hit)
