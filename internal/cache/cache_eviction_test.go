@@ -7,7 +7,7 @@ import (
 func TestCacheEviction(t *testing.T) {
 	// Create a small cache to test eviction
 	cacheSize := 100
-	c := New(cacheSize)
+	c := New[any](cacheSize)
 
 	// Fill the cache to capacity
 	for i := 0; i < cacheSize; i++ {
@@ -59,7 +59,7 @@ func TestCacheEviction(t *testing.T) {
 
 func TestCacheEvictionSmallCache(t *testing.T) {
 	// Test with very small cache
-	c := New(1)
+	c := New[any](1)
 
 	c.Add(1, "one")
 	if c.Len() != 1 {
@@ -75,7 +75,7 @@ func TestCacheEvictionSmallCache(t *testing.T) {
 
 func TestCacheEvictionConcurrent(t *testing.T) {
 	cacheSize := 1000
-	c := New(cacheSize)
+	c := New[any](cacheSize)
 
 	// Concurrently add many items
 	done := make(chan bool)
@@ -100,7 +100,7 @@ func TestCacheEvictionConcurrent(t *testing.T) {
 }
 
 func BenchmarkCacheWithEviction(b *testing.B) {
-	c := New(10000) // 10K max size
+	c := New[any](10000) // 10K max size
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {

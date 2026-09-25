@@ -8,7 +8,7 @@ import (
 
 // PositiveCache handles successful DNS responses.
 type PositiveCache struct {
-	cache   *cache.Cache
+	cache   *cache.Cache[*CacheEntry]
 	ttl     TTLManager
 	metrics *CacheMetrics
 }
@@ -16,7 +16,7 @@ type PositiveCache struct {
 // NewPositiveCache creates a new positive cache.
 func NewPositiveCache(size int, minTTL, maxTTL time.Duration, metrics *CacheMetrics) *PositiveCache {
 	return &PositiveCache{
-		cache:   cache.New(size),
+		cache:   cache.New[*CacheEntry](size),
 		ttl:     NewTTLManager(minTTL, maxTTL),
 		metrics: metrics,
 	}
@@ -28,12 +28,11 @@ func NewPositiveCache(size int, minTTL, maxTTL time.Duration, metrics *CacheMetr
 // result once, so pushing metrics in here would double-count both
 // sides of a single miss.
 func (pc *PositiveCache) Get(key uint64) (*CacheEntry, bool) {
-	v, ok := pc.cache.Get(key)
+	entry, ok := pc.cache.Get(key)
 	if !ok {
 		return nil, false
 	}
 
-	entry := v.(*CacheEntry)
 	if entry.IsExpired() {
 		pc.cache.CompareAndDelete(key, entry)
 		return nil, false
@@ -47,11 +46,7 @@ func (pc *PositiveCache) Get(key uint64) (*CacheEntry, bool) {
 // ordinary TTL has elapsed, while every public/fresh lookup keeps Get's
 // historical miss-and-delete behavior when the feature is disabled.
 func (pc *PositiveCache) retained(key uint64) (*CacheEntry, bool) {
-	v, ok := pc.cache.Get(key)
-	if !ok {
-		return nil, false
-	}
-	return v.(*CacheEntry), true
+	return pc.cache.Get(key)
 }
 
 // (*PositiveCache).Set set stores an entry in the positive cache.

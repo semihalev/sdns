@@ -18,7 +18,7 @@ import (
 // records they came from, clamped to a floor and a cap, and a read past the
 // horizon deletes exactly the entry it saw.
 func TestGlueCacheHonorsTTL(t *testing.T) {
-	r := &Resolver{glueV4: cache.New(16), glueV6: cache.New(16)}
+	r := &Resolver{glueV4: cache.New[*glueEntry](16), glueV6: cache.New[*glueEntry](16)}
 	addr := netip.MustParseAddr("192.0.2.10")
 
 	t.Run("fresh entries hit and report their remaining horizon", func(t *testing.T) {
@@ -88,7 +88,7 @@ func TestGlueCacheHitDoesNotRenewHorizon(t *testing.T) {
 	if !ok {
 		t.Fatal("glue entry vanished on a hit")
 	}
-	if got := v.(*glueEntry).expiresAt; got != expiresAt {
+	if got := v.expiresAt; got != expiresAt {
 		t.Fatalf("hit renewed the horizon: expiry moved %+ds",
 			(got-expiresAt)/int64(time.Second))
 	}

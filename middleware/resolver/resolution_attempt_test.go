@@ -244,7 +244,7 @@ func TestLookupDeduplicatesAuthorityEndpoints(t *testing.T) {
 func TestCheckGlueRRDeduplicatesEndpointsWithoutDroppingHostCache(t *testing.T) {
 	r := &Resolver{
 		cfg:    &config.Config{},
-		glueV4: internalcache.New(defaultCacheSize),
+		glueV4: internalcache.New[*glueEntry](defaultCacheSize),
 	}
 	req := new(dns.Msg)
 	req.SetQuestion("www.child.example.", dns.TypeA)

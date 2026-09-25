@@ -58,8 +58,8 @@ type Resolver struct {
 	resolveTarget atomic.Pointer[func(addr string) string]
 
 	// glue addrs cache
-	glueV4 *cache.Cache
-	glueV6 *cache.Cache
+	glueV4 *cache.Cache[*glueEntry]
+	glueV6 *cache.Cache[*glueEntry]
 
 	// localRoot serves TLD referrals, DS answers and NXDOMAIN proofs from
 	// a verified local root zone copy (RFC 8806); nil when disabled. Its
@@ -289,7 +289,7 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 		rootServers: new(authority.Servers),
 
-		glueV4: cache.New(defaultCacheSize),
+		glueV4: cache.New[*glueEntry](defaultCacheSize),
 
 		dnssec: cfg.DNSSEC == "on",
 
@@ -316,7 +316,7 @@ func NewResolver(cfg *config.Config) *Resolver {
 	r.zoneInflight = newZoneInflightLimiter(max(maxConcurrent/16, 16))
 
 	if r.cfg.IPv6Access {
-		r.glueV6 = cache.New(defaultCacheSize)
+		r.glueV6 = cache.New[*glueEntry](defaultCacheSize)
 	}
 
 	// Enrichment used to gate one goroutine per referral behind a semaphore
@@ -1100,12 +1100,11 @@ func glueExpiry(ttl uint32) int64 {
 // the exact entry it saw, so a fresh value published meanwhile survives.
 // The remaining TTL comes back with the addresses so a caller re-adding
 // them cannot stretch the original horizon.
-func glueGet(c *cache.Cache, key uint64) ([]netip.Addr, uint32, bool) {
-	v, ok := c.Get(key)
+func glueGet(c *cache.Cache[*glueEntry], key uint64) ([]netip.Addr, uint32, bool) {
+	entry, ok := c.Get(key)
 	if !ok {
 		return nil, 0, false
 	}
-	entry := v.(*glueEntry)
 	remaining := entry.expiresAt - time.Now().UnixNano()
 	if remaining <= 0 {
 		c.CompareAndDelete(key, entry)

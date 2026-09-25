@@ -36,8 +36,8 @@ func (s *Store) snapshot(w io.Writer, fingerprint [32]byte, compression uint16, 
 	var out snapshotSaved
 
 	entries := make([]*CacheEntry, 0, s.positive.Len())
-	s.positive.cache.ForEach(func(_ uint64, value any) bool {
-		if e, ok := value.(*CacheEntry); ok && e != nil {
+	s.positive.cache.ForEach(func(_ uint64, e *CacheEntry) bool {
+		if e != nil {
 			entries = append(entries, e)
 		}
 		return true

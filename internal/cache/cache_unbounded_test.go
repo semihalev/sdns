@@ -15,7 +15,7 @@ func TestCacheUnboundedGrowth(t *testing.T) {
 	}
 
 	maxSize := 500 // Reduced from 1000
-	c := New(maxSize)
+	c := New[any](maxSize)
 
 	// Try to exploit the race between Add and eviction
 	numGoroutines := 4        // Fixed number instead of runtime.NumCPU() * 2
@@ -103,7 +103,7 @@ func TestCacheMemoryPressure(t *testing.T) {
 
 	// Use a moderate cache size
 	maxSize := 10000 // Reduced from 100000
-	c := New(maxSize)
+	c := New[any](maxSize)
 
 	// Create large values to increase memory pressure
 	largeValue := make([]byte, 1024) // 1KB per entry
@@ -151,7 +151,7 @@ func TestCacheEvictionStalls(t *testing.T) {
 	}
 
 	maxSize := 100
-	c := New(maxSize)
+	c := New[any](maxSize)
 
 	// Fill cache
 	for i := 0; i < maxSize; i++ {
@@ -217,7 +217,7 @@ func TestCacheEvictionStalls(t *testing.T) {
 // TestCacheWithZeroSize tests edge case of zero/negative size
 func TestCacheWithZeroSize(t *testing.T) {
 	// Test with 0 size (should become 1)
-	c := New(0)
+	c := New[any](0)
 
 	// Add items
 	for i := 0; i < 100; i++ {
@@ -230,7 +230,7 @@ func TestCacheWithZeroSize(t *testing.T) {
 	}
 
 	// Test with negative size (should become 1)
-	c2 := New(-10)
+	c2 := New[any](-10)
 	for i := 0; i < 100; i++ {
 		c2.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 

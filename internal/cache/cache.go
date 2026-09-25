@@ -17,13 +17,16 @@ var (
 // evictor, no lock a writer could ever queue behind (2026-07-28 incident:
 // 1.43M goroutines, 93% blocked behind cache segment locks while
 // segment-clearing eviction dumped 10-60% of the glue cache mid-outage).
-type Cache struct {
-	data    *SyncUInt64Map[any]
+//
+// V is the stored value type, a pointer in every user. A concrete V keeps
+// each slot at two words, where an interface value would take three.
+type Cache[V comparable] struct {
+	data    *SyncUInt64Map[V]
 	maxSize int64
 }
 
 // New creates a bounded cache.
-func New(size int) *Cache {
+func New[V comparable](size int) *Cache[V] {
 	if size < 1 {
 		size = 1
 	}
@@ -43,26 +46,26 @@ func New(size int) *Cache {
 		power = 16 // 64K buckets for 1M+ entries
 	}
 
-	return &Cache{
-		data:    NewSyncUInt64Map[any](power),
+	return &Cache[V]{
+		data:    NewSyncUInt64Map[V](power),
 		maxSize: int64(size),
 	}
 }
 
 // Get retrieves a value - uses SyncUInt64Map's excellent performance
-func (c *Cache) Get(key uint64) (any, bool) {
+func (c *Cache[V]) Get(key uint64) (V, bool) {
 	return c.data.Get(key)
 }
 
 // Add adds an item; an over-capacity insert self-evicts up to two entries
 // from its own segment, so occupancy is bounded at any write rate while
 // per-Add work stays a small constant.
-func (c *Cache) Add(key uint64, value any) {
+func (c *Cache[V]) Add(key uint64, value V) {
 	c.data.SetWithCap(key, value, c.maxSize)
 }
 
 // Remove removes an item
-func (c *Cache) Remove(key uint64) {
+func (c *Cache[V]) Remove(key uint64) {
 	c.data.Del(key)
 }
 
@@ -71,7 +74,7 @@ func (c *Cache) Remove(key uint64) {
 // capacity. The existence check and the insert run under the key's segment
 // write lock, so a concurrent Add cannot land between them. Returns whether
 // value was stored.
-func (c *Cache) AddIfAbsent(key uint64, value any) bool {
+func (c *Cache[V]) AddIfAbsent(key uint64, value V) bool {
 	return c.data.data.PutIfNotExistsWithCap(key, value, c.maxSize)
 }
 
@@ -86,7 +89,7 @@ func (c *Cache) AddIfAbsent(key uint64, value any) bool {
 // (GHSA-mqfw-f48p-2vc8): a stale in-flight result may only replace
 // the exact entry it set out to refresh, never state that landed
 // after it started.
-func (c *Cache) CompareAndSwap(key uint64, old, value any) bool {
+func (c *Cache[V]) CompareAndSwap(key uint64, old, value V) bool {
 	seg := c.data.data.getSegment(key)
 	seg.rwlock.Lock()
 	defer seg.rwlock.Unlock()
@@ -103,7 +106,7 @@ func (c *Cache) CompareAndSwap(key uint64, old, value any) bool {
 // Expiry cleanup uses this instead of an unconditional Remove: a fresh value
 // may be published after the reader loaded the expired entry, and that newer
 // value must not be deleted by the stale reader.
-func (c *Cache) CompareAndDelete(key uint64, old any) bool {
+func (c *Cache[V]) CompareAndDelete(key uint64, old V) bool {
 	seg := c.data.data.getSegment(key)
 	seg.rwlock.Lock()
 	defer seg.rwlock.Unlock()
@@ -120,17 +123,17 @@ func (c *Cache) CompareAndDelete(key uint64, old any) bool {
 }
 
 // Len returns current size
-func (c *Cache) Len() int {
+func (c *Cache[V]) Len() int {
 	return int(c.data.Len())
 }
 
 // Stop cleanup
-func (c *Cache) Stop() {
+func (c *Cache[V]) Stop() {
 	c.data.Stop()
 }
 
 // ForEach iterates over all cache entries.
 // Iteration is not atomic with concurrent updates.
-func (c *Cache) ForEach(f func(key uint64, value any) bool) {
+func (c *Cache[V]) ForEach(f func(key uint64, value V) bool) {
 	c.data.ForEach(f)
 }

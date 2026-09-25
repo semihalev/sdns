@@ -31,7 +31,7 @@ import (
 func TestEvictionProportionalityAtCapacity(t *testing.T) {
 	const maxSize = 200_000
 
-	c := New(maxSize)
+	c := New[any](maxSize)
 	for i := 0; i < maxSize; i++ {
 		c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 	}
@@ -93,7 +93,7 @@ func TestAddLatencyUnderEvictionStorm(t *testing.T) {
 		maxStall = 50 * time.Millisecond
 	)
 
-	c := New(maxSize)
+	c := New[any](maxSize)
 	for i := 0; i < maxSize; i++ {
 		c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 	}
@@ -221,7 +221,7 @@ func TestAddLatencyUnderEvictionStorm(t *testing.T) {
 func BenchmarkAddAtCapacity(b *testing.B) {
 	const maxSize = 1 << 18
 
-	c := New(maxSize)
+	c := New[any](maxSize)
 	for i := 0; i < maxSize; i++ {
 		c.Add(uint64(i), i) //nolint:gosec // G115 - bench setup
 	}
@@ -240,7 +240,7 @@ func BenchmarkAddAtCapacity(b *testing.B) {
 func BenchmarkAddUnderCapacity(b *testing.B) {
 	const maxSize = 1 << 30 // never reached
 
-	c := New(1 << 18)
+	c := New[any](1 << 18)
 	c.maxSize = maxSize
 
 	b.ResetTimer()

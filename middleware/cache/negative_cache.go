@@ -8,7 +8,7 @@ import (
 
 // NegativeCache handles error DNS responses.
 type NegativeCache struct {
-	cache   *cache.Cache
+	cache   *cache.Cache[*CacheEntry]
 	ttl     TTLManager
 	metrics *CacheMetrics
 }
@@ -16,7 +16,7 @@ type NegativeCache struct {
 // NewNegativeCache creates a new negative cache.
 func NewNegativeCache(size int, minTTL, maxTTL time.Duration, metrics *CacheMetrics) *NegativeCache {
 	return &NegativeCache{
-		cache:   cache.New(size),
+		cache:   cache.New[*CacheEntry](size),
 		ttl:     NewTTLManager(minTTL, maxTTL),
 		metrics: metrics,
 	}
@@ -25,12 +25,11 @@ func NewNegativeCache(size int, minTTL, maxTTL time.Duration, metrics *CacheMetr
 // (*NegativeCache).Get get retrieves an entry from the negative cache.
 // Hit/Miss metrics are NOT recorded here, see PositiveCache.Get.
 func (nc *NegativeCache) Get(key uint64) (*CacheEntry, bool) {
-	v, ok := nc.cache.Get(key)
+	entry, ok := nc.cache.Get(key)
 	if !ok {
 		return nil, false
 	}
 
-	entry := v.(*CacheEntry)
 	if entry.IsExpired() {
 		nc.cache.CompareAndDelete(key, entry)
 		return nil, false
