@@ -118,8 +118,9 @@ func TestHermeticDNSSECBogusIsMarkedAsAVerdict(t *testing.T) {
 	net.Delegate("badsig.test.").ServeTampered(
 		[]dns.RR{mustRR(t, "www.badsig.test. 300 IN A 192.0.2.70")},
 		mustRR(t, "www.badsig.test. 300 IN A 198.51.100.70"))
+	net.DelegateTamperedDS("badds.test.").Serve(mustRR(t, "www.badds.test. 300 IN A 192.0.2.90"))
 
-	for _, name := range []string{"www.nosig.test.", "www.wrongds.test.", "www.badsig.test."} {
+	for _, name := range []string{"www.nosig.test.", "www.wrongds.test.", "www.badsig.test.", "www.badds.test."} {
 		req := new(dns.Msg)
 		req.SetEdns0(dnsutil.DefaultMsgSize, true)
 		req.SetQuestion(name, dns.TypeA)
@@ -135,6 +136,53 @@ func TestHermeticDNSSECBogusIsMarkedAsAVerdict(t *testing.T) {
 		if middleware.IsValidationFailureResponse(ctx, resp.Copy()) {
 			t.Fatalf("%s: a copy carries the mark", name)
 		}
+	}
+}
+
+// A DNAME whose target fails validation composes an outer SERVFAIL that is
+// the target's verdict, and carries its mark: failover must not ask another
+// resolver for the alias any more than for the target. The control, a sound
+// target, shows the answer really comes through the DNAME.
+func TestHermeticDNSSECBogusDNAMETargetIsAVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		bogus bool
+	}{{"sound target", false}, {"target with a bad signature", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			net := newHermeticNet(t)
+			target := net.Delegate("target.test.")
+			served := mustRR(t, "www.target.test. 300 IN A 192.0.2.80")
+			if tc.bogus {
+				target.ServeTampered([]dns.RR{served}, mustRR(t, "www.target.test. 300 IN A 198.51.100.80"))
+			} else {
+				target.Serve(served)
+			}
+			alias := net.Delegate("alias.test.")
+			dname := mustRR(t, "alias.test. 300 IN DNAME target.test.")
+			alias.server.serve("www.alias.test.", dns.TypeA,
+				dname, alias.key.sign(t, []dns.RR{dname}),
+				mustRR(t, "www.alias.test. 300 IN CNAME www.target.test."))
+
+			req := new(dns.Msg)
+			req.SetEdns0(dnsutil.DefaultMsgSize, true)
+			req.SetQuestion("www.alias.test.", dns.TypeA)
+			ctx := middleware.WithResponseMeta(context.Background(), new(middleware.ResponseMeta))
+			resp := net.Handler().handle(ctx, req)
+
+			if !tc.bogus {
+				if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) < 2 {
+					t.Fatalf("rcode = %s with %d answers, want the DNAME and the target",
+						dns.RcodeToString[resp.Rcode], len(resp.Answer))
+				}
+				return
+			}
+			if resp.Rcode != dns.RcodeServerFailure {
+				t.Fatalf("rcode = %s, want SERVFAIL", dns.RcodeToString[resp.Rcode])
+			}
+			if !middleware.IsValidationFailureResponse(ctx, resp) {
+				t.Fatal("the alias's SERVFAIL does not carry the target's verdict, failover would replace it")
+			}
+		})
 	}
 }
 

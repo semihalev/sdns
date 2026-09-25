@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"time"
 
@@ -191,6 +192,13 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
 	}
 
 	if err != nil {
+		// A signature the DNS library refused is a verdict on whatever
+		// path it surfaced. The verification returns name it; this names
+		// it for any path that does not. dns.ErrRdata stays out: it also
+		// comes from a malformed response, which is no verdict.
+		if errors.Is(err, dns.ErrSig) || errors.Is(err, dns.ErrAlg) {
+			err = asBogus(err)
+		}
 		classifyResolverErr(err)
 		zlog.Info("Resolve query failed", "query", dnsutil.FormatQuestion(q), "error", err.Error())
 

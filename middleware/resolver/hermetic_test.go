@@ -826,6 +826,26 @@ func (n *hermeticNet) DelegateWrongDS(zone string) *hermeticZone {
 	return n.delegate(zone, true, true, true)
 }
 
+// DelegateTamperedDS publishes, in the referral and at the parent, a DS whose
+// digest was altered after the parent signed it: the signature is present,
+// made by the parent's key, and does not verify, a bogus referral the DNS
+// library refuses with a bare dns.ErrSig.
+func (n *hermeticNet) DelegateTamperedDS(zone string) *hermeticZone {
+	n.tb.Helper()
+	z := n.delegate(zone, true, true, false)
+	signed := z.ds[0].(*dns.DS)
+	sig := n.rootKey.sign(n.tb, []dns.RR{signed})
+	tampered := dns.Copy(signed).(*dns.DS)
+	tampered.Digest = strings.Repeat("0", len(signed.Digest))
+	n.root.serve(z.name, dns.TypeDS, tampered, sig)
+	n.root.mu.Lock()
+	referral := n.root.children[z.name]
+	referral.ns = []dns.RR{referral.ns[0], tampered, sig}
+	n.root.mu.Unlock()
+	z.ds = []dns.RR{tampered}
+	return z
+}
+
 func (n *hermeticNet) delegate(zone string, signed, publishDS, wrongDS bool) *hermeticZone {
 	n.tb.Helper()
 	zone = dns.Fqdn(zone)
