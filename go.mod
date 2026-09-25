@@ -8,7 +8,7 @@ require (
 	github.com/pierrec/lz4/v4 v4.1.30
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.3
-	github.com/quic-go/quic-go v0.62.0
+	github.com/quic-go/quic-go v0.63.0
 	github.com/semihalev/zlog/v2 v2.0.8
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/sync v0.23.0
