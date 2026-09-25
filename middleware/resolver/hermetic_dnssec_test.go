@@ -200,8 +200,14 @@ func TestHermeticDNSSECBadSignatureIsBogus(t *testing.T) {
 		t.Fatalf("rcode = %s with %d answers, want an empty SERVFAIL",
 			dns.RcodeToString[resp.Rcode], len(resp.Answer))
 	}
-	if ede := dnsutil.GetEDE(resp); ede == nil || ede.InfoCode != dns.ExtendedErrorCodeDNSBogus {
+	ede := dnsutil.GetEDE(resp)
+	if ede == nil || ede.InfoCode != dns.ExtendedErrorCodeDNSBogus {
 		t.Fatalf("EDE = %+v, want DNSSEC Bogus", ede)
+	}
+	// The verification return names the verdict and the handler's net
+	// must not name it again.
+	if ede.ExtraText != "DNSSEC validation failed: dns: bad signature" {
+		t.Fatalf("EDE text = %q, want the verdict named once", ede.ExtraText)
 	}
 }
 
@@ -218,6 +224,7 @@ func TestAsBogus(t *testing.T) {
 	for _, err := range []error{
 		context.DeadlineExceeded, NewNetworkError(errors.New("unreachable")),
 		dnssec.ErrNoSignatures, errMaxDepth,
+		asBogus(dns.ErrSig), fmt.Errorf("wrapped: %w", asBogus(dns.ErrSig)),
 	} {
 		if got := asBogus(err); got != err {
 			t.Errorf("asBogus(%v) = %v, want it unchanged", err, got)

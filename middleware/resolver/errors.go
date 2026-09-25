@@ -77,9 +77,14 @@ func NewNoReachableAuthorityError(message string) *dnsutil.EDEError {
 // the failure is counted as a DNSSEC one, and failover knows it for a
 // verdict. Anything else passes through unchanged: the same return also
 // carries a failure to fetch the DS, which is no verdict about the data.
-// The original error stays reachable through errors.Is.
+// The original error stays reachable through errors.Is. An error already
+// named bogus is returned as it is, so the handler's net does not name a
+// verification return's verdict a second time.
 func asBogus(err error) error {
 	if !errors.Is(err, dns.ErrSig) && !errors.Is(err, dns.ErrAlg) && !errors.Is(err, dns.ErrRdata) {
+		return err
+	}
+	if ede, ok := errors.AsType[*dnsutil.EDEError](err); ok && ede.Code == dns.ExtendedErrorCodeDNSBogus {
 		return err
 	}
 	return &dnsutil.EDEError{
