@@ -24,7 +24,7 @@ type Delegation struct {
 
 // Cache type.
 type Cache struct {
-	cache *cache.Cache
+	cache *cache.Cache[*Delegation]
 
 	now func() time.Time
 }
@@ -32,7 +32,7 @@ type Cache struct {
 // NewCache return new cache.
 func NewCache() *Cache {
 	n := &Cache{
-		cache: cache.New(defaultCap),
+		cache: cache.New[*Delegation](defaultCap),
 		now:   time.Now,
 	}
 
@@ -41,13 +41,11 @@ func NewCache() *Cache {
 
 // (*Cache).Get returns the delegation entry for a key or an error.
 func (n *Cache) Get(key uint64) (*Delegation, error) {
-	el, ok := n.cache.Get(key)
+	d, ok := n.cache.Get(key)
 
 	if !ok {
 		return nil, cache.ErrCacheNotFound
 	}
-
-	d := el.(*Delegation)
 
 	// now() and ExpiresAt both retain the monotonic clock reading, so a
 	// wall-clock step cannot extend or prematurely expire the lease.
@@ -134,9 +132,8 @@ func (n *Cache) SetUntilIfAbsent(key uint64, dsSet []dns.RR, servers *Servers, e
 			// Lost the insert race; re-examine what landed.
 			continue
 		}
-		live := cur.(*Delegation)
-		if n.now().Before(live.ExpiresAt) {
-			return live
+		if n.now().Before(cur.ExpiresAt) {
+			return cur
 		}
 		if n.cache.CompareAndSwap(key, cur, d) {
 			return d

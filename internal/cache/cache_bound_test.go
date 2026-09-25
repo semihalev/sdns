@@ -17,7 +17,7 @@ func isCI() bool {
 // TestCacheBoundStrict tests that cache never exceeds max size by more than eviction batch size
 func TestCacheBoundStrict(t *testing.T) {
 	maxSize := 1000
-	c := New(maxSize)
+	c := New[any](maxSize)
 
 	// Track max observed size
 	var maxObserved int64
@@ -56,7 +56,7 @@ func TestCacheBoundUnderHeavyConcurrency(t *testing.T) {
 	}
 
 	maxSize := 1000 // Reduced from 10000
-	c := New(maxSize)
+	c := New[any](maxSize)
 
 	numGoroutines := 10       // Reduced from 100
 	itemsPerGoroutine := 1000 // Reduced from 10000
@@ -128,7 +128,7 @@ func TestCacheBoundUnderHeavyConcurrency(t *testing.T) {
 // TestCacheEvictionEffectiveness tests that eviction actually removes items
 func TestCacheEvictionEffectiveness(t *testing.T) {
 	maxSize := 100
-	c := New(maxSize)
+	c := New[any](maxSize)
 
 	// Fill cache completely
 	for i := 0; i < maxSize; i++ {
@@ -182,7 +182,7 @@ func TestCacheSizeMonitoring(t *testing.T) {
 	}
 
 	maxSize := 5000 // Reduced from 50000
-	c := New(maxSize)
+	c := New[any](maxSize)
 
 	// Record size over time
 	sizeHistory := make([]int, 0, 100) // Reduced from 1000
@@ -261,7 +261,7 @@ func TestCacheSizeMonitoring(t *testing.T) {
 // TestCacheEvictionDeadlock tests that eviction doesn't cause deadlock
 func TestCacheEvictionDeadlock(t *testing.T) {
 	maxSize := 100
-	c := New(maxSize)
+	c := New[any](maxSize)
 
 	// Use timeout to detect deadlock
 	done := make(chan bool)
@@ -284,7 +284,7 @@ func TestCacheEvictionDeadlock(t *testing.T) {
 // TestCacheEvictionWithLargeItems simulates cache with varying item sizes
 func TestCacheEvictionWithLargeItems(t *testing.T) {
 	maxSize := 1000
-	c := New(maxSize)
+	c := New[any](maxSize)
 
 	// Add items of varying "sizes" (simulated by value content)
 	for i := 0; i < maxSize*5; i++ {
@@ -312,7 +312,7 @@ func BenchmarkCacheBoundChecking(b *testing.B) {
 
 	for _, size := range sizes {
 		b.Run(fmt.Sprintf("size-%d", size), func(b *testing.B) {
-			c := New(size)
+			c := New[any](size)
 
 			// Pre-fill to 80% capacity
 			for i := 0; i < size*8/10; i++ {

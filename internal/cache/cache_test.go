@@ -10,7 +10,7 @@ import (
 )
 
 func TestCacheAddAndGet(t *testing.T) {
-	c := New(4)
+	c := New[any](4)
 	c.Add(1, 1)
 
 	value, found := c.Get(1)
@@ -23,7 +23,7 @@ func TestCacheAddAndGet(t *testing.T) {
 }
 
 func TestCacheLen(t *testing.T) {
-	c := New(4)
+	c := New[any](4)
 
 	c.Add(1, 1)
 	if !reflect.DeepEqual(1, c.Len()) {
@@ -43,7 +43,7 @@ func TestCacheLen(t *testing.T) {
 }
 
 func TestCacheRemove(t *testing.T) {
-	c := New(4)
+	c := New[any](4)
 
 	c.Add(1, 1)
 	if !reflect.DeepEqual(1, c.Len()) {
@@ -64,7 +64,7 @@ func TestCacheRemove(t *testing.T) {
 func TestCacheConditionalReplaceAndDelete(t *testing.T) {
 	type value struct{ generation int }
 
-	c := New(4)
+	c := New[any](4)
 	old := &value{generation: 1}
 	newer := &value{generation: 2}
 	other := &value{generation: 3}
@@ -99,7 +99,7 @@ func TestCacheConditionalReplaceAndDelete(t *testing.T) {
 func TestCacheLRUEviction(t *testing.T) {
 	// Note: RadicalCache is not LRU, it clears segments for performance
 	// This test verifies size limits are maintained
-	c := New(2)
+	c := New[any](2)
 
 	c.Add(1, "one")
 	c.Add(2, "two")
@@ -119,7 +119,7 @@ func TestCacheLRUEviction(t *testing.T) {
 func TestCacheLRUBehavior(t *testing.T) {
 	// Note: RadicalCache doesn't guarantee LRU behavior
 	// It uses segment clearing for performance
-	c := New(3)
+	c := New[any](3)
 
 	// Add three items
 	c.Add(1, "one")
@@ -139,7 +139,7 @@ func TestCacheLRUBehavior(t *testing.T) {
 }
 
 func TestCacheConcurrency(t *testing.T) {
-	c := New(1000)
+	c := New[any](1000)
 	const numGoroutines = 100
 	const opsPerGoroutine = 1000
 
@@ -173,7 +173,7 @@ func TestCacheConcurrency(t *testing.T) {
 }
 
 func TestCacheRemoveConcurrency(t *testing.T) {
-	c := New(1000)
+	c := New[any](1000)
 	const numGoroutines = 50
 	const keysPerGoroutine = 20
 
@@ -204,7 +204,7 @@ func TestCacheRemoveConcurrency(t *testing.T) {
 }
 
 func TestCacheZeroCapacity(t *testing.T) {
-	c := New(0)
+	c := New[any](0)
 
 	// Zero capacity becomes 1 (minimum)
 	c.Add(1, "one")
@@ -219,7 +219,7 @@ func TestCacheZeroCapacity(t *testing.T) {
 }
 
 func TestCacheUpdateExisting(t *testing.T) {
-	c := New(10)
+	c := New[any](10)
 
 	c.Add(1, "original")
 	val, found := c.Get(1)
@@ -247,7 +247,7 @@ func TestCacheUpdateExisting(t *testing.T) {
 }
 
 func TestCacheCapacity(t *testing.T) {
-	c := New(100)
+	c := New[any](100)
 
 	// Add some items
 	for i := 0; i < 50; i++ {
@@ -280,7 +280,7 @@ func TestCacheCapacity(t *testing.T) {
 
 // Benchmarks.
 func BenchmarkCacheGet(b *testing.B) {
-	c := New(10000)
+	c := New[any](10000)
 
 	// Pre-populate
 	for i := 0; i < 10000; i++ {
@@ -298,7 +298,7 @@ func BenchmarkCacheGet(b *testing.B) {
 }
 
 func BenchmarkCacheAdd(b *testing.B) {
-	c := New(10000)
+	c := New[any](10000)
 
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
@@ -311,7 +311,7 @@ func BenchmarkCacheAdd(b *testing.B) {
 }
 
 func BenchmarkCacheMixed(b *testing.B) {
-	c := New(10000)
+	c := New[any](10000)
 
 	// Pre-populate
 	for i := 0; i < 5000; i++ {
@@ -337,7 +337,7 @@ func TestCacheMemoryUsage(t *testing.T) {
 		t.Skip("Skipping memory test in short mode")
 	}
 
-	c := New(10000)
+	c := New[any](10000)
 
 	// Add items
 	for i := 0; i < 10000; i++ {
@@ -365,7 +365,7 @@ func TestCacheTTL(t *testing.T) {
 		expiry time.Time
 	}
 
-	c := New(10)
+	c := New[any](10)
 	now := time.Now()
 
 	// Add item with 1 second TTL
@@ -402,7 +402,7 @@ func TestCacheTTL(t *testing.T) {
 }
 
 func TestCacheStop(t *testing.T) {
-	c := New(100)
+	c := New[any](100)
 
 	c.Add(1, "one")
 	c.Add(2, "two")
@@ -436,7 +436,7 @@ func TestCacheNewSizeBranches(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := New(tt.size)
+			c := New[any](tt.size)
 			if c == nil {
 				t.Fatalf("c is nil")
 			}

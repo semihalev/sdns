@@ -172,7 +172,7 @@ func TestRecursionWorkDetachedIPv6JobHasSharedBudget(t *testing.T) {
 	}
 
 	r := newAttackHarnessResolver(&authority.Servers{Zone: "."})
-	r.glueV6 = internalcache.New(defaultCacheSize)
+	r.glueV6 = internalcache.New[*glueEntry](defaultCacheSize)
 	oracle := &attackAddressOracle{record: true}
 	installAttackQueryer(r, recursionDebitingQueryer{next: oracle})
 

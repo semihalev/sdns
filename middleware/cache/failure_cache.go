@@ -148,7 +148,7 @@ func (e *failureEntry) hit() FailureHit {
 // FailureCache is a bounded, concurrent cache of recursive-resolution
 // failures. Expired entries remain as backoff history but are not cache hits.
 type FailureCache struct {
-	entries    *internalcache.Cache
+	entries    *internalcache.Cache[*failureEntry]
 	initialTTL time.Duration
 	maxTTL     time.Duration
 	now        func() time.Time
@@ -179,7 +179,7 @@ func NewFailureCache(cfg FailureCacheConfig) (*FailureCache, error) {
 	}
 
 	return &FailureCache{
-		entries:    internalcache.New(cfg.Size),
+		entries:    internalcache.New[*failureEntry](cfg.Size),
 		initialTTL: cfg.InitialTTL,
 		maxTTL:     cfg.MaxTTL,
 		now:        cfg.Now,
@@ -428,9 +428,8 @@ func (c *FailureCache) PurgeQuestion(q dns.Question) int {
 		entry *failureEntry
 	}
 	var matches []located
-	c.entries.ForEach(func(hash uint64, value any) bool {
-		entry, ok := value.(*failureEntry)
-		if !ok || entry == nil {
+	c.entries.ForEach(func(hash uint64, entry *failureEntry) bool {
+		if entry == nil {
 			return true
 		}
 		switch entry.kind {
@@ -546,12 +545,7 @@ func (c *FailureCache) loadZoneWithHash(key FailureZoneKey) (*failureEntry, uint
 }
 
 func (c *FailureCache) loadEntry(hash uint64) (*failureEntry, bool) {
-	value, ok := c.entries.Get(hash)
-	if !ok {
-		return nil, false
-	}
-	entry, ok := value.(*failureEntry)
-	return entry, ok
+	return c.entries.Get(hash)
 }
 
 func normalizeFailureQuestionKey(key FailureQuestionKey) FailureQuestionKey {

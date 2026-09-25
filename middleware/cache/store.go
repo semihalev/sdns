@@ -879,10 +879,10 @@ func (s *Store) Stop() {
 // concurrent updates.
 func (s *Store) ForEach(fn func(positive bool, key uint64, entry *CacheEntry) bool) {
 	keepGoing := true
-	for i, sub := range []*cache.Cache{s.positive.cache, s.negative.cache} {
-		sub.ForEach(func(key uint64, value any) bool {
+	for i, sub := range []*cache.Cache[*CacheEntry]{s.positive.cache, s.negative.cache} {
+		sub.ForEach(func(key uint64, entry *CacheEntry) bool {
 			if keepGoing {
-				if entry, ok := value.(*CacheEntry); ok && entry != nil {
+				if entry != nil {
 					keepGoing = fn(i == 0, key, entry)
 				}
 			}

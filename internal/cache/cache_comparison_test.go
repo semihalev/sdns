@@ -26,7 +26,7 @@ func BenchmarkCachePerformance(b *testing.B) {
 }
 
 func benchmarkCachePerf(b *testing.B, size int, readRatio float64) {
-	c := New(size)
+	c := New[any](size)
 	keys := generateTestKeys(size)
 
 	// Pre-populate 50%
@@ -70,7 +70,7 @@ func BenchmarkHighConcurrency(b *testing.B) {
 
 	for _, concurrency := range concurrencies {
 		b.Run(fmt.Sprintf("Cache_Concurrent_%d", concurrency), func(b *testing.B) {
-			c := New(size)
+			c := New[any](size)
 			benchmarkConcurrent(b, c, concurrency)
 		})
 	}
