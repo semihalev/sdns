@@ -268,7 +268,9 @@ func (b *BlockList) removeLocked(key string) bool {
 	return false
 }
 
-// (*BlockList).Set sets a value in the BlockList.
+// (*BlockList).Set sets a value in the BlockList and reports whether it
+// was added: false for a key already there or one the whitelist shadows,
+// and then nothing is written.
 //
 // The disk write happens outside b.mu so concurrent DNS queries
 // (which take mu.RLock in ServeDNS) are not blocked during I/O.
@@ -338,7 +340,8 @@ func (b *BlockList) RemoveBatch(keys []string) int {
 }
 
 // setLocked applies a single Set in memory. Caller must hold b.mu.
-// Returns false if the key is whitelisted (caller should not save).
+// Returns whether the key was added: false if the whitelist shadows it
+// or it is already there, and the caller has nothing to save.
 func (b *BlockList) setLocked(key string) bool {
 	key = dns.CanonicalName(key)
 
@@ -350,11 +353,14 @@ func (b *BlockList) setLocked(key string) bool {
 		return false
 	}
 
+	set := b.m
 	if strings.HasPrefix(key, "*.") {
-		b.wild[key[2:]] = true
-	} else {
-		b.m[key] = true
+		set, key = b.wild, key[2:]
 	}
+	if set[key] {
+		return false
+	}
+	set[key] = true
 	return true
 }
 
