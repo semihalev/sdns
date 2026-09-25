@@ -2,6 +2,7 @@ package config
 
 import (
 	"crypto/ed25519"
+	"crypto/mldsa"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -1821,6 +1822,28 @@ func TestValidateRevokedAnchorIsAllowed(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "key-signing key") {
 		t.Fatalf("Validate() = %v, want the revoked key itself accepted", err)
+	}
+}
+
+// TestValidateMLDSA44Anchor pins that an ML-DSA-44 trust anchor is judged by
+// the verifier the resolver uses: the dns library does not know algorithm
+// 18 and would call every such key unusable.
+func TestValidateMLDSA44Anchor(t *testing.T) {
+	private, err := mldsa.GenerateKey(mldsa.MLDSA44())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := private.PublicKey().Bytes()
+
+	good := ". 172800 IN DNSKEY 257 3 18 " + base64.StdEncoding.EncodeToString(raw)
+	if err := (&Config{DNSSEC: "on", RootKeys: []string{good}}).Validate(); err != nil {
+		t.Fatalf("Validate() refused an ML-DSA-44 anchor: %v", err)
+	}
+
+	short := ". 172800 IN DNSKEY 257 3 18 " + base64.StdEncoding.EncodeToString(raw[:len(raw)-1])
+	err = (&Config{DNSSEC: "on", RootKeys: []string{short}}).Validate()
+	if err == nil || !strings.Contains(err.Error(), "not usable for algorithm 18") {
+		t.Fatalf("Validate() = %v, want a truncated ML-DSA-44 key refused", err)
 	}
 }
 

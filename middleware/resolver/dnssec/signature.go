@@ -5,9 +5,12 @@ import (
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
+	"crypto/mldsa"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/sha512"
+	"errors"
+	"fmt"
 	"hash"
 	"math/big"
 	"strings"
@@ -108,6 +111,11 @@ func verifySignature(k *dns.DNSKEY, sig *dns.RRSIG, rrset []dns.RR) error {
 		return verifyECDSASignature(k, sig.Algorithm, signed, signature)
 	case dns.ED25519:
 		return verifyEd25519Signature(k, signed, signature)
+	case MLDSA44:
+		if !mldsa44Available {
+			return ErrMissingDNSKEY
+		}
+		return verifyMLDSA44Signature(k, signed, signature)
 	default:
 		return ErrMissingDNSKEY
 	}
@@ -120,6 +128,8 @@ func verifySignatureSupported(algorithm uint8) bool {
 	case dns.RSASHA1, dns.RSASHA1NSEC3SHA1, dns.RSASHA256, dns.RSASHA512,
 		dns.ECDSAP256SHA256, dns.ECDSAP384SHA384, dns.ED25519:
 		return true
+	case MLDSA44:
+		return mldsa44Available
 	}
 	return false
 }
@@ -219,6 +229,60 @@ func verifyEd25519Signature(k *dns.DNSKEY, signed, signature []byte) error {
 		return dns.ErrSig
 	}
 	if !ed25519.Verify(ed25519.PublicKey(public), signed, signature) {
+		return dns.ErrSig
+	}
+	return nil
+}
+
+// MLDSA44 is the DNSSEC algorithm number IANA assigned to ML-DSA-44
+// (draft-westerbaan-dnssec-mldsa), which the dns library does not name yet.
+const MLDSA44 uint8 = 18
+
+// mldsa44Available reports whether this build's crypto/mldsa verifies. The
+// FIPS 140-3 v1.0.0 module has no ML-DSA and refuses every key; built
+// against it, a zone signed only with ML-DSA-44 has to stay what it was
+// before this validator knew the algorithm, insecure, rather than turn
+// bogus because a key it claims to support can never be loaded.
+var mldsa44Available = func() bool {
+	_, err := mldsa.NewPublicKey(mldsa.MLDSA44(), make([]byte, mldsa.MLDSA44PublicKeySize))
+	return err == nil
+}()
+
+// MLDSA44KeyProblem reports why k cannot verify ML-DSA-44 signatures here,
+// or nil when it can: the question a configuration check asks of a trust
+// anchor, answered by the verifier the resolver will use rather than by the
+// dns library, which does not know the algorithm.
+func MLDSA44KeyProblem(k *dns.DNSKEY) error {
+	if !mldsa44Available {
+		return errors.New("this build's crypto/mldsa cannot verify ML-DSA-44")
+	}
+	public, err := fromBase64([]byte(k.PublicKey))
+	if err != nil {
+		return err
+	}
+	if len(public) != mldsa.MLDSA44PublicKeySize {
+		return fmt.Errorf("public key is %d octets, ML-DSA-44 keys are %d", len(public), mldsa.MLDSA44PublicKeySize)
+	}
+	_, err = mldsa.NewPublicKey(mldsa.MLDSA44(), public)
+	return err
+}
+
+func verifyMLDSA44Signature(k *dns.DNSKEY, signed, signature []byte) error {
+	// draft-westerbaan-dnssec-mldsa: the key and the signature are the bare
+	// FIPS 204 encodings, and the signature is pure ML-DSA over the message
+	// itself, not a digest of it, with an empty context string.
+	public, err := fromBase64([]byte(k.PublicKey))
+	if err != nil || len(public) != mldsa.MLDSA44PublicKeySize {
+		return ErrMissingDNSKEY
+	}
+	pub, err := mldsa.NewPublicKey(mldsa.MLDSA44(), public)
+	if err != nil {
+		return ErrMissingDNSKEY
+	}
+	if len(signature) != mldsa.MLDSA44SignatureSize {
+		return dns.ErrSig
+	}
+	if err := mldsa.Verify(pub, signed, signature, nil); err != nil {
 		return dns.ErrSig
 	}
 	return nil
