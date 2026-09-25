@@ -145,6 +145,8 @@ See [Response Policy Zones]({{ '/docs/features/rpz/' | relative_url }}).
 |---|---|---|
 | `enabled` | `false` | Advertise the encrypted listeners at `_dns.resolver.arpa` (RFC 9462) |
 | `name` | `""` | Designated resolver name; empty takes the certificate's first DNS name |
+| `doh_port` | `0` | The port a reverse proxy publishes DoH on; 0 takes the DoH listener's own. Required to advertise a DoH listener bound to loopback |
+| `doh_alpn` | `[]` | The HTTP versions the proxy serves, `"h2"` and/or `"h3"`; empty takes the listener's own |
 
 See [Encrypted transports]({{ '/docs/features/encrypted-transports/' | relative_url }}).
 

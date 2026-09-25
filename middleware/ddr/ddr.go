@@ -102,9 +102,17 @@ func New(cfg *config.Config) *DDR {
 		if l.bind == "" {
 			continue
 		}
-		svc, ok := newService(l.bind, l.network, l.alpns, l.path, l.deflt)
+		svc, loopback, ok := newService(l.bind, l.network, l.alpns, l.path, l.deflt)
 		if !ok {
 			zlog.Warn("DDR skips a listener it cannot describe", "bind", l.bind)
+			continue
+		}
+		if l.path {
+			svc, loopback = published(cfg.DDR, svc, loopback)
+		}
+		if loopback {
+			zlog.Warn("DDR skips a listener bound to loopback, which clients cannot reach; "+
+				"a DoH listener behind a reverse proxy is advertised with ddr.doh_port", "bind", l.bind)
 			continue
 		}
 		d.services = append(d.services, svc)
@@ -112,28 +120,60 @@ func New(cfg *config.Config) *DDR {
 	return d
 }
 
+// published describes DoH as a reverse proxy publishes it, when the
+// configuration says so. A proxy port replaces the listener's port and its
+// address hint: clients connect to the proxy, found through the target name.
+// Proxy ALPNs replace the listener's: whichever HTTP version a client speaks
+// to the proxy, the proxy reaches the listener over its TCP side, so each is
+// offered while that side is up.
+func published(ddr config.DDRConfig, svc service, loopback bool) (service, bool) {
+	if ddr.DoHPort != 0 {
+		svc.port, svc.hint, loopback = 0, nil, false
+		if ddr.DoHPort != 443 {
+			svc.port = uint16(ddr.DoHPort) //nolint:gosec // G115 - range checked by the config gate
+		}
+	}
+	if len(ddr.DoHALPN) > 0 {
+		svc.alpns = make([]alpnListener, 0, len(ddr.DoHALPN))
+		for _, alpn := range ddr.DoHALPN {
+			svc.alpns = append(svc.alpns, alpnListener{alpn, "doh"})
+		}
+	}
+	return svc, loopback
+}
+
 // newService describes one listener. The port is resolved the way the
 // listener and the config gate resolve it, service names included, and is
 // carried only when it differs from the transport's default (RFC 9461 §4.2).
 // A listener bound to a specific address offers it as a hint, which saves
-// the client resolving the name before it can connect.
-func newService(bind, network string, alpns []alpnListener, path bool, deflt uint16) (service, bool) {
+// the client resolving the name before it can connect. A loopback address is
+// never a hint, and loopback reports that the listener is bound to one: a
+// client could only ever reach its own machine there.
+func newService(bind, network string, alpns []alpnListener, path bool, deflt uint16) (svc service, loopback, ok bool) {
 	host, portStr, err := net.SplitHostPort(bind)
 	if err != nil {
-		return service{}, false
+		return service{}, false, false
 	}
 	port, err := net.LookupPort(network, portStr)
 	if err != nil || port <= 0 || port > 65535 {
-		return service{}, false
+		return service{}, false, false
 	}
-	svc := service{alpns: alpns, path: path}
+	svc = service{alpns: alpns, path: path}
 	if uint16(port) != deflt { //nolint:gosec // G115 - range checked above
 		svc.port = uint16(port) //nolint:gosec // G115 - range checked above
 	}
-	if addr, err := netip.ParseAddr(host); err == nil && !addr.IsUnspecified() {
-		svc.hint = net.IP(addr.Unmap().AsSlice())
+	if addr, err := netip.ParseAddr(host); err == nil {
+		addr = addr.Unmap()
+		switch {
+		case addr.IsLoopback():
+			loopback = true
+		case !addr.IsUnspecified():
+			svc.hint = net.IP(addr.AsSlice())
+		}
+	} else if strings.EqualFold(host, "localhost") {
+		loopback = true
 	}
-	return svc, true
+	return svc, loopback, true
 }
 
 // ObserveListeners implements middleware.ListenerObserver.

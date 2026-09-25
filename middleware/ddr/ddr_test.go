@@ -276,3 +276,105 @@ func TestOnlyListenersThatAreUpAreAdvertised(t *testing.T) {
 		t.Fatalf("with nothing up, want NODATA, got %v", resp)
 	}
 }
+
+// advertised asks for the discovery records and returns them.
+func advertised(t *testing.T, d *DDR) []*dns.SVCB {
+	t.Helper()
+	resp, _, _ := serve(t, d, "_dns.resolver.arpa.", dns.TypeSVCB, dns.ClassINET, false)
+	if resp == nil {
+		t.Fatal("discovery query was not answered")
+	}
+	out := make([]*dns.SVCB, 0, len(resp.Answer))
+	for _, rr := range resp.Answer {
+		out = append(out, rr.(*dns.SVCB))
+	}
+	return out
+}
+
+// A listener bound to loopback is one no client can reach: it is neither
+// advertised nor offered as a hint. A DoH listener behind a reverse proxy is
+// advertised as the proxy publishes it once ddr.doh_port says so.
+func TestLoopbackListenersAndProxiedDoH(t *testing.T) {
+	alpnOf := func(rr *dns.SVCB) []string {
+		a, _ := param[*dns.SVCBAlpn](rr)
+		if a == nil {
+			return nil
+		}
+		return a.Alpn
+	}
+	noHint := func(t *testing.T, rr *dns.SVCB) {
+		t.Helper()
+		if h, ok := param[*dns.SVCBIPv4Hint](rr); ok {
+			t.Fatalf("%v advertises the hint %v", alpnOf(rr), h.Hint)
+		}
+		if h, ok := param[*dns.SVCBIPv6Hint](rr); ok {
+			t.Fatalf("%v advertises the hint %v", alpnOf(rr), h.Hint)
+		}
+	}
+
+	t.Run("loopback listeners are left out", func(t *testing.T) {
+		for _, doh := range []string{"127.0.0.1:8053", "[::1]:8053", "localhost:8053"} {
+			rrs := advertised(t, New(enabled(doh, ":853", ":853")))
+			if len(rrs) != 2 || alpnOf(rrs[0])[0] != "dot" || alpnOf(rrs[1])[0] != "doq" {
+				t.Fatalf("DoH on %s: records %v, want DoT and DoQ only", doh, rrs)
+			}
+			for _, rr := range rrs {
+				noHint(t, rr)
+			}
+		}
+		if rrs := advertised(t, New(enabled("", "127.0.0.1:853", ""))); len(rrs) != 0 {
+			t.Fatalf("DoT on loopback advertised: %v", rrs)
+		}
+	})
+
+	t.Run("proxied DoH on the default port", func(t *testing.T) {
+		cfg := enabled("127.0.0.1:8053", ":853", "")
+		cfg.DDR.DoHPort, cfg.DDR.DoHALPN = 443, []string{"h2"}
+		rrs := advertised(t, New(cfg))
+		if len(rrs) != 2 || rrs[0].Priority != 1 {
+			t.Fatalf("records %v, want DoH first, then DoT", rrs)
+		}
+		doh := rrs[0]
+		if a := alpnOf(doh); len(a) != 1 || a[0] != "h2" {
+			t.Fatalf("DoH alpn %v, want the proxy's h2", a)
+		}
+		if p, ok := param[*dns.SVCBPort](doh); ok {
+			t.Fatalf("DoH carries port %d for the default 443", p.Port)
+		}
+		if _, ok := param[*dns.SVCBDoHPath](doh); !ok {
+			t.Fatal("DoH lost its URI template")
+		}
+		noHint(t, doh)
+	})
+
+	t.Run("proxied DoH on another port", func(t *testing.T) {
+		cfg := enabled("192.0.2.53:8053", "", "")
+		cfg.DDR.DoHPort = 8443
+		rrs := advertised(t, New(cfg))
+		if len(rrs) != 1 {
+			t.Fatalf("records %v, want DoH alone", rrs)
+		}
+		if p, ok := param[*dns.SVCBPort](rrs[0]); !ok || p.Port != 8443 {
+			t.Fatalf("DoH port %v, want the proxy's 8443", p)
+		}
+		// The listener's own address is not where the proxy is.
+		noHint(t, rrs[0])
+		if a := alpnOf(rrs[0]); len(a) != 2 || a[0] != "h2" || a[1] != "h3" {
+			t.Fatalf("DoH alpn %v, want the listener's own h2 and h3", a)
+		}
+	})
+
+	t.Run("proxy ALPNs follow the listener's TCP side", func(t *testing.T) {
+		cfg := enabled("127.0.0.1:8053", "", "")
+		cfg.DDR.DoHPort, cfg.DDR.DoHALPN = 443, []string{"h2", "h3"}
+		d := New(cfg)
+		d.ObserveListeners(func(proto string) bool { return proto == "doh" })
+		if rrs := advertised(t, d); len(rrs) != 1 || len(alpnOf(rrs[0])) != 2 {
+			t.Fatalf("records %v, want DoH with both proxy ALPNs", rrs)
+		}
+		d.ObserveListeners(func(string) bool { return false })
+		if rrs := advertised(t, d); len(rrs) != 0 {
+			t.Fatalf("records %v, want none while the DoH listener is down", rrs)
+		}
+	})
+}

@@ -807,6 +807,21 @@ func (c *Config) validateDDR(add func(string, ...any)) {
 	if _, err := c.DDRTarget(); err != nil {
 		add("ddr.name: %v", err)
 	}
+	if c.DDR.DoHPort < 0 || c.DDR.DoHPort > 65535 {
+		add("ddr.doh_port = %d: must be a port number, or 0 for the DoH listener's own", c.DDR.DoHPort)
+	}
+	seen := make(map[string]bool, len(c.DDR.DoHALPN))
+	for _, alpn := range c.DDR.DoHALPN {
+		if alpn != "h2" && alpn != "h3" {
+			add("ddr.doh_alpn: %q is not a DoH ALPN; use \"h2\" or \"h3\"", alpn)
+		} else if seen[alpn] {
+			add("ddr.doh_alpn: %q is listed twice", alpn)
+		}
+		seen[alpn] = true
+	}
+	if (c.DDR.DoHPort != 0 || len(c.DDR.DoHALPN) > 0) && c.BindDOH == "" {
+		add("ddr.doh_port, ddr.doh_alpn: there is no DoH listener to publish; set binddoh")
+	}
 }
 
 func (c *Config) validateDNS64(add func(string, ...any)) {

@@ -463,6 +463,13 @@ type DDRConfig struct {
 	// Name is the designated resolver's name, the SVCB TargetName. Empty
 	// takes the first DNS name in tlscertificate's subjectAltName.
 	Name string `toml:"name"`
+	// DoHPort and DoHALPN describe DoH as clients reach it when a reverse
+	// proxy publishes it: the proxy's port and the HTTP versions it
+	// serves. Zero and empty take the DoH listener's own. A listener bound
+	// to a loopback address is advertised only with DoHPort set, since
+	// clients cannot reach the address itself.
+	DoHPort int      `toml:"doh_port"`
+	DoHALPN []string `toml:"doh_alpn"`
 }
 
 // ECSConfig holds the EDNS Client Subnet middleware configuration
@@ -1243,6 +1250,13 @@ enabled = false
 # The designated resolver's name, the SVCB TargetName. Empty takes the first
 # DNS name in tlscertificate's subjectAltName.
 name = ""
+
+# DoH as clients reach it when a reverse proxy publishes it: the proxy's port
+# and the HTTP versions it serves, e.g. 443 and ["h2"]. 0 and [] take the DoH
+# listener's own. A listener bound to a loopback address is advertised only
+# with doh_port set, since clients cannot reach the address itself.
+doh_port = 0
+doh_alpn = []
 
 # ============================
 # DNS64 (RFC 6147)

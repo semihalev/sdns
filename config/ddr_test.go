@@ -110,6 +110,22 @@ func TestValidateDDR(t *testing.T) {
 			c.BindDOH, c.TLSCertificate, c.TLSPrivateKey = ":443", named, namedKey
 		}, ""},
 		{"disabled with a name that could never work", func(c *Config) { c.DDR.Name = "resolver.arpa" }, ""},
+		{"proxied DoH", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.DDR.DoHPort, c.DDR.DoHALPN = true, "dns.example.", 443, []string{"h2", "h3"}
+			c.BindDOH = "127.0.0.1:8053"
+		}, ""},
+		{"doh_port out of range", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.DDR.DoHPort, c.BindDOH = true, "dns.example.", 70000, "127.0.0.1:8053"
+		}, "ddr.doh_port"},
+		{"doh_alpn that is not a DoH ALPN", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.DDR.DoHALPN, c.BindDOH = true, "dns.example.", []string{"http/1.1"}, ":443"
+		}, "not a DoH ALPN"},
+		{"doh_alpn listed twice", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.DDR.DoHALPN, c.BindDOH = true, "dns.example.", []string{"h2", "h2"}, ":443"
+		}, "listed twice"},
+		{"doh_port without a DoH listener", func(c *Config) {
+			c.DDR.Enabled, c.DDR.Name, c.DDR.DoHPort, c.BindTLS = true, "dns.example.", 443, ":853"
+		}, "no DoH listener to publish"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := new(Config)
