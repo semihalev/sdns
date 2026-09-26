@@ -2,18 +2,18 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
-	"time"
 
+	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/blocklist"
-	"github.com/semihalev/zlog/v2"
 )
 
 func Test_Run(t *testing.T) {
@@ -21,205 +21,296 @@ func Test_Run(t *testing.T) {
 	a.Run(context.Background())
 }
 
-func Test_Authorization(t *testing.T) {
-	routes := []struct {
-		Method         string
-		ReqURL         string
-		ExpectedStatus int
-	}{
-		{"GET", "/api/v1/block/set/test.com", http.StatusUnauthorized},
-		{"GET", "/api/v1/block/get/test.com", http.StatusUnauthorized},
-		{"GET", "/api/v1/block/exists/test.com", http.StatusUnauthorized},
-		{"GET", "/api/v1/block/remove/test.com", http.StatusUnauthorized},
-		{"GET", "/api/v1/purge/test.com/A", http.StatusUnauthorized},
-		{"GET", "/metrics", http.StatusUnauthorized},
+var setupBlocklist sync.Once
+
+// purgeSpy is a pipeline handler that records the questions purged.
+type purgeSpy struct {
+	mu     sync.Mutex
+	purged []dns.Question
+}
+
+func (*purgeSpy) Name() string                                       { return "purgespy" }
+func (*purgeSpy) ServeDNS(ctx context.Context, ch *middleware.Chain) { ch.Next(ctx) }
+
+func (s *purgeSpy) Purge(q dns.Question) {
+	s.mu.Lock()
+	s.purged = append(s.purged, q)
+	s.mu.Unlock()
+}
+
+func (s *purgeSpy) take() []dns.Question {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	got := s.purged
+	s.purged = nil
+	return got
+}
+
+var spy = new(purgeSpy)
+
+// newTestAPI returns an API over the pipeline's blocklist, with the given
+// bearer token.
+func newTestAPI(t *testing.T, token string) *API {
+	t.Helper()
+	setupBlocklist.Do(func() {
+		cfg := new(config.Config)
+		cfg.Nullroute = "0.0.0.0"
+		cfg.Nullroutev6 = "::0"
+		cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp")
+		middleware.Register("blocklist", func(cfg *config.Config) middleware.Handler { return blocklist.New(cfg) })
+		middleware.Register("purgespy", func(*config.Config) middleware.Handler { return spy })
+		middleware.Setup(cfg)
+	})
+	a := New(&config.Config{BearerToken: token})
+	if a.blocklist == nil {
+		t.Fatal("no blocklist in the pipeline")
 	}
+	return a
+}
 
-	bearerToken := "secret_token"
-
-	a := New(&config.Config{BearerToken: bearerToken})
-
-	block := a.router.Group("/api/v1/block")
-	{
-		block.GET("/exists/:key", a.existsBlock)
-		block.GET("/exists/:key", a.existsBlock)
-		block.GET("/get/:key", a.getBlock)
-		block.GET("/remove/:key", a.removeBlock)
-		block.GET("/set/:key", a.setBlock)
-		block.POST("/set/:key", a.setBlock)
+func call(h http.Handler, method, target, body string, header map[string]string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, target, strings.NewReader(body))
+	for k, v := range header {
+		req.Header.Set(k, v)
 	}
-
-	a.router.GET("/api/v1/purge/:qname/:qtype", a.purge)
-	a.router.GET("/metrics", a.metrics)
-
 	w := httptest.NewRecorder()
-	request, err := http.NewRequest("GET", "/metrics", nil)
-	if err != nil {
-		t.Fatalf("couldn't create request: %v\n", err)
+	h.ServeHTTP(w, req)
+	return w
+}
+
+func TestAPICalls(t *testing.T) {
+	a := newTestAPI(t, "")
+	h := a.handler()
+	// Start and end from a blocklist without the keys used here, so the
+	// counts hold however often the test runs in one process.
+	reset := func() {
+		a.blocklist.RemoveBatch([]string{"api-test.com", "a.api-test.com", "b.api-test.com"})
 	}
+	reset()
+	t.Cleanup(reset)
 
-	a.router.ServeHTTP(w, request)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("Authorization not expected status code: %d", w.Code)
-	}
-
-	w = httptest.NewRecorder()
-	request.Header.Set("Authorization", "sometoken")
-	a.router.ServeHTTP(w, request)
-
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("Authorization not expected status code: %d", w.Code)
-	}
-
-	w = httptest.NewRecorder()
-	request.Header.Set("Authorization", fmt.Sprintf("Bearer %s", a.bearerToken))
-	a.router.ServeHTTP(w, request)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("Authorization not expected status code: %d", w.Code)
-	}
-
-	for _, r := range routes {
-		w := httptest.NewRecorder()
-		request, err := http.NewRequest(r.Method, r.ReqURL, nil)
-
-		if err != nil {
-			t.Fatalf("couldn't create request: %v\n", err)
+	for _, c := range []struct {
+		method, target, body string
+		code                 int
+		want                 string
+	}{
+		{"GET", "/api/v1/block/set/api-test.com", "", 200, `{"success":true}`},
+		{"GET", "/api/v1/block/get/api-test.com", "", 200, `{"success":true}`},
+		{"GET", "/api/v1/block/get/missing.api-test.org", "", 404, `{"error":"missing.api-test.org not found"}`},
+		{"GET", "/api/v1/block/exists/api-test.com", "", 200, `{"exists":true}`},
+		{"GET", "/api/v1/block/remove/api-test.com", "", 200, `{"success":true}`},
+		{"GET", "/api/v1/block/exists/api-test.com", "", 200, `{"exists":false}`},
+		{"POST", "/api/v1/block/set/batch", `{"keys":["a.api-test.com","b.api-test.com"]}`, 200, `{"added":2,"requested":2,"skipped":0}`},
+		{"POST", "/api/v1/block/remove/batch", `{"keys":["a.api-test.com","c.api-test.com"]}`, 200, `{"missing":1,"removed":1,"requested":2}`},
+		{"POST", "/api/v1/block/remove/batch", `{"keys":[]}`, 400, `{"error":"keys is required and must be non-empty"}`},
+		{"POST", "/api/v1/block/set/batch", `{"names":["x"]}`, 400, `invalid request body`},
+		{"GET", "/api/v1/purge/api-test.com/a", "", 200, `{"success":true}`},
+		{"GET", "/api/v1/purge/api-test.com/FOO", "", 400, `{"error":"unknown qtype: FOO"}`},
+		{"GET", "/metrics", "", 200, "# HELP"},
+		{"GET", "/notfound", "", 404, "404 page not found"},
+		{"POST", "/api/v1/block/set/api-test.com", "", 405, ""},
+	} {
+		w := call(h, c.method, c.target, c.body, nil)
+		if w.Code != c.code || !strings.Contains(w.Body.String(), c.want) {
+			t.Errorf("%s %s = %d %q, want %d %q", c.method, c.target, w.Code, w.Body.String(), c.code, c.want)
 		}
-
-		request.Header.Set("Authorization", "Bearer some_token")
-
-		a.router.ServeHTTP(w, request)
-
-		if w.Code != r.ExpectedStatus {
-			t.Fatalf("%s uri not expected status code: %d", r.ReqURL, w.Code)
+		if w.Header().Get("Server") != "sdns" || w.Header().Get("Pragma") != "no-cache" {
+			t.Errorf("%s %s: response headers %v", c.method, c.target, w.Header())
+		}
+		// Nothing grants another site a read of what this listener says.
+		if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
+			t.Errorf("%s %s: Access-Control-Allow-Origin %q", c.method, c.target, got)
 		}
 	}
 }
 
-func Test_AllAPICalls(t *testing.T) {
-	logger := zlog.NewStructured()
-	logger.SetWriter(zlog.StdoutTerminal())
-	logger.SetLevel(zlog.LevelDebug)
-	zlog.SetDefault(logger)
-	debugpprof = true
+// Every route but pprof needs the token when one is configured, and only
+// the exact "Bearer <token>" passes.
+func TestAuthorization(t *testing.T) {
+	const token = "secret_token"
+	h := newTestAPI(t, token).handler()
 
-	cfg := new(config.Config)
-	cfg.Nullroute = "0.0.0.0"
-	cfg.Nullroutev6 = "::0"
-	cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp")
-	cfg.BearerToken = "secret_token"
-
-	middleware.Register("blocklist", func(cfg *config.Config) middleware.Handler { return blocklist.New(cfg) })
-	middleware.Setup(cfg)
-
-	blocklist := middleware.Get("blocklist").(*blocklist.BlockList)
-	blocklist.Set("test.com")
-
-	a := New(&config.Config{API: ":11111"})
-	ctx, cancel := context.WithCancel(context.Background())
-	a.Run(ctx)
-	cancel()
-
-	time.Sleep(time.Second)
-
-	a = New(&config.Config{})
-
-	a.router.GET("/", func(ctx *Context) {
-		ctx.Writer.WriteHeader(200)
-	})
-
-	a.router.Handle(http.MethodGet, "/files", func(ctx *Context) {
-		ctx.Writer.WriteHeader(200)
-	})
-
-	a.router.Handle(http.MethodPost, "/files", func(ctx *Context) {
-		ctx.Writer.WriteHeader(200)
-	})
-
-	a.router.Handle(http.MethodDelete, "/files", func(ctx *Context) {
-		ctx.Writer.WriteHeader(200)
-	})
-
-	a.router.Handle(http.MethodPut, "/files", func(ctx *Context) {
-		ctx.Writer.WriteHeader(200)
-	})
-
-	a.router.Handle(http.MethodPatch, "/files", func(ctx *Context) {
-		ctx.Writer.WriteHeader(200)
-	})
-
-	a.router.Handle(http.MethodConnect, "/files", func(ctx *Context) {
-		ctx.Writer.WriteHeader(200)
-	})
-
-	a.router.Handle(http.MethodTrace, "/files", func(ctx *Context) {
-		ctx.Writer.WriteHeader(200)
-	})
-
-	a.router.Handle(http.MethodOptions, "/files", func(ctx *Context) {
-		ctx.Writer.WriteHeader(200)
-	})
-
-	a.router.Handle(http.MethodHead, "/files", func(ctx *Context) {
-		ctx.Writer.WriteHeader(200)
-	})
-
-	a.router.GET("/files/*file", func(ctx *Context) {
-		ctx.Writer.WriteHeader(200)
-	})
-
-	block := a.router.Group("/api/v1/block")
-	{
-		block.GET("/exists/:key", a.existsBlock)
-		block.GET("/exists/:key", a.existsBlock)
-		block.GET("/get/:key", a.getBlock)
-		block.GET("/remove/:key", a.removeBlock)
-		block.GET("/set/:key", a.setBlock)
-		block.POST("/set/:key", a.setBlock)
-	}
-
-	a.router.GET("/api/v1/purge/:qname/:qtype", a.purge)
-	a.router.GET("/metrics", a.metrics)
-
-	routes := []struct {
-		Method         string
-		ReqURL         string
-		ExpectedStatus int
-	}{
-		{"GET", "/", http.StatusOK},
-		{"GET", "/files", http.StatusOK},
-		{"GET", "/files/file.tar.gz", http.StatusOK},
-		{"GET", "/api/v1/block/set/test.com", http.StatusOK},
-		{"POST", "/api/v1/block/set/test.com", http.StatusOK},
-		{"GET", "/api/v1/block/get/test.com", http.StatusOK},
-		{"GET", "/api/v1/block/get/test2.com", http.StatusNotFound},
-		{"GET", "/api/v1/block/exists/test.com", http.StatusOK},
-		{"GET", "/api/v1/block/remove/test.com", http.StatusOK},
-		{"GET", "/api/v1/purge/test.com/A", http.StatusOK},
-		{"GET", "/metrics", http.StatusOK},
-		{"GET", "/notfound", http.StatusNotFound},
-	}
-
-	/*w := httptest.NewRecorder()
-	a.ServeHTTP(w, nil)
-	if w.Code != 500 {
-		t.Fatalf("not expected status code: %d", w.Code)
-	}*/
-
-	for _, r := range routes {
-		w := httptest.NewRecorder()
-		request, err := http.NewRequest(r.Method, r.ReqURL, nil)
-
-		if err != nil {
-			t.Fatalf("couldn't create request: %v\n", err)
+	for _, target := range []string{
+		"/api/v1/block/set/auth.test", "/api/v1/block/get/auth.test",
+		"/api/v1/block/exists/auth.test", "/api/v1/block/remove/auth.test",
+		"/api/v1/purge/auth.test/A", "/metrics",
+	} {
+		for _, auth := range []string{"", token, "Bearer", "Bearer ", "Bearer secret", "Bearer secret_token_", "bearer " + token, "Basic " + token} {
+			w := call(h, "GET", target, "", map[string]string{"Authorization": auth})
+			if w.Code != http.StatusUnauthorized || w.Body.String() != `{"error":"unauthorized"}` {
+				t.Errorf("%s with %q = %d %q, want 401", target, auth, w.Code, w.Body.String())
+			}
 		}
+		if w := call(h, "GET", target, "", map[string]string{"Authorization": "Bearer " + token}); w.Code == http.StatusUnauthorized {
+			t.Errorf("%s refused the right token", target)
+		}
+	}
+	for _, target := range []string{"/api/v1/block/set/batch", "/api/v1/block/remove/batch"} {
+		if w := call(h, "POST", target, `{"keys":["auth.test"]}`, nil); w.Code != http.StatusUnauthorized {
+			t.Errorf("POST %s without the token = %d, want 401", target, w.Code)
+		}
+	}
+}
 
-		a.router.ServeHTTP(w, request)
+// A state-changing request a browser sends on behalf of another site is
+// refused, and changes nothing; the same request from curl, from the
+// user's own address bar or from a page this listener served goes through.
+// Reads are not refused: without a CORS grant the other site cannot see
+// what they return.
+func TestCrossSiteChangesAreRefused(t *testing.T) {
+	a := newTestAPI(t, "")
+	h := a.handler()
 
-		if w.Code != r.ExpectedStatus {
-			t.Fatalf("%s uri not expected status code: %d", r.ReqURL, w.Code)
+	crossSite := []map[string]string{
+		{"Sec-Fetch-Site": "cross-site"},
+		{"Sec-Fetch-Site": "same-site"},
+		{"Origin": "https://evil.example"},
+		{"Origin": "http://127.0.0.1:3000"},
+		{"Origin": "null"},
+		{"Sec-Fetch-Site": "same-origin", "Origin": "https://evil.example"},
+	}
+	allowed := []map[string]string{
+		nil,
+		{"Sec-Fetch-Site": "none"},
+		{"Sec-Fetch-Site": "same-origin", "Origin": "http://example.com"},
+	}
+
+	changes := []struct{ method, target, body string }{
+		{"GET", "/api/v1/block/set/csrf.test", ""},
+		{"GET", "/api/v1/block/remove/csrf.test", ""},
+		{"POST", "/api/v1/block/set/batch", `{"keys":["csrf.test"]}`},
+		{"POST", "/api/v1/block/remove/batch", `{"keys":["csrf.test"]}`},
+		{"GET", "/api/v1/purge/csrf.test/A", ""},
+	}
+	for _, c := range changes {
+		for _, hdr := range crossSite {
+			a.blocklist.Remove("csrf.test")
+			w := call(h, c.method, c.target, c.body, hdr)
+			if w.Code != http.StatusForbidden {
+				t.Errorf("%s %s with %v = %d %q, want 403", c.method, c.target, hdr, w.Code, w.Body.String())
+			}
+			if a.blocklist.Exists("csrf.test") {
+				t.Errorf("%s %s with %v changed the blocklist", c.method, c.target, hdr)
+			}
+		}
+		for _, hdr := range allowed {
+			if w := call(h, c.method, c.target, c.body, hdr); w.Code != http.StatusOK {
+				t.Errorf("%s %s with %v = %d %q, want 200", c.method, c.target, hdr, w.Code, w.Body.String())
+			}
+		}
+	}
+	a.blocklist.Remove("csrf.test")
+
+	for _, target := range []string{"/api/v1/block/exists/csrf.test", "/metrics"} {
+		if w := call(h, "GET", target, "", map[string]string{"Sec-Fetch-Site": "cross-site"}); w.Code != http.StatusOK {
+			t.Errorf("read %s from another site = %d, want 200", target, w.Code)
+		}
+	}
+}
+
+// pprof is served only with SDNS_PPROF, and outside the token: the tooling
+// sends no Authorization header.
+func TestPprofRoutes(t *testing.T) {
+	saved := debugpprof
+	defer func() { debugpprof = saved }()
+
+	debugpprof = false
+	if w := call(newTestAPI(t, "").handler(), "GET", "/debug/pprof/", "", nil); w.Code != http.StatusNotFound {
+		t.Fatalf("pprof off: /debug/pprof/ = %d, want 404", w.Code)
+	}
+
+	debugpprof = true
+	h := newTestAPI(t, "secret_token").handler()
+	for target, code := range map[string]int{
+		"/debug/":                    http.StatusMovedPermanently,
+		"/debug/pprof/":              http.StatusOK,
+		"/debug/pprof/goroutine":     http.StatusOK,
+		"/debug/pprof/goroutineleak": http.StatusOK,
+		"/debug/pprof/cmdline":       http.StatusOK,
+		"/debug/pprof/symbol":        http.StatusOK,
+		"/debug/pprof/no-such-prof":  http.StatusNotFound,
+	} {
+		if w := call(h, "GET", target, "", nil); w.Code != code {
+			t.Errorf("%s = %d, want %d", target, w.Code, code)
+		}
+	}
+	if w := call(h, "GET", "/debug/pprof/", "", nil); !strings.Contains(w.Body.String(), "goroutineleak") {
+		t.Error("the index does not list goroutineleak")
+	}
+	// GET only: a POST body to symbol is unbounded input with a buffered,
+	// several times larger answer.
+	if w := call(h, "POST", "/debug/pprof/symbol", "0x0", nil); w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /debug/pprof/symbol = %d, want 405", w.Code)
+	}
+}
+
+// A handler that panics answers 500 and leaves the listener serving.
+func TestPanicIsRecovered(t *testing.T) {
+	a := New(&config.Config{})
+	a.metricsHandler = http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") })
+	h := a.handler()
+	if w := call(h, "GET", "/metrics", "", nil); w.Code != http.StatusInternalServerError {
+		t.Fatalf("panicking handler = %d, want 500", w.Code)
+	}
+	if w := call(h, "GET", "/notfound", "", nil); w.Code != http.StatusNotFound {
+		t.Fatalf("after a panic = %d, want the listener still serving", w.Code)
+	}
+}
+
+// The root is a name a purge may be asked for. "." is also a path segment
+// URL cleaning removes, and the route must still see it as the qname,
+// written plainly or escaped.
+func TestPurgeTheRoot(t *testing.T) {
+	h := newTestAPI(t, "").handler()
+	spy.take()
+	for _, target := range []string{"/api/v1/purge/./NS", "/api/v1/purge/%2E/NS", "/api/v1/purge/%2e/DNSKEY"} {
+		w := call(h, "GET", target, "", nil)
+		if w.Code != http.StatusOK || w.Body.String() != `{"success":true}` {
+			t.Fatalf("%s = %d %q, want 200", target, w.Code, w.Body.String())
+		}
+		got := spy.take()
+		if len(got) != 1 || got[0].Name != "." {
+			t.Fatalf("%s purged %v, want the root", target, got)
+		}
+	}
+	if w := call(h, "GET", "/api/v1/purge/example.com./A", "", nil); w.Code != http.StatusOK {
+		t.Fatalf("an ordinary name = %d", w.Code)
+	}
+	if got := spy.take(); len(got) != 1 || got[0].Name != "example.com." || got[0].Qtype != dns.TypeA {
+		t.Fatalf("an ordinary name purged %v", got)
+	}
+}
+
+// A GET route answers HEAD too, and a probe for headers must not make a
+// change: HEAD on set, remove and purge is 405 and changes nothing, while
+// the reads still answer it.
+func TestHeadChangesNothing(t *testing.T) {
+	a := newTestAPI(t, "")
+	h := a.handler()
+	// The blocklist persists to a shared directory: start from a known
+	// state, whatever an earlier run left there.
+	a.blocklist.Remove("head-new.test")
+	a.blocklist.Set("head.test")
+	t.Cleanup(func() { a.blocklist.RemoveBatch([]string{"head.test", "head-new.test"}) })
+	spy.take()
+
+	for _, target := range []string{
+		"/api/v1/block/remove/head.test", "/api/v1/block/set/head-new.test", "/api/v1/purge/head.test/A",
+	} {
+		w := call(h, "HEAD", target, "", nil)
+		if w.Code != http.StatusMethodNotAllowed || w.Header().Get("Allow") != "GET" {
+			t.Errorf("HEAD %s = %d Allow %q, want 405 Allow GET", target, w.Code, w.Header().Get("Allow"))
+		}
+	}
+	if !a.blocklist.Exists("head.test") || a.blocklist.Exists("head-new.test") {
+		t.Error("HEAD changed the blocklist")
+	}
+	if got := spy.take(); len(got) != 0 {
+		t.Errorf("HEAD purged %v", got)
+	}
+	for _, target := range []string{"/api/v1/block/exists/head.test", "/api/v1/block/get/head.test", "/metrics"} {
+		if w := call(h, "HEAD", target, "", nil); w.Code != http.StatusOK {
+			t.Errorf("HEAD %s = %d, want 200", target, w.Code)
 		}
 	}
 }
