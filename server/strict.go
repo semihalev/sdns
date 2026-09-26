@@ -21,10 +21,12 @@ import (
 
 // jobCarrier is the job-owned contextutil.Carrier: fixed pin slots and a
 // provider hook behind a cheap mutex (a job serves on one goroutine; the
-// lock is uncontended and exists for the interface's safety contract),
-// no Done channel, cancellation is not observable on a path that never
-// blocks, and the composite-miss transition detaches to a real context
-// before anything can.
+// lock is uncontended and exists for the interface's safety contract).
+// It has no Done channel of its own, cancellation is not observable on a
+// path that never blocks, and the composite-miss transition detaches to a
+// real context before anything can. A transport whose client can cancel a
+// query in flight, a DoQ stream, lends it the stream's: the detach then
+// carries that cancellation into the slow work.
 type jobCarrier struct {
 	deadline time.Time
 
@@ -32,22 +34,43 @@ type jobCarrier struct {
 	keys     [4]any
 	vals     [4]any
 	provider contextutil.ValueProvider
+	parent   context.Context
 }
 
 // reset prepares the carrier for the next request; the engine calls it
-// before every strict serve, so a recycled job can never leak pins.
-func (c *jobCarrier) reset(deadline time.Time) {
+// before every strict serve, so a recycled job can never leak pins, nor a
+// previous request's cancellation.
+func (c *jobCarrier) reset(deadline time.Time, parent context.Context) {
 	c.mu.Lock()
 	c.deadline = deadline
 	c.keys = [4]any{}
 	c.vals = [4]any{}
 	c.provider = nil
+	c.parent = parent
 	c.mu.Unlock()
 }
 
 func (c *jobCarrier) Deadline() (time.Time, bool) { return c.deadline, true }
-func (c *jobCarrier) Done() <-chan struct{}       { return nil }
-func (c *jobCarrier) Err() error                  { return nil }
+
+func (c *jobCarrier) Done() <-chan struct{} {
+	c.mu.Lock()
+	parent := c.parent
+	c.mu.Unlock()
+	if parent == nil {
+		return nil
+	}
+	return parent.Done()
+}
+
+func (c *jobCarrier) Err() error {
+	c.mu.Lock()
+	parent := c.parent
+	c.mu.Unlock()
+	if parent == nil {
+		return nil
+	}
+	return parent.Err()
+}
 
 func (c *jobCarrier) Value(key any) any {
 	if v, ok := contextutil.CarrierLookup(c, key); ok {
@@ -192,13 +215,27 @@ var (
 // the ordinary lazy-deadline entry with the direct-pack capability (the
 // owned transports are raw byte sinks).
 func (s *Server) ServeRaw(w middleware.Transport, raw []byte, readTime time.Time) bool {
+	return s.ServeRawContext(context.Background(), w, raw, readTime)
+}
+
+// ServeRawContext is ServeRaw for a transport whose client can cancel a
+// query in flight: parent's cancellation reaches the work the query
+// starts, on the strict path through the carrier's detach and on the
+// decoded one as its parent context.
+func (s *Server) ServeRawContext(parent context.Context, w middleware.Transport, raw []byte, readTime time.Time) bool {
 	if s.trimEnabled {
 		s.served.Add(1)
 	}
 	if job, ok := w.(strictSlots); ok {
 		req, chain, carrier, ednsSlot := job.StrictSlots()
 		if req.ParseWire(raw, readTime, ednsSlot) {
-			carrier.reset(readTime.Add(s.queryTimeout()))
+			// A parent that can never cancel is not lent to the carrier,
+			// whose Err then stays free on the UDP and TCP hit path.
+			var cancelable context.Context
+			if parent.Done() != nil {
+				cancelable = parent
+			}
+			carrier.reset(readTime.Add(s.queryTimeout()), cancelable)
 			s.serveWire(carrier, w, req, chain)
 			return true
 		}
@@ -216,7 +253,7 @@ func (s *Server) ServeRaw(w middleware.Transport, raw []byte, readTime time.Time
 	if f, ok := w.(middleware.StagedFlusher); ok {
 		f.FlushStaged()
 	}
-	s.serveMsgBy(context.Background(), w, m, true, readTime.Add(s.queryTimeout()))
+	s.serveMsgBy(parent, w, m, true, readTime.Add(s.queryTimeout()))
 	return true
 }
 
@@ -236,7 +273,7 @@ func (s *Server) ServeRawInline(w middleware.Transport, raw []byte, readTime tim
 			if s.trimEnabled {
 				s.served.Add(1)
 			}
-			carrier.reset(readTime.Add(s.queryTimeout()))
+			carrier.reset(readTime.Add(s.queryTimeout()), nil)
 			if s.pipeline == nil || contextutil.EffectiveError(carrier) != nil {
 				return true
 			}
@@ -266,7 +303,7 @@ func (s *Server) ServeRawReplay(w middleware.Transport, raw []byte, readTime tim
 	if job, ok := w.(strictSlots); ok {
 		req, chain, carrier, ednsSlot := job.StrictSlots()
 		if req.ParseWire(raw, readTime, ednsSlot) {
-			carrier.reset(readTime.Add(s.queryTimeout()))
+			carrier.reset(readTime.Add(s.queryTimeout()), nil)
 			if s.pipeline == nil {
 				return true
 			}

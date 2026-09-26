@@ -92,7 +92,9 @@ type doqJob struct {
 	slabShard uint8
 	rx        []byte
 	tx        []byte
-	written   bool
+	// written is set once a whole reply is out; only then does the
+	// stream end with a FIN.
+	written bool
 	// scratch takes the length prefix and the probe for the FIN.
 	scratch [dnsclient.FramePrefixLen]byte
 	// work hands the slab's goroutine its next stream; closing it ends
@@ -142,13 +144,15 @@ func (j *doqJob) Write(b []byte) (int, error) {
 	}
 	binary.BigEndian.PutUint16(frame, uint16(len(b))) //nolint:gosec // bounded by dns.MaxMsgSize above
 	frame[2], frame[3] = 0, 0
-	j.written = true
 	// A client that stops reading, its flow-control window shut, must not
 	// hold the slab: the reply gets the allowance a query gets.
 	_ = j.stream.SetWriteDeadline(time.Now().Add(doqQueryWait))
 	if _, err := j.stream.Write(frame); err != nil {
+		// Part of the frame may be out. The stream is reset, not finished:
+		// a FIN after a partial message is a protocol error (§4.3.3).
 		return 0, err
 	}
+	j.written = true
 	return len(b), nil
 }
 
@@ -171,11 +175,23 @@ func (j *doqJob) Close() error         { return j.stream.Close() }
 // Proto names the transport for the chain's base writer.
 func (j *doqJob) Proto() string { return "doq" }
 
+// contextRawHandler is a rawHandler that takes the stream's context, so a
+// client cancelling a query in flight stops the work it started.
+type contextRawHandler interface {
+	ServeRawContext(parent context.Context, w middleware.Transport, raw []byte, readTime time.Time) bool
+}
+
+// doqStopBit marks the in-flight count closed. Set when shutdown begins,
+// it refuses every later stream in the same atomic step that would have
+// counted it, so admission and the drain cannot cross.
+const doqStopBit = int64(1) << 62
+
 // doqEngine owns one listener's accept loop, connection registry and
 // stream slabs.
 type doqEngine struct {
-	handler  rawHandler
-	maxConns int64
+	handler    rawHandler
+	ctxHandler contextRawHandler
+	maxConns   int64
 
 	slabRotor atomic.Uint32
 	tokens    chan struct{}
@@ -186,10 +202,10 @@ type doqEngine struct {
 	conns   map[*quic.Conn]struct{}
 	stopped bool
 	active  atomic.Int64
-	// streams joins the streams in flight; conns joins the connection
-	// loops, which are what add to streams.
-	streams sync.WaitGroup
-	loops   sync.WaitGroup
+	// inflight counts the streams admitted and not yet done, with
+	// doqStopBit once shutdown begins; loops joins the connection loops.
+	inflight atomic.Int64
+	loops    sync.WaitGroup
 }
 
 func newDoQEngine(handler rawHandler, plan resourcePlan) *doqEngine {
@@ -201,6 +217,7 @@ func newDoQEngine(handler rawHandler, plan resourcePlan) *doqEngine {
 		closing:  make(chan struct{}),
 		conns:    make(map[*quic.Conn]struct{}),
 	}
+	e.ctxHandler, _ = handler.(contextRawHandler)
 	for range jobs {
 		e.tokens <- struct{}{}
 	}
@@ -264,6 +281,30 @@ func (e *doqEngine) put(j *doqJob) {
 	e.tokens <- struct{}{}
 }
 
+// admit counts a stream in, or refuses it once shutdown has begun.
+func (e *doqEngine) admit() bool {
+	if e.inflight.Add(1)&doqStopBit != 0 {
+		e.inflight.Add(-1)
+		return false
+	}
+	return true
+}
+
+// release counts a stream out.
+func (e *doqEngine) release() { e.inflight.Add(-1) }
+
+// drained waits until the deadline for the streams admitted before the
+// stop bit to finish, and reports whether they did.
+func (e *doqEngine) drained(deadline time.Time) bool {
+	for e.inflight.Load() != doqStopBit {
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return true
+}
+
 func (e *doqEngine) quiesced() bool { return len(e.tokens) == cap(e.tokens) }
 
 func (e *doqEngine) trimIdle() int { return e.cache.drain(stopJob) }
@@ -318,15 +359,21 @@ func (e *doqEngine) serveConn(conn *quic.Conn) {
 		if err != nil {
 			return
 		}
+		if !e.admit() {
+			// Shutting down: the connection closes once the drain is over.
+			stream.CancelRead(doqNoError)
+			stream.CancelWrite(doqNoError)
+			continue
+		}
 		j := e.tryAcquire()
 		if j == nil {
+			e.release()
 			doqDropLoad.Inc()
 			stream.CancelRead(doqExcessiveLoad)
 			stream.CancelWrite(doqExcessiveLoad)
 			continue
 		}
 		j.conn, j.stream = conn, stream
-		e.streams.Add(1)
 		j.work <- struct{}{}
 	}
 }
@@ -336,7 +383,7 @@ func (e *doqEngine) serveConn(conn *quic.Conn) {
 func (j *doqJob) serve() {
 	e := j.engine
 	conn, stream := j.conn, j.stream
-	defer e.streams.Done()
+	defer e.release()
 	defer e.put(j)
 	defer func() {
 		if r := recover(); r != nil {
@@ -347,7 +394,7 @@ func (j *doqJob) serve() {
 	}()
 
 	readTime := time.Now()
-	length, code := j.readQuery(readTime.Add(doqQueryWait))
+	msg, code := j.readQuery(readTime.Add(doqQueryWait))
 	switch code {
 	case doqNoError:
 	case doqProtocolError:
@@ -367,73 +414,80 @@ func (j *doqJob) serve() {
 		return
 	}
 
-	header, _ := wire.ParseHeader(j.rx[:length])
-	if header.ID != 0 || hasTCPKeepalive(j.rx[:length], header) {
+	header, _ := wire.ParseHeader(msg)
+	if header.ID != 0 || hasTCPKeepalive(msg, header) {
 		doqDropProtocol.Inc()
 		_ = conn.CloseWithError(doqProtocolError, "")
 		return
 	}
+	j.written = false
 	switch verdict := acceptHeader(header); verdict {
 	case acceptOK:
+		// The ID the chain sees is ours to pick (§4.2.1: a message
+		// forwarded from DoQ gets one by the rules of the next transport);
+		// the reply goes out with zero regardless.
+		binary.BigEndian.PutUint16(msg[0:2], dns.Id())
+		var ok bool
+		if e.ctxHandler != nil {
+			ok = e.ctxHandler.ServeRawContext(stream.Context(), j, msg, readTime)
+		} else {
+			ok = e.handler.ServeRaw(j, msg, readTime)
+		}
+		if !ok {
+			j.rejectInPlace(acceptFormatError, msg)
+		}
 	case acceptIgnore:
 		doqDropIgnored.Inc()
 		stream.CancelWrite(doqProtocolError)
 		return
 	case acceptNotImplemented, acceptFormatError:
-		j.rejectInPlace(verdict)
-		_ = stream.Close()
-		return
-	}
-
-	// The ID the chain sees is ours to pick (§4.2.1: a message forwarded
-	// from DoQ gets one by the rules of the next transport); the reply
-	// goes out with zero regardless.
-	binary.BigEndian.PutUint16(j.rx[0:2], dns.Id())
-	j.written = false
-	if !e.handler.ServeRaw(j, j.rx[:length], readTime) {
-		j.rejectInPlace(acceptFormatError)
+		j.rejectInPlace(verdict, msg)
 	}
 	if !j.written {
-		// Nothing to send: §4.3.2 has the stream reset rather than
-		// finished empty.
+		// Nothing sent, or a reply cut short: §4.3.2 has the stream reset
+		// rather than finished, and a FIN after part of a message would be
+		// a protocol error of our own.
 		stream.CancelWrite(doqInternalError)
 		return
 	}
 	_ = stream.Close()
 }
 
-// readQuery reads one framed query and the FIN that must follow it into
-// the job, by deadline. It answers the query's length, or the error code
-// the stream ends with: doqProtocolError for what §4.3.3 names, the
-// connection's to close; anything else a failure of this stream alone.
-func (j *doqJob) readQuery(deadline time.Time) (int, quic.StreamErrorCode) {
+// readQuery reads one framed query and the FIN that must follow it, by
+// deadline. It answers the message, or the error code the stream ends
+// with: doqProtocolError for what §4.3.3 names, the connection's to
+// close; anything else a failure of this stream alone.
+func (j *doqJob) readQuery(deadline time.Time) ([]byte, quic.StreamErrorCode) {
 	stream := j.stream
 	_ = stream.SetReadDeadline(deadline)
 	if _, err := io.ReadFull(stream, j.scratch[:]); err != nil {
-		return 0, readFailure(err)
+		return nil, readFailure(err)
 	}
 	length := int(binary.BigEndian.Uint16(j.scratch[:]))
 	if length < wire.HeaderLen {
-		return 0, doqProtocolError
+		return nil, doqProtocolError
 	}
-	if length > len(j.rx) {
-		// A query past the slab's class is rare; it gets a buffer of its
-		// own rather than a class of slabs kept for it.
-		j.rx = make([]byte, length)
+	msg := j.rx
+	if length > len(msg) {
+		// A query past the slab's class is rare. It gets a buffer of its
+		// own for this query only: the slab keeps the size it is priced
+		// at, rather than carrying the largest query it ever saw.
+		msg = make([]byte, length)
 	}
-	if _, err := io.ReadFull(stream, j.rx[:length]); err != nil {
-		return 0, readFailure(err)
+	msg = msg[:length]
+	if _, err := io.ReadFull(stream, msg); err != nil {
+		return nil, readFailure(err)
 	}
 	// One message per stream, then the FIN.
 	switch n, err := stream.Read(j.scratch[:1]); {
 	case n > 0:
-		return 0, doqProtocolError
+		return nil, doqProtocolError
 	case errors.Is(err, io.EOF):
-		return length, doqNoError
+		return msg, doqNoError
 	case errors.Is(err, os.ErrDeadlineExceeded):
-		return 0, doqProtocolError
+		return nil, doqProtocolError
 	default:
-		return 0, doqRequestCanceled
+		return nil, doqRequestCanceled
 	}
 }
 
@@ -449,15 +503,15 @@ func readFailure(err error) quic.StreamErrorCode {
 
 // rejectInPlace answers with the library-shaped bare header, from the
 // slab, allocation-free.
-func (j *doqJob) rejectInPlace(verdict acceptVerdict) {
+func (j *doqJob) rejectInPlace(verdict acceptVerdict, msg []byte) {
 	out := j.tx[dnsclient.FramePrefixLen : dnsclient.FramePrefixLen+wire.HeaderLen]
 	clear(out)
-	opcode := (j.rx[2] >> 3) & 0xF
+	opcode := (msg[2] >> 3) & 0xF
 	rcode := byte(dns.RcodeFormatError)
 	if verdict == acceptNotImplemented {
 		rcode = byte(dns.RcodeNotImplemented)
 	}
-	out[2] = 0x80 | (opcode << 3) | (j.rx[2] & 0x01)
+	out[2] = 0x80 | (opcode << 3) | (msg[2] & 0x01)
 	out[3] = rcode
 	_, _ = j.Write(out)
 }
@@ -504,20 +558,19 @@ func hasTCPKeepalive(msg []byte, h wire.Header) bool {
 // The caller has closed the listener.
 func (e *doqEngine) shutdown(deadline time.Time) error {
 	close(e.closing)
+	// From here no stream is admitted, on any connection: the drain below
+	// waits on a count nothing can add to.
+	e.inflight.Or(doqStopBit)
 	e.mu.Lock()
 	e.stopped = true
 	e.mu.Unlock()
 
-	done := make(chan struct{})
-	go func() { e.streams.Wait(); close(done) }()
 	wait := time.Until(deadline)
 	if wait <= 0 {
 		wait = doqShutdownForceIn
 	}
 	var err error
-	select {
-	case <-done:
-	case <-time.After(wait):
+	if !e.drained(time.Now().Add(wait)) {
 		err = errDrainTimeout
 	}
 
@@ -528,10 +581,13 @@ func (e *doqEngine) shutdown(deadline time.Time) error {
 	e.mu.Unlock()
 
 	joined := make(chan struct{})
-	go func() { e.loops.Wait(); e.streams.Wait(); close(joined) }()
+	go func() { e.loops.Wait(); close(joined) }()
 	select {
 	case <-joined:
 	case <-time.After(2 * time.Second):
+		err = errDrainTimeout
+	}
+	if !e.drained(time.Now().Add(2 * time.Second)) {
 		err = errDrainTimeout
 	}
 	// The parked slabs' goroutines end here; one still serving ends when
