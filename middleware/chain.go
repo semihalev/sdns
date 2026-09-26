@@ -1150,6 +1150,13 @@ func (ch *Chain) AllowDirectPack() {
 // registered.
 func noopStop() bool { return false }
 
+// CancelSourceKey is the context value key under which a wire-born
+// request's transport names the context whose cancellation should reach
+// the work the request starts, a DoQ stream's. The value must be the
+// request's own, not a recycled one: the strict detach hooks it
+// asynchronously.
+type CancelSourceKey struct{}
+
 // detachStrictContext builds the context the post-materialization chain
 // runs on: a fresh lazy deadline parented on a stable context, never the
 // recycled job carrier, carrying the deadline as a scalar copy, the ECS
@@ -1188,9 +1195,17 @@ func (ch *Chain) detachStrictContext(ctx context.Context) (context.Context, func
 	// strict carrier's Done is nil, AfterFunc could never fire, yet
 	// registering still allocates, and a live profile priced that dead
 	// registration as the largest single allocator in the process.
+	//
+	// A transport whose client can cancel a query in flight names the
+	// request's own cancellation as a value instead (CancelSourceKey), and
+	// the hook goes on that. Never on the carrier: it is recycled for the
+	// next request, and the propagation goroutine AfterFunc starts can read
+	// its Err after the recycling.
 	stopCancel := noopStop
 	if ctx.Done() != nil {
 		stopCancel = context.AfterFunc(ctx, real.Cancel)
+	} else if src, _ := ctx.Value(CancelSourceKey{}).(context.Context); src != nil && src.Done() != nil {
+		stopCancel = context.AfterFunc(src, real.Cancel)
 	}
 	var detached context.Context = real
 	if HasClientECS(ctx) {

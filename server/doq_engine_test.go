@@ -670,3 +670,80 @@ func TestServeRawContextCarriesCancellation(t *testing.T) {
 		})
 	}
 }
+
+// The carrier never delegates Done or Err to a request's cancellation
+// source: it is recycled, and the goroutine context.AfterFunc starts can
+// read Err after the next request has taken the job. The detach hooks
+// the source itself, which belongs to its request alone.
+func TestCarrierNeverDelegatesCancellation(t *testing.T) {
+	var carrierDone <-chan struct{}
+	var carrierErr error
+	middleware.Reset()
+	t.Cleanup(middleware.Reset)
+	middleware.Register("inspect", func(*config.Config) middleware.Handler {
+		return middleware.HandlerFunc(func(ctx context.Context, ch *middleware.Chain) {
+			carrierDone, carrierErr = ctx.Done(), ctx.Err()
+			_, _ = ch.Materialize(ctx)
+			ch.Cancel()
+		})
+	})
+	cfg := &config.Config{Bind: "127.0.0.1:0"}
+	cfg.QueryTimeout.Duration = 10 * time.Second
+	middleware.Setup(cfg)
+	s := New(cfg)
+
+	m := new(dns.Msg)
+	m.SetQuestion("carrier.test.", dns.TypeA)
+	raw, err := m.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := &strictTestJob{remote: net.UDPAddr{IP: net.IPv4(203, 0, 113, 51), Port: 4242}}
+	// Reused across requests whose sources are cancelled as they finish,
+	// the shape the panic needed; under -race any read of a recycled
+	// source is reported.
+	for range 200 {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		s.ServeRawContext(ctx, job, raw, time.Now())
+		if carrierDone != nil || carrierErr != nil {
+			t.Fatal("the carrier handed out its request's cancellation")
+		}
+	}
+}
+
+// Through the real pipeline, a query larger than the slab's receive class
+// leaves nothing of itself on the parked slab: neither its RX nor the
+// strict request the chain parsed it into.
+func TestDoQLargeQueryThroughThePipelineLeavesNoBuffer(t *testing.T) {
+	s := newHitChainServer(t)
+	l, addr := startDoQ(t, s, doqPlan(4, 1))
+	conn, err := dialDoQ(t, addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := framedQuery(t, 0, func(m *dns.Msg) {
+		m.Question[0].Name = "large.doq.test."
+		m.SetEdns0(1232, false)
+		opt := m.IsEdns0()
+		opt.Option = append(opt.Option, &dns.EDNS0_PADDING{Padding: make([]byte, 60000)})
+	})
+	if resp, err := exchange(conn, q, false); err != nil || resp.Rcode != dns.RcodeSuccess {
+		t.Fatalf("large query: %v, %v", resp, err)
+	}
+	for deadline := time.Now().Add(2 * time.Second); !l.Quiesced(); {
+		if time.Now().After(deadline) {
+			t.Fatal("the slab was not given back")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	j := l.engine.cache.get(0)
+	if j == nil {
+		t.Fatal("no slab parked")
+	}
+	defer stopJob(j)
+	if cap(j.rx) != tcpSmallFrame || cap(j.req.Raw()) > tcpSmallFrame {
+		t.Fatalf("parked slab holds RX %d and a request over %d bytes, want both within %d",
+			cap(j.rx), cap(j.req.Raw()), tcpSmallFrame)
+	}
+}

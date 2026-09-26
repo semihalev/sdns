@@ -407,6 +407,13 @@ func (j *doqJob) serve() {
 		return
 	}
 
+	if &msg[0] != &j.rx[0] {
+		// The query had a buffer of its own, and the strict request the
+		// chain parsed it into refers to it; the slab goes back without
+		// that reference, or it would keep the largest query it served.
+		defer func() { j.req = middleware.Request{} }()
+	}
+
 	// A client that has already cancelled does not want the answer
 	// (§4.3.1).
 	if stream.Context().Err() != nil {

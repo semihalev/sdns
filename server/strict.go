@@ -21,12 +21,16 @@ import (
 
 // jobCarrier is the job-owned contextutil.Carrier: fixed pin slots and a
 // provider hook behind a cheap mutex (a job serves on one goroutine; the
-// lock is uncontended and exists for the interface's safety contract).
-// It has no Done channel of its own, cancellation is not observable on a
-// path that never blocks, and the composite-miss transition detaches to a
-// real context before anything can. A transport whose client can cancel a
-// query in flight, a DoQ stream, lends it the stream's: the detach then
-// carries that cancellation into the slow work.
+// lock is uncontended and exists for the interface's safety contract),
+// no Done channel, cancellation is not observable on a path that never
+// blocks, and the composite-miss transition detaches to a real context
+// before anything can.
+//
+// A transport whose client can cancel a query in flight, a DoQ stream,
+// names its context as the request's cancellation source, a value the
+// detach reads synchronously and hooks. Done and Err never delegate to
+// it: the carrier is recycled, and asynchronous cancellation consulting
+// it could read the next request's state.
 type jobCarrier struct {
 	deadline time.Time
 
@@ -34,51 +38,36 @@ type jobCarrier struct {
 	keys     [4]any
 	vals     [4]any
 	provider contextutil.ValueProvider
-	parent   context.Context
+	cancel   context.Context
 }
 
 // reset prepares the carrier for the next request; the engine calls it
 // before every strict serve, so a recycled job can never leak pins, nor a
-// previous request's cancellation.
-func (c *jobCarrier) reset(deadline time.Time, parent context.Context) {
+// previous request's cancellation source.
+func (c *jobCarrier) reset(deadline time.Time, cancel context.Context) {
 	c.mu.Lock()
 	c.deadline = deadline
 	c.keys = [4]any{}
 	c.vals = [4]any{}
 	c.provider = nil
-	c.parent = parent
+	c.cancel = cancel
 	c.mu.Unlock()
 }
 
 func (c *jobCarrier) Deadline() (time.Time, bool) { return c.deadline, true }
-
-func (c *jobCarrier) Done() <-chan struct{} {
-	c.mu.Lock()
-	parent := c.parent
-	c.mu.Unlock()
-	if parent == nil {
-		return nil
-	}
-	return parent.Done()
-}
-
-func (c *jobCarrier) Err() error {
-	c.mu.Lock()
-	parent := c.parent
-	c.mu.Unlock()
-	if parent == nil {
-		return nil
-	}
-	return parent.Err()
-}
+func (c *jobCarrier) Done() <-chan struct{}       { return nil }
+func (c *jobCarrier) Err() error                  { return nil }
 
 func (c *jobCarrier) Value(key any) any {
 	if v, ok := contextutil.CarrierLookup(c, key); ok {
 		return v
 	}
 	c.mu.Lock()
-	provider := c.provider
+	provider, cancel := c.provider, c.cancel
 	c.mu.Unlock()
+	if _, ok := key.(middleware.CancelSourceKey); ok && cancel != nil {
+		return cancel
+	}
 	if provider != nil {
 		if v, ok := provider.ContextValue(key); ok {
 			return v
@@ -229,13 +218,10 @@ func (s *Server) ServeRawContext(parent context.Context, w middleware.Transport,
 	if job, ok := w.(strictSlots); ok {
 		req, chain, carrier, ednsSlot := job.StrictSlots()
 		if req.ParseWire(raw, readTime, ednsSlot) {
-			// A parent that can never cancel is not lent to the carrier,
-			// whose Err then stays free on the UDP and TCP hit path.
-			var cancelable context.Context
-			if parent.Done() != nil {
-				cancelable = parent
-			}
-			carrier.reset(readTime.Add(s.queryTimeout()), cancelable)
+			// Named, not asked: a cancelCtx makes its Done channel on the
+			// first call, and a hit must not pay for it. Only the detach
+			// of a query leaving the byte path reads it.
+			carrier.reset(readTime.Add(s.queryTimeout()), parent)
 			s.serveWire(carrier, w, req, chain)
 			return true
 		}
