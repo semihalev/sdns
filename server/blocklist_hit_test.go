@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/blocklist"
 	"github.com/semihalev/zlog/v2"
@@ -17,7 +19,12 @@ import (
 // generated entries, none of which the probe name falls under.
 func hitServerWithBlocklist(tb testing.TB, n int) *Server {
 	tb.Helper()
-	s := newHitChainServer(tb)
+	// The list persists on every change: its directory is the test's,
+	// never the package's.
+	dir := tb.TempDir()
+	s := newHitChainServerConfigured(tb, nil, func(cfg *config.Config) {
+		cfg.BlockListDir = filepath.Join(dir, "blocklists")
+	})
 	logger := zlog.NewStructured()
 	logger.SetWriter(io.Discard)
 	zlog.SetDefault(logger)
