@@ -2,6 +2,9 @@ package cache
 
 import (
 	"context"
+	"runtime"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -328,5 +331,86 @@ func TestNSEC3SynthesisReadsTheClockAfterHashing(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// A synthesis is judged on the clock as it stands once its final read lock
+// is held. A wall clock that steps past the proof's wall-clock deadline
+// while the lookup waits for that lock leaves nothing to serve, NSEC and
+// NSEC3 alike.
+func TestDenialSynthesisReadsTheClockUnderItsLock(t *testing.T) {
+	for _, family := range []string{"nsec", "nsec3"} {
+		t.Run(family, func(t *testing.T) {
+			const zone, qname = "lock.test.", "a.lock.test."
+			start := time.Now()
+			current := start
+			c := newDenialProofTestCache(&current, 32, 16, 300*time.Second)
+			defer c.stop()
+
+			fixture, kind := newDenialProofNSEC3Fixture(t, start, qname, zone, "", 0, 0), denialProofNSEC3
+			if family == "nsec" {
+				fixture = newDenialProofNSECFixture(t, start, qname, dns.TypeAAAA, dns.RcodeSuccess, zone,
+					[2]string{qname, "z." + zone})
+				kind = denialProofNSEC
+			}
+			inherited := lease.Of(start.Add(time.Minute), 1).Min(lease.Of(wallOnly(start.Add(30*time.Second)), 2))
+			if !c.recordWithKind(fixture.msg, zone, kind, inherited) {
+				t.Fatal("valid proof was not admitted")
+			}
+			req := denialProofTestRequest(qname, dns.TypeAAAA, true)
+			if _, _, _, _, ok := c.lookupWithMeta(req, &denialProofCountingWork{}); !ok {
+				t.Fatal("bad fixture: the live proof did not answer")
+			}
+
+			// The lookup's first clock read comes after it has captured its
+			// candidate snapshots: take the write lock there, so the lookup
+			// evaluates and then waits at its final read lock.
+			var clock atomic.Pointer[time.Time]
+			clock.Store(&start)
+			held := make(chan struct{})
+			first := true
+			c.now = func() time.Time {
+				if first {
+					first = false
+					c.mu.Lock()
+					close(held)
+				}
+				return *clock.Load()
+			}
+			type outcome struct {
+				msg *dns.Msg
+				ok  bool
+			}
+			done := make(chan outcome, 1)
+			go func() {
+				msg, _, _, _, ok := c.lookupWithMeta(req, &denialProofCountingWork{})
+				done <- outcome{msg, ok}
+			}()
+			<-held
+
+			blocked := false
+			stack := make([]byte, 1<<20)
+			for deadline := time.Now().Add(3 * time.Second); !blocked && time.Now().Before(deadline); runtime.Gosched() {
+				n := runtime.Stack(stack, true)
+				for _, g := range strings.Split(string(stack[:n]), "\n\n") {
+					if strings.Contains(g, "lookupWithMeta") && strings.Contains(g, "SemacquireRWMutexR") {
+						blocked = true
+						break
+					}
+				}
+			}
+			stepped := clockAfter(t, start, time.Second, 61*time.Second)
+			clock.Store(&stepped)
+			c.mu.Unlock()
+
+			got := <-done
+			if !blocked {
+				t.Fatal("bad fixture: the lookup never waited at its final read lock")
+			}
+			if got.ok {
+				t.Fatalf("a denial past its wall-clock deadline was served after the lock wait: AD=%v TTL=%d",
+					got.msg.AuthenticatedData, got.msg.Ns[0].Header().Ttl)
+			}
+		})
 	}
 }
