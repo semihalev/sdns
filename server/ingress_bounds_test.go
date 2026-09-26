@@ -122,6 +122,16 @@ func TestBudgetChargesRealCosts(t *testing.T) {
 			in:     planInputs{budget: 32 * gib, cpus: 32, streamEngines: 2, sockets: 16},
 			atMost: 512 * mib,
 		},
+		{
+			name:   "128MiB with TCP, DoT and DoQ",
+			in:     planInputs{budget: 128 * mib, cpus: 4, streamEngines: 2, doq: true, sockets: 4},
+			atMost: 16 * mib,
+		},
+		{
+			name:   "32GiB server with DoQ",
+			in:     planInputs{budget: 32 * gib, cpus: 32, streamEngines: 2, doq: true, sockets: 16},
+			atMost: 640 * mib,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

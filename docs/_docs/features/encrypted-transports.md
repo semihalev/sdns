@@ -47,7 +47,12 @@ one to enable if you want ordinary devices to use your resolver privately.
 point. It is indistinguishable from ordinary web traffic on the wire.
 
 **DoQ** is the newest and least widely supported. It avoids the head-of-line
-blocking DoT inherits from TCP.
+blocking DoT inherits from TCP. sdns follows RFC 9250 as written: it offers
+only the `doq` ALPN token, not the drafts', and closes a connection that sends
+a non-zero message ID or anything else the RFC names a protocol error. Each
+stream is served on its own, from the same byte path as UDP and TCP; one a
+busy server cannot take is reset with `DOQ_EXCESSIVE_LOAD`, which a client
+retries, and a stream the client abandons costs only that stream.
 
 ## Letting clients find them
 

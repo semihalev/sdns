@@ -311,7 +311,7 @@ func TestServeRawHitClasses(t *testing.T) {
 			// to a regression in the byte path itself; the counters are
 			// the difference between the two.
 			before := wireOutcomes()
-			allocs := testing.AllocsPerRun(100, func() {
+			allocs := leastAllocsPerRun(100, func() {
 				if !s.ServeRaw(job, raw, time.Now()) {
 					t.Fatal("hit serve not handled")
 				}
@@ -335,6 +335,21 @@ func TestServeRawHitClasses(t *testing.T) {
 			}
 		})
 	}
+}
+
+// leastAllocsPerRun is testing.AllocsPerRun measured up to three times,
+// keeping the least. AllocsPerRun counts every allocation the process
+// makes while it runs, and under the full suite a background goroutine
+// allocating inside the window was read as the serve's own cost, a gate
+// failing with no site to show for it. The serve's cost is the same on
+// every measurement, so a real regression survives the minimum; a
+// passer-by does not.
+func leastAllocsPerRun(runs int, fn func()) float64 {
+	least := testing.AllocsPerRun(runs, fn)
+	for i := 1; i < 3 && least > 0; i++ {
+		least = min(least, testing.AllocsPerRun(runs, fn))
+	}
+	return least
 }
 
 // respDiff compares the client-visible reply facts, tolerating TTL drift

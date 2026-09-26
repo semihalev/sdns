@@ -538,11 +538,11 @@ func TestWireFastPathClearsAuthoritative(t *testing.T) {
 	}
 }
 
-// TestWireFastPathExcludesNonByteTransports pins the transport gate. DoQ
-// requires the reply ID to be zero (RFC 9250 §4.2.1), a rewrite its raw
-// byte write does not perform, and the DoH assembly path unpacks whatever
-// bytes it receives only to pack them again. Both must stay on the message
-// path until they can carry bytes natively.
+// TestWireFastPathExcludesNonByteTransports pins the transport gate. The
+// DoH assembly path unpacks whatever bytes it receives only to pack them
+// again, so it stays on the message path. DoQ carries bytes natively: the
+// owned DoQ job, the only transport that declares the capability under
+// that proto, zeroes the reply ID itself (RFC 9250 §4.2.1).
 func TestWireFastPathExcludesNonByteTransports(t *testing.T) {
 	const qname = "proto.example.com."
 	entry := wireFastEntry(t, qname, dns.TypeA, false)
@@ -567,7 +567,7 @@ func TestWireFastPathExcludesNonByteTransports(t *testing.T) {
 		ch.Next(context.Background())
 		served := wireFastServed.Value() - servedBefore
 
-		wantServed := proto == "udp"
+		wantServed := proto != "doh"
 		if wantServed != (served == 1) {
 			t.Fatalf("proto %s: wire served %d, want served=%v", proto, served, wantServed)
 		}

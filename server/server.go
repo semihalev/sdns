@@ -91,14 +91,15 @@ func New(cfg *config.Config) *Server {
 	if cfg.BindTLS != "" {
 		engines = 2
 	}
-	plan := defaultResourcePlan(engines)
+	plan := defaultResourcePlanWith(engines, cfg.BindDOQ != "")
 	plan.publish()
 
 	timeout := cfg.QueryTimeout.Duration
 	// The owned transports feed ServeRaw: raw bytes in, and the server,
-	// not the transport, decides eligibility, decode, and context. DoH
-	// and DoQ enter through ServeMsg with a decoded message, one reshapes
-	// bytes and the other rewrites the reply ID, so neither is a raw sink.
+	// not the transport, decides eligibility, decode, and context. DoQ is
+	// one of them, its job zeroing the reply ID on the way out. DoH enters
+	// through ServeMsg with a decoded message: its assembly reshapes bytes,
+	// so it is not a raw sink.
 	s.listeners = []Listener{
 		newUDPListener(cfg.Bind, s, timeout, cfg.IngressWorkers, cfg.IngressQueue, plan),
 		newTCPListener(cfg.Bind, s, timeout, cfg.IngressTCPConns, plan),
@@ -113,7 +114,7 @@ func New(cfg *config.Config) *Server {
 		)
 	}
 	if cfg.BindDOQ != "" {
-		s.listeners = append(s.listeners, newDOQListener(cfg.BindDOQ, s, s))
+		s.listeners = append(s.listeners, newDOQListener(cfg.BindDOQ, s, s, timeout, plan))
 	}
 
 	return s
