@@ -258,3 +258,75 @@ func TestNSEC3SetPastItsWallClockDeadlineIsReplacedNotConflicted(t *testing.T) {
 		t.Fatalf("%d conflict tombstones, want the renewal to leave none", conflicts)
 	}
 }
+
+// stepLimiter is a crypto gate that runs step on every slot it grants: the
+// clock moving while an NSEC3 lookup hashes.
+type stepLimiter func()
+
+func (l stepLimiter) TryAcquire() (func(), bool) {
+	l()
+	return func() {}, true
+}
+
+// An NSEC3 synthesis is judged on the clock as it stands when the answer is
+// built. A wall clock that steps past the proof's wall-clock deadline while
+// the lookup hashes leaves nothing to serve, on either path.
+func TestNSEC3SynthesisReadsTheClockAfterHashing(t *testing.T) {
+	const zone, qname = "hashing.test.", "exists.hashing.test."
+	for _, path := range []string{"msg", "store"} {
+		for _, jump := range []bool{false, true} {
+			name := path + "/steady"
+			if jump {
+				name = path + "/wall clock steps past the deadline while hashing"
+			}
+			t.Run(name, func(t *testing.T) {
+				start := time.Now()
+				current := start
+				c := New(&config.Config{CacheSize: 1024, Expire: 300})
+				defer c.Stop()
+				c.store.denialProofs.now = func() time.Time { return current }
+
+				fixture := newDenialProofNSEC3Fixture(t, start, qname, zone, "", 0, 0)
+				aggressiveNegativeMakeSignaturesPackable(fixture.msg)
+				inherited := lease.Of(start.Add(time.Minute), 1).Min(lease.Of(wallOnly(start.Add(30*time.Second)), 2))
+				if !c.store.recordDenialProof(fixture.msg, zone, middleware.ValidatedNegativeProofNSEC3, inherited) {
+					t.Fatal("valid proof was not admitted")
+				}
+				hashes := 0
+				c.SetDNSSECCryptoLimiter(stepLimiter(func() {
+					hashes++
+					if jump {
+						current = clockAfter(t, start, time.Second, 61*time.Second)
+					}
+				}))
+
+				req := denialProofTestRequest(qname, dns.TypeAAAA, true)
+				var served bool
+				if path == "store" {
+					resp, ok := c.store.GetWithContext(context.Background(), req)
+					served = ok && resp.Rcode == dns.RcodeSuccess
+				} else {
+					reached := false
+					downstream := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+						reached = true
+						resp := new(dns.Msg)
+						resp.SetRcode(ch.Request.Msg(), dns.RcodeServerFailure)
+						_ = ch.Writer.WriteMsg(resp)
+						ch.Cancel()
+					})
+					w := mock.NewWriter("udp", "192.0.2.9:53000")
+					ch := middleware.NewChain([]middleware.Handler{c, downstream})
+					ch.Reset(w, req)
+					ch.Next(context.Background())
+					served = !reached && w.Msg().Rcode == dns.RcodeSuccess
+				}
+				if hashes == 0 {
+					t.Fatal("bad fixture: the lookup hashed nothing")
+				}
+				if served == jump {
+					t.Fatalf("served %v with the wall clock stepping %v", served, jump)
+				}
+			})
+		}
+	}
+}

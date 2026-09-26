@@ -1396,17 +1396,22 @@ func (c *denialProofCache) lookupWithMeta(
 			continue
 		}
 
+		// Evaluation can take a while, NSEC3 hashing under the shared crypto
+		// budget above all, and either clock may move meanwhile: the answer
+		// is judged and timed on the clock as it stands when it is built.
+		served := c.now()
+
 		// Re-check conflict quarantine after evaluation. A writer may have
 		// detected an owner collision after this lookup captured its immutable
 		// snapshot; holding RLock through response shaping linearizes either
 		// the synthesis or the conflict invalidation, never both.
 		c.mu.RLock()
 		if c.stopped ||
-			c.nsec3SelectionConflictedLocked(entries, now) {
+			c.nsec3SelectionConflictedLocked(entries, served) {
 			c.mu.RUnlock()
 			continue
 		}
-		response, expires := denialProofResponse(req, result, entries, candidate.snapshot.soa, now)
+		response, expires := denialProofResponse(req, result, entries, candidate.snapshot.soa, served)
 		if response == nil || len(entries) == 0 {
 			c.mu.RUnlock()
 			continue
