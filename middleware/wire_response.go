@@ -97,15 +97,15 @@ func ClearWireAD(body []byte) {
 // one whose RemoteAddr merely looks like a datagram socket would
 // otherwise receive raw wire bytes on cache hits and packed messages on
 // misses, a split its Write may not survive. The owned listeners
-// declare the capability at ingress (AllowDirectPack); DoQ additionally
-// needs its reply ID normalized to zero (RFC 9250 §4.2.1) and the DoH
-// assembly path reshapes bytes, so neither declares it.
+// declare the capability at ingress (AllowDirectPack). The DoQ job zeroes
+// the reply ID itself on the way out (RFC 9250 §4.2.1); the DoH assembly
+// path reshapes bytes, so it does not declare it.
 func (w *responseWriter) WireReady() (WireCapability, bool) {
 	if !w.directPack {
 		return WireCapability{}, false
 	}
 	switch w.proto {
-	case "udp", "tcp":
+	case "udp", "tcp", "doq":
 		return WireCapability{}, true
 	default:
 		return WireCapability{}, false

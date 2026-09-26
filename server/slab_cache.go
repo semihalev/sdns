@@ -105,6 +105,25 @@ func (c *slabCache[T]) trim() int {
 	return total
 }
 
+// drain is trim for slabs that own more than memory: each one dropped is
+// handed to release, outside the shard locks, once it can no longer be
+// taken from the cache.
+func (c *slabCache[T]) drain(release func(*T)) int {
+	total := 0
+	for i := range c.shards {
+		s := &c.shards[i]
+		s.mu.Lock()
+		idle := s.idle
+		s.idle = nil
+		s.mu.Unlock()
+		for _, x := range idle {
+			release(x)
+		}
+		total += len(idle)
+	}
+	return total
+}
+
 // size reports how many slabs are parked, for observability.
 func (c *slabCache[T]) size() int {
 	total := 0

@@ -12,15 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/middleware"
 )
-
-// noopMsgHandler is a doq.Handler stub for listeners that are only
-// bound and shut down, never served.
-type noopMsgHandler struct{}
-
-func (noopMsgHandler) ServeMsg(context.Context, middleware.Transport, *dns.Msg) {}
 
 // fakeListener is a test Listener whose Bind / Shutdown outcome is
 // configurable, used to verify bindAll's cleanup contract without
@@ -154,7 +147,9 @@ func TestListenerShutdownBeforeServeReleasesSocket(t *testing.T) {
 		}},
 		{"doh", func(addr string) Listener { return newDOHListener(addr, httpHandler, certs, time.Second) }},
 		{"doh3", func(addr string) Listener { return newDOH3Listener(addr, httpHandler, certs) }},
-		{"doq", func(addr string) Listener { return newDOQListener(addr, noopMsgHandler{}, certs) }},
+		{"doq", func(addr string) Listener {
+			return newDOQListener(addr, handler, certs, time.Second, defaultResourcePlanWith(1, true))
+		}},
 	}
 
 	for _, tc := range cases {

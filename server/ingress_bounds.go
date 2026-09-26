@@ -62,12 +62,20 @@ const (
 	// tcpConnBytes: the connection's stream (fill + drain buffers land in
 	// the 13,568B class) plus the goroutine that serves it.
 	tcpConnBytes = 24 << 10
+	// doqConnBytes: what quic-go holds for one server-side connection
+	// after a handshake and a query, measured at about 50KB in use, plus
+	// the goroutine accepting its streams; rounded up.
+	doqConnBytes = 64 << 10
+	// doqJobBytes: a DoQ stream's slab is the TCP small pair, plus the
+	// goroutine serving the stream.
+	doqJobBytes = tcpSmallJobBytes + 8<<10
 
 	// Ceilings, because past these the resolver's own in-flight bound
 	// (MaxConcurrentQueries, 10000 by default) is what queries wait on,
 	// not the front door.
 	maxSpareSlabs = 8192
 	maxTCPConns   = 4096
+	maxDoQConns   = 4096
 
 	// fdReserve is what the rest of the process needs open, upstream
 	// sockets, the API listener, log and database files, before
@@ -110,6 +118,8 @@ func (p resourcePlan) publish() {
 	set("tcp_conns", int64(p.tcpConns))
 	set("tcp_small_jobs", int64(p.tcpSmallJobs))
 	set("tcp_large_jobs", int64(p.tcpLargeJobs))
+	set("doq_conns", int64(p.doqConns))
+	set("doq_jobs", int64(p.doqJobs))
 }
 
 // resourcePlan is the one set of derived bounds a Server's engines read.
@@ -128,13 +138,21 @@ type resourcePlan struct {
 	// cap may override the memory heuristics but never this: admission
 	// past it is EMFILE at accept.
 	tcpConnsFD int
+
+	// doqConns and doqJobs bound the DoQ engine, zero when DoQ is off:
+	// connections, and streams served at once, each holding a slab. QUIC
+	// connections share one socket, so no descriptor bound applies.
+	doqConns int
+	doqJobs  int
 }
 
 type planInputs struct {
 	budget        uint64
 	cpus          int
 	streamEngines int
-	fd            uint64
+	// doq adds the DoQ engine, which takes a stream share of its own.
+	doq bool
+	fd  uint64
 	// sockets is the platform's UDP fan-out before the memory tier has
 	// its say (reuseport_*.go).
 	sockets int
@@ -143,10 +161,17 @@ type planInputs struct {
 // defaultResourcePlan derives the plan for this process and this many
 // stream engines.
 func defaultResourcePlan(streamEngines int) resourcePlan {
+	return defaultResourcePlanWith(streamEngines, false)
+}
+
+// defaultResourcePlanWith is defaultResourcePlan with the DoQ engine
+// taking a share of its own when doq is set.
+func defaultResourcePlanWith(streamEngines int, doq bool) resourcePlan {
 	return computeResourcePlan(planInputs{
 		budget:        memoryBudget(),
 		cpus:          runtime.GOMAXPROCS(0),
 		streamEngines: streamEngines,
+		doq:           doq,
 		fd:            fdSoftLimit(),
 		sockets:       defaultUDPWorkers(),
 	})
@@ -238,7 +263,11 @@ func computeResourcePlan(in planInputs) resourcePlan {
 	// one; connections and the small class share the rest, and a
 	// connection is only admissible with a small slab to serve it, so
 	// they are priced together.
-	streamAllowance := allowance / int64(engines)
+	shares := engines
+	if in.doq {
+		shares++
+	}
+	streamAllowance := allowance / int64(shares)
 	// The large class follows the same tiers as the workers: its slabs
 	// are the expensive ones, and a mid-sized machine does not need the
 	// full complement of 128KB pairs to serve the rare frames they exist
@@ -321,6 +350,18 @@ func computeResourcePlan(in planInputs) resourcePlan {
 		smallJobs = 1
 	}
 
+	// DoQ: its share split between connections and the streams served at
+	// once. A stream holds its slab from the moment it is accepted and is
+	// refused on the spot when none is free, so the jobs bound both the
+	// slabs and the goroutines serving them.
+	var doqConns, doqJobs int
+	if in.doq {
+		doqJobs = int(streamAllowance / 2 / doqJobBytes)
+		doqJobs = min(max(doqJobs, smallFloor), maxSmallJobs)
+		doqConns = int(streamAllowance / 2 / doqConnBytes)
+		doqConns = min(max(doqConns, connsFloor), maxDoQConns)
+	}
+
 	return resourcePlan{
 		udpSockets:    sockets,
 		udpWorkers:    workers,
@@ -330,6 +371,8 @@ func computeResourcePlan(in planInputs) resourcePlan {
 		tcpSmallJobs:  smallJobs,
 		tcpLargeJobs:  largeJobs,
 		tcpConnsFD:    fdConnCap,
+		doqConns:      doqConns,
+		doqJobs:       doqJobs,
 	}
 }
 
@@ -345,7 +388,8 @@ func (p resourcePlan) worstCaseBytes(streamEngines int) int64 {
 	stream := int64(p.tcpConns)*tcpConnBytes +
 		int64(p.tcpSmallJobs)*tcpSmallJobBytes +
 		int64(p.tcpLargeJobs)*tcpLargeJobBytes
-	return udp*udpSlabBytes + int64(streamEngines)*stream
+	doq := int64(p.doqConns)*doqConnBytes + int64(p.doqJobs)*doqJobBytes
+	return udp*udpSlabBytes + int64(streamEngines)*stream + doq
 }
 
 // memoryBudget is how much memory this process may use: the machine's,

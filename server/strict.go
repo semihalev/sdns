@@ -25,6 +25,12 @@ import (
 // no Done channel, cancellation is not observable on a path that never
 // blocks, and the composite-miss transition detaches to a real context
 // before anything can.
+//
+// A transport whose client can cancel a query in flight, a DoQ stream,
+// names its context as the request's cancellation source, a value the
+// detach reads synchronously and hooks. Done and Err never delegate to
+// it: the carrier is recycled, and asynchronous cancellation consulting
+// it could read the next request's state.
 type jobCarrier struct {
 	deadline time.Time
 
@@ -32,16 +38,19 @@ type jobCarrier struct {
 	keys     [4]any
 	vals     [4]any
 	provider contextutil.ValueProvider
+	cancel   context.Context
 }
 
 // reset prepares the carrier for the next request; the engine calls it
-// before every strict serve, so a recycled job can never leak pins.
-func (c *jobCarrier) reset(deadline time.Time) {
+// before every strict serve, so a recycled job can never leak pins, nor a
+// previous request's cancellation source.
+func (c *jobCarrier) reset(deadline time.Time, cancel context.Context) {
 	c.mu.Lock()
 	c.deadline = deadline
 	c.keys = [4]any{}
 	c.vals = [4]any{}
 	c.provider = nil
+	c.cancel = cancel
 	c.mu.Unlock()
 }
 
@@ -54,8 +63,11 @@ func (c *jobCarrier) Value(key any) any {
 		return v
 	}
 	c.mu.Lock()
-	provider := c.provider
+	provider, cancel := c.provider, c.cancel
 	c.mu.Unlock()
+	if _, ok := key.(middleware.CancelSourceKey); ok && cancel != nil {
+		return cancel
+	}
 	if provider != nil {
 		if v, ok := provider.ContextValue(key); ok {
 			return v
@@ -192,13 +204,24 @@ var (
 // the ordinary lazy-deadline entry with the direct-pack capability (the
 // owned transports are raw byte sinks).
 func (s *Server) ServeRaw(w middleware.Transport, raw []byte, readTime time.Time) bool {
+	return s.ServeRawContext(context.Background(), w, raw, readTime)
+}
+
+// ServeRawContext is ServeRaw for a transport whose client can cancel a
+// query in flight: parent's cancellation reaches the work the query
+// starts, on the strict path through the carrier's detach and on the
+// decoded one as its parent context.
+func (s *Server) ServeRawContext(parent context.Context, w middleware.Transport, raw []byte, readTime time.Time) bool {
 	if s.trimEnabled {
 		s.served.Add(1)
 	}
 	if job, ok := w.(strictSlots); ok {
 		req, chain, carrier, ednsSlot := job.StrictSlots()
 		if req.ParseWire(raw, readTime, ednsSlot) {
-			carrier.reset(readTime.Add(s.queryTimeout()))
+			// Named, not asked: a cancelCtx makes its Done channel on the
+			// first call, and a hit must not pay for it. Only the detach
+			// of a query leaving the byte path reads it.
+			carrier.reset(readTime.Add(s.queryTimeout()), parent)
 			s.serveWire(carrier, w, req, chain)
 			return true
 		}
@@ -216,7 +239,7 @@ func (s *Server) ServeRaw(w middleware.Transport, raw []byte, readTime time.Time
 	if f, ok := w.(middleware.StagedFlusher); ok {
 		f.FlushStaged()
 	}
-	s.serveMsgBy(context.Background(), w, m, true, readTime.Add(s.queryTimeout()))
+	s.serveMsgBy(parent, w, m, true, readTime.Add(s.queryTimeout()))
 	return true
 }
 
@@ -236,7 +259,7 @@ func (s *Server) ServeRawInline(w middleware.Transport, raw []byte, readTime tim
 			if s.trimEnabled {
 				s.served.Add(1)
 			}
-			carrier.reset(readTime.Add(s.queryTimeout()))
+			carrier.reset(readTime.Add(s.queryTimeout()), nil)
 			if s.pipeline == nil || contextutil.EffectiveError(carrier) != nil {
 				return true
 			}
@@ -266,7 +289,7 @@ func (s *Server) ServeRawReplay(w middleware.Transport, raw []byte, readTime tim
 	if job, ok := w.(strictSlots); ok {
 		req, chain, carrier, ednsSlot := job.StrictSlots()
 		if req.ParseWire(raw, readTime, ednsSlot) {
-			carrier.reset(readTime.Add(s.queryTimeout()))
+			carrier.reset(readTime.Add(s.queryTimeout()), nil)
 			if s.pipeline == nil {
 				return true
 			}

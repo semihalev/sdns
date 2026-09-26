@@ -6,7 +6,7 @@ order: 3
 description: Every metric sdns exports, what it means, and the queries worth building a dashboard from.
 ---
 
-sdns exports 67 metrics in Prometheus format on the API listener, alongside the
+sdns exports 68 metrics in Prometheus format on the API listener, alongside the
 Go runtime and process collectors.
 
 ```toml
@@ -127,6 +127,7 @@ enforcing run afterwards are directly comparable.
 | `dns_udp_ingress_overflow_total` | counter | `kind` | UDP queries served outside the fixed worker pool |
 | `dns_udp_inline_total` | counter | `outcome` | UDP queries attempted on the reader's inline fast path |
 | `dns_tcp_ingress_drops_total` | counter | `reason` | TCP events dropped before the handler |
+| `dns_doq_ingress_drops_total` | counter | `reason` | DoQ connections and streams refused before the handler |
 | `dns_listener_errors_total` | counter | `proto` | Listener loops that exited with an error |
 | `dns_doh_http_errors_total` | counter | `code` | DoH responses with a 4xx or 5xx status |
 
@@ -138,6 +139,12 @@ anything else.
 
 Overflow is a capacity signal, not a bug. It means queries arrived faster than
 the fixed pool accepted them and were served on their own goroutines.
+
+`dns_doq_ingress_drops_total` counts what the DoQ listener refused: `conncap`,
+a connection past `dns_ingress_plan{bound="doq_conns"}`; `load`, a stream with
+every slab busy, reset with `DOQ_EXCESSIVE_LOAD` so the client can retry;
+`protocol`, a connection closed for an RFC 9250 protocol error, such as a
+non-zero message ID; `ignored`, a response sent as a query.
 
 ## Policy and access
 
