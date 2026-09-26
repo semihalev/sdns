@@ -88,32 +88,46 @@ var cutServePaths = []struct {
 // wall-clock lease when that ends first.
 func TestNXDomainCutKeepsItsSignatureExpirationOnTheWallClock(t *testing.T) {
 	now := time.Now()
-	resp := nxCutValidatedResponse(nxCutRequest(nxCutDeniedName, dns.TypeA), nxCutDeniedName, nxCutZone)
-	var signature time.Time
-	for _, rr := range resp.Ns {
-		if sig, ok := rr.(*dns.RRSIG); ok {
-			if at := time.Unix(int64(sig.Expiration), 0); signature.IsZero() || at.Before(signature) {
-				signature = at
-			}
-		}
-	}
 	inheritedWall := wallOnly(now.Add(30 * time.Second))
 
 	for _, tc := range []struct {
 		name      string
 		inherited lease.Lease
-		want      time.Time
+		// inheritedFirst: the inherited wall-clock lease ends before the
+		// proof's signatures do, so it is the deadline.
+		inheritedFirst bool
 	}{
-		{"no lease", lease.Lease{}, signature},
-		{"monotonic lease", lease.Of(now.Add(time.Minute), 1), signature},
-		{"wall-clock lease ending first", lease.Of(inheritedWall, 2), inheritedWall},
+		{"no lease", lease.Lease{}, false},
+		{"monotonic lease", lease.Of(now.Add(time.Minute), 1), false},
+		{"wall-clock lease ending first", lease.Of(inheritedWall, 2), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, cut := clockCut(t, tc.inherited, lease.Lease{})
+
+			// The expected expiration is read off the proof the cut
+			// admitted, the very records its deadline was computed from.
+			var want time.Time
+			for _, rr := range cut.msg.Ns {
+				if sig, ok := rr.(*dns.RRSIG); ok {
+					if at := time.Unix(int64(sig.Expiration), 0); want.IsZero() || at.Before(want) {
+						want = at
+					}
+				}
+			}
+			if want.IsZero() {
+				t.Fatal("bad fixture: the admitted proof holds no signature")
+			}
+			if tc.inheritedFirst {
+				if !inheritedWall.Before(want) {
+					t.Fatalf("bad fixture: the inherited lease %v does not end before the signatures %v", inheritedWall, want)
+				}
+				want = inheritedWall
+			}
+
 			wall := cut.expires.Wall().Until
-			if !wall.Equal(tc.want) || lease.Monotonic(wall) {
+			if !wall.Equal(want) || lease.Monotonic(wall) {
 				t.Fatalf("wall-clock deadline %v (monotonic %v), want the calendar instant %v",
-					wall, lease.Monotonic(wall), tc.want)
+					wall, lease.Monotonic(wall), want)
 			}
 			if left := cut.expires.Mono().Until.Sub(cut.stored); left <= 0 || left > 300*time.Second {
 				t.Fatalf("monotonic lifetime %v, want the proof TTL cap kept", left)
