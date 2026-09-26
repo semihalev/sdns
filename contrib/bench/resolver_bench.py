@@ -28,6 +28,25 @@ followed by a summary row (label, "median"/"best"). Progress goes to stderr.
 Example (the published UDP shape):
   resolver_bench.py --port 5391 --corpus hits.txt --label sdns \
       --pids "$(pgrep -x sdns-shards)"
+
+DoQ (--doq): the load comes from contrib/bench/doqload, since dnsperf has
+no DoQ mode; warm and verify still go over UDP --port, into the same cache.
+--clients are connections and --threads streams per connection (16 and 32
+by default). The instance needs UDP on --port and DoQ on the --doq address.
+  resolver_bench.py --port 5391 --doq 127.0.0.1:5393 --doqload ./doqload \
+      --corpus hits.txt --label doq --pids "$(pgrep -x sdns-doq)"
+
+Profiles (--pprof): with the server started under SDNS_PPROF=true and its
+API on the given address, the first measured run is profiled: a CPU
+profile across most of it, and the allocation profile before and after, so
+the run's own allocations are the difference. Works for any mode.
+  SDNS_PPROF=true ./sdns-doq -c doq.conf &
+  resolver_bench.py --port 5391 --doq 127.0.0.1:5393 --doqload ./doqload \
+      --corpus hits.txt --label doq --pids "$(pgrep -x sdns-doq)" \
+      --pprof 127.0.0.1:5381
+  go tool pprof -top -cum ./sdns-doq doq-cpu.pprof
+  go tool pprof -sample_index=alloc_objects -base doq-allocs-before.pprof \
+      -top ./sdns-doq doq-allocs-after.pprof
 """
 
 import argparse
@@ -40,6 +59,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
 
@@ -157,14 +177,21 @@ DNSPERF_DONE = re.compile(r"Queries completed:\s+(\d+)")
 
 
 def dnsperf(args, seconds: int) -> dict:
-    cmd = ["dnsperf", "-s", "127.0.0.1", "-p", str(args.port),
-           "-d", args.corpus, "-c", str(args.clients), "-T", str(args.threads),
-           "-l", str(seconds)]
-    if args.tcp:
-        cmd[1:1] = ["-m", "tcp"]
+    if args.doq:
+        # dnsperf has no DoQ mode; doqload prints the same summary lines.
+        # --clients are connections and --threads streams per connection.
+        cmd = [args.doqload, "-s", args.doq, "-d", args.corpus,
+               "-c", str(args.clients), "-t", str(args.threads),
+               "-l", str(seconds)]
+    else:
+        cmd = ["dnsperf", "-s", "127.0.0.1", "-p", str(args.port),
+               "-d", args.corpus, "-c", str(args.clients), "-T", str(args.threads),
+               "-l", str(seconds)]
+        if args.tcp:
+            cmd[1:1] = ["-m", "tcp"]
     p = run(cmd, timeout=seconds + 30)
     if p.returncode != 0:
-        fail(f"dnsperf exited {p.returncode}: {p.stderr.strip()[:200]}")
+        fail(f"{cmd[0]} exited {p.returncode}: {p.stderr.strip()[:200]}")
     qps = DNSPERF_QPS.search(p.stdout)
     if not qps:
         fail("dnsperf output had no 'Queries per second' line")
@@ -181,6 +208,32 @@ def dnsperf(args, seconds: int) -> dict:
     }
 
 
+def fetch(url: str, path: str, timeout: float) -> None:
+    with urllib.request.urlopen(url, timeout=timeout) as resp, open(path, "wb") as out:
+        out.write(resp.read())
+
+
+def start_profiles(args) -> threading.Thread:
+    """Profile the run about to start: the allocation profile before it, a
+    CPU profile across most of it on a thread. The allocation profile is
+    cumulative, so the run's own allocations are the difference against
+    the after-snapshot (go tool pprof -base)."""
+    base = f"http://{args.pprof}/debug/pprof"
+    fetch(f"{base}/allocs", f"{args.label}-allocs-before.pprof", 30)
+    seconds = max(args.run_len - 4, 1)
+    t = threading.Thread(target=fetch, daemon=True, args=(
+        f"{base}/profile?seconds={seconds}", f"{args.label}-cpu.pprof", seconds + 30))
+    t.start()
+    return t
+
+
+def finish_profiles(args, profiler: threading.Thread) -> None:
+    profiler.join(timeout=60)
+    fetch(f"http://{args.pprof}/debug/pprof/allocs", f"{args.label}-allocs-after.pprof", 30)
+    log(f"[{args.label}] profiles: {args.label}-cpu.pprof, "
+        f"{args.label}-allocs-before.pprof, {args.label}-allocs-after.pprof")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -192,6 +245,12 @@ def main() -> None:
     ap.add_argument("--clients", type=int, default=None)
     ap.add_argument("--threads", type=int, default=None)
     ap.add_argument("--tcp", action="store_true")
+    ap.add_argument("--doq", default="",
+                    help="DoQ address to load (host:port); warm and verify stay on UDP --port")
+    ap.add_argument("--doqload", default="doqload",
+                    help="path to the contrib/bench/doqload binary")
+    ap.add_argument("--pprof", default="",
+                    help="server API host:port with SDNS_PPROF; profiles the first measured run")
     ap.add_argument("--pids", default="",
                     help="comma/space separated server pids for CPU accounting")
     ap.add_argument("--warm-par", type=int, default=16)
@@ -202,9 +261,9 @@ def main() -> None:
 
     args.label = args.label or str(args.port)
     if args.clients is None:
-        args.clients = 20 if args.tcp else 128
+        args.clients = 16 if args.doq else 20 if args.tcp else 128
     if args.threads is None:
-        args.threads = 4 if args.tcp else 8
+        args.threads = 32 if args.doq else 4 if args.tcp else 8
     pids = [int(p) for p in re.split(r"[,\s]+", args.pids) if p]
 
     try:
@@ -213,8 +272,9 @@ def main() -> None:
         fail(f"corpus: {e}")
     if not names:
         fail("corpus is empty")
-    if subprocess.run(["which", "dnsperf"], capture_output=True).returncode != 0:
-        fail("dnsperf not found")
+    tool = args.doqload if args.doq else "dnsperf"
+    if subprocess.run(["which", tool], capture_output=True).returncode != 0:
+        fail(f"{tool} not found")
     if pids:
         cpu_ticks(pids)  # fail now, not mid-measurement
 
@@ -244,9 +304,14 @@ def main() -> None:
     log(f"[{args.label}] 5/6 measuring {args.runs}×{args.run_len}s")
     results = []
     for r in range(1, args.runs + 1):
+        profiler = None
+        if args.pprof and r == 1:
+            profiler = start_profiles(args)
         t0 = cpu_ticks(pids) if pids else None
         m = dnsperf(args, args.run_len)
         t1 = cpu_ticks(pids) if pids else None
+        if profiler:
+            finish_profiles(args, profiler)
         row = dict(m)
         if pids:
             ticks = t1 - t0
