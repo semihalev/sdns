@@ -7,6 +7,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 )
@@ -94,7 +95,7 @@ func TestNXDomainCutWireDeclinesExplicitDNSSECQuestionsAtDOZero(t *testing.T) {
 		},
 		sig("glib.zone.test.", dns.TypeNSEC),
 	}
-	if !cut.record(proof, "gone.zone.test.", "zone.test.", time.Time{}) {
+	if !cut.record(proof, "gone.zone.test.", "zone.test.", lease.Lease{}) {
 		t.Fatal("cut refused")
 	}
 	probe, _ := wireTestRequest(t, "sub.gone.zone.test.", dns.TypeA, true)

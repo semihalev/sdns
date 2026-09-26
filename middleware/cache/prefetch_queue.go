@@ -202,23 +202,23 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	if !req.Entry.scoped() && !requestCD && !req.RequestHadECS &&
 		!hasEDNSClientSubnet(req.Request) &&
 		!resp.CheckingDisabled {
-		until, shareable := sharedDenialDeadline(cut)
 		if negative, ok := middleware.ValidatedNegativeProofForResponse(ctx, resp); ok &&
-			shareable &&
 			negative.Aggressive &&
 			negative.Proof != nil {
-			req.Cache.store.RecordDenialProof(
-				negative.Proof,
-				negative.Zone,
-				negative.Kind,
-				until,
-			)
+			if until, shareable := sharedDenialDeadline(cut); shareable {
+				req.Cache.store.RecordDenialProof(
+					negative.Proof,
+					negative.Zone,
+					negative.Kind,
+					until,
+				)
+			}
 			if negative.Proof.Rcode == dns.RcodeNameError {
-				req.Cache.store.RecordNXDomainCut(
+				req.Cache.store.recordNXDomainCut(
 					negative.Proof,
 					negative.Subject,
 					negative.Zone,
-					until,
+					cut,
 				)
 			}
 		}

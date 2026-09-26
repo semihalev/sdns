@@ -208,27 +208,47 @@ func TestSnapshotKeepsEachBoundOnItsClock(t *testing.T) {
 	})
 }
 
-// The RFC 8020/8198 denial caches count every expiry on the monotonic clock
-// from admission and cannot keep a wall-clock deadline, so a validated
-// denial under a lease holding one is served but not shared, on the miss
-// path and on a prefetch refresh alike. A monotonic lease still shares.
-func TestDenialUnderAWallClockLeaseIsNotShared(t *testing.T) {
+// A validated NXDOMAIN is shared as an RFC 8020 cut that keeps its lease on
+// both clocks, on the miss path and on a prefetch refresh alike. The RFC
+// 8198 proof cache counts every expiry on the monotonic clock from
+// admission and cannot keep a wall-clock deadline, so under a lease holding
+// one the proof is not shared. A monotonic lease shares both.
+func TestDenialUnderAWallClockLeaseSharesOnlyTheCut(t *testing.T) {
+	var wall time.Time
 	bind := func(ctx context.Context, withWall bool) {
 		meta := middleware.ResponseMetaFrom(ctx)
 		now := time.Now()
 		meta.BoundCutFor(now.Add(time.Minute), 0x41)
 		if withWall {
-			meta.BoundCutFor(wallOnly(now.Add(10*time.Second)), 0x42)
+			wall = wallOnly(now.Add(10 * time.Second))
+			meta.BoundCutFor(wall, 0x42)
+		}
+	}
+	shared := func(t *testing.T, cache *Cache, denied string, withWall bool) {
+		t.Helper()
+		cut, ok := cache.store.nxDomainCuts.lookup(dns.Question{
+			Name: "child." + denied, Qtype: dns.TypeA, Qclass: dns.ClassINET,
+		})
+		if !ok {
+			t.Fatal("the RFC 8020 cut was not shared")
+		}
+		if left := time.Until(cut.expires.Mono().Until); left > time.Minute {
+			t.Fatalf("the cut outlives the monotonic lease: %v left", left)
+		}
+		if got := cut.expires.Wall().Until; withWall && !got.Equal(wall) {
+			t.Fatalf("the cut's wall-clock deadline is %v, want the lease's %v", got, wall)
+		}
+		if proofs := cache.store.DenialProofLen(); (proofs == 0) != withWall {
+			t.Fatalf("RFC 8198 proofs = %d, wall-clock lease %v", proofs, withWall)
 		}
 	}
 
 	for _, tc := range []struct {
 		name     string
 		withWall bool
-		shared   int
 	}{
-		{"monotonic lease", false, 1},
-		{"lease with a wall-clock deadline", true, 0},
+		{"monotonic lease", false},
+		{"lease with a wall-clock deadline", true},
 	} {
 		t.Run("miss path/"+tc.name, func(t *testing.T) {
 			cache := New(&config.Config{CacheSize: 1024, Expire: 300})
@@ -245,12 +265,7 @@ func TestDenialUnderAWallClockLeaseIsNotShared(t *testing.T) {
 			if got.Rcode != dns.RcodeNameError {
 				t.Fatalf("rcode = %s, want the NXDOMAIN served", dns.RcodeToString[got.Rcode])
 			}
-			if n := cache.store.NXDomainCutLen(); n != tc.shared {
-				t.Fatalf("RFC 8020 cuts = %d, want %d", n, tc.shared)
-			}
-			if tc.shared == 0 && cache.store.DenialProofLen() != 0 {
-				t.Fatal("an RFC 8198 proof was shared under a wall-clock lease")
-			}
+			shared(t, cache, nxCutDeniedName, tc.withWall)
 		})
 
 		t.Run("prefetch/"+tc.name, func(t *testing.T) {
@@ -275,12 +290,7 @@ func TestDenialUnderAWallClockLeaseIsNotShared(t *testing.T) {
 			if current, _ := cache.positive.Get(key); current == entry {
 				t.Fatal("the refresh was not stored")
 			}
-			if n := cache.store.NXDomainCutLen(); n != tc.shared {
-				t.Fatalf("RFC 8020 cuts = %d, want %d", n, tc.shared)
-			}
-			if tc.shared == 0 && cache.store.DenialProofLen() != 0 {
-				t.Fatal("an RFC 8198 proof was shared under a wall-clock lease")
-			}
+			shared(t, cache, denied, tc.withWall)
 		})
 	}
 }
