@@ -51,6 +51,13 @@ func newHitChainServer(tb testing.TB) *Server {
 
 func newHitChainServerWith(tb testing.TB, respond func(req *dns.Msg) *dns.Msg) *Server {
 	tb.Helper()
+	return newHitChainServerConfigured(tb, respond, nil)
+}
+
+// newHitChainServerConfigured is newHitChainServerWith with a hook on the
+// configuration before the chain is built.
+func newHitChainServerConfigured(tb testing.TB, respond func(req *dns.Msg) *dns.Msg, configure func(*config.Config)) *Server {
+	tb.Helper()
 	middleware.Reset()
 	tb.Cleanup(middleware.Reset)
 	// The real chain, up to the resolver, which the stub below stands in
@@ -68,6 +75,9 @@ func newHitChainServerWith(tb testing.TB, respond func(req *dns.Msg) *dns.Msg) *
 		CookieSecret: "6c6f6f6b61686172646c6f6f6b6168617264",
 	}
 	cfg.QueryTimeout.Duration = 10 * time.Second
+	if configure != nil {
+		configure(cfg)
+	}
 	middleware.Setup(cfg)
 	return New(cfg)
 }

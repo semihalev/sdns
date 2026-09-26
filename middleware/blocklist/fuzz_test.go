@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/dnsname"
 )
 
 // FuzzBlocklistExists fuzzes the blocklist existence check with wildcard support
@@ -95,5 +96,35 @@ func FuzzCanonicalName(f *testing.F) {
 	f.Fuzz(func(t *testing.T, name string) {
 		// This should not panic regardless of input
 		_ = dns.CanonicalName(name)
+	})
+}
+
+// FuzzExistsWireMatchesExists fuzzes the wire lookup against Exists: for
+// any wire-form name the key can be built from, both give one verdict.
+func FuzzExistsWireMatchesExists(f *testing.F) {
+	f.Add([]byte("\x07blocked\x04test\x00"))
+	f.Add([]byte("\x03a.b\x07example\x00"))
+	f.Add([]byte("\x04safe\x06parent\x04test\x00"))
+	f.Add([]byte("\x01x\x04wild\x04test\x00"))
+	f.Add([]byte("\x00"))
+	f.Add([]byte("\x02\x01\xff\x07BLOCKED\x04TEST\x00"))
+
+	b := &BlockList{
+		m:    map[string]bool{"blocked.test.": true, `a\.b.example.`: true, "parent.test.": true},
+		wild: map[string]bool{"wild.test.": true},
+		w:    map[string]bool{"safe.parent.test.": true},
+	}
+	f.Fuzz(func(t *testing.T, wire []byte) {
+		blocked, ok := b.existsWire(wire)
+		if !ok {
+			return
+		}
+		pres, ok := dnsname.AppendPresentation(nil, wire)
+		if !ok {
+			t.Fatalf("%x: key built but no presentation", wire)
+		}
+		if want := b.Exists(string(pres)); blocked != want {
+			t.Fatalf("%s: wire lookup says %v, Exists says %v", pres, blocked, want)
+		}
 	})
 }
