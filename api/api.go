@@ -25,6 +25,9 @@ import (
 // unbounded request.
 const maxBlockBatchBody = 8 << 20 // 8 MiB
 
+// purgeRoot is the purge route asked for the root name.
+const purgeRoot = "/api/v1/purge/./"
+
 // blockBatchRequest is the wire format for POST /api/v1/block/{set,remove}/batch.
 type blockBatchRequest struct {
 	Keys []string `json:"keys"`
@@ -85,19 +88,20 @@ func (a *API) handler() http.Handler {
 	mux := http.NewServeMux()
 
 	// pprof tooling sends no Authorization header, so these routes are not
-	// behind the token; they are served only when SDNS_PPROF is set. They
-	// take any method, as net/http/pprof registers them: symbol reads its
-	// counters from a POST body too. Index serves every named profile,
-	// goroutineleak included, under /debug/pprof/<name>.
+	// behind the token; they are served only when SDNS_PPROF is set. GET
+	// only: symbol would read its counters from a POST body of any size and
+	// buffer the whole answer, a door open to anyone who can reach the
+	// listener. Index serves every named profile, goroutineleak included,
+	// under /debug/pprof/<name>.
 	if debugpprof {
 		mux.HandleFunc("GET /debug/{$}", func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "/debug/pprof/", http.StatusMovedPermanently)
 		})
-		mux.HandleFunc("/debug/pprof/", pprof.Index)
-		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		mux.HandleFunc("GET /debug/pprof/", pprof.Index)
+		mux.HandleFunc("GET /debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("GET /debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("GET /debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("GET /debug/pprof/trace", pprof.Trace)
 	}
 
 	if a.blocklist != nil {
@@ -124,6 +128,12 @@ func (a *API) handler() http.Handler {
 		for k, v := range responseHeaders {
 			h[k] = v
 		}
+		// The root is a name a purge may be asked for, and "." a path
+		// segment the mux cleans away before matching: carry it escaped,
+		// as a client sending %2E would, so it stays the qname.
+		if rest, ok := strings.CutPrefix(r.URL.Path, purgeRoot); ok && r.URL.RawPath == "" {
+			r.URL.RawPath = "/api/v1/purge/%2E/" + rest
+		}
 		mux.ServeHTTP(w, r)
 	})
 }
@@ -149,8 +159,16 @@ func (a *API) auth(next http.HandlerFunc) http.Handler {
 // or a form. Browsers name the requesting site in Sec-Fetch-Site, and in
 // Origin for anything but a plain navigation; curl and scripts send
 // neither and are not affected.
+//
+// A GET route answers HEAD as well, and a probe for headers must not make
+// the change: HEAD gets 405.
 func change(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			w.Header().Set("Allow", http.MethodGet)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
 		if crossSite(r) {
 			writeJSON(w, http.StatusForbidden, map[string]any{"error": "cross-site request refused"})
 			return

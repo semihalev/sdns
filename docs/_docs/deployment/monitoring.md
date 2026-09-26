@@ -30,12 +30,14 @@ are covered below.
 | `/api/v1/block/remove/batch` | POST | Remove many | `{"requested":2,"removed":1,"missing":1}` |
 
 A key is a name (`ads.example.com`) or a wildcard (`*.ads.example.com`). `set`
-answers `success:false` for a name the whitelist covers. The batch endpoints
-take `{"keys":["a.example","*.b.example"]}`, at most 8 MiB, and refuse unknown
+answers `success:false` for a name already there or one the whitelist covers,
+and a batch counts those as `skipped`. The batch endpoints take
+`{"keys":["a.example","*.b.example"]}`, at most 8 MiB, and refuse unknown
 fields or an empty list with 400; each batch is one change and one write of the
 blocklist file. Purge drops the question from the answer cache, both CD
-partitions, and for `NS` from the delegation cache too; an unknown `qtype` is a
-400. A path that exists under another method answers 405.
+partitions, and for `NS` from the delegation cache too; the root is
+`/api/v1/purge/./NS`, and an unknown `qtype` is a 400. A path that exists under
+another method answers 405, and so does `HEAD` on a route that changes state.
 
 ```bash
 curl -X POST http://127.0.0.1:8080/api/v1/block/set/batch \

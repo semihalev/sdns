@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/blocklist"
@@ -22,6 +23,31 @@ func Test_Run(t *testing.T) {
 
 var setupBlocklist sync.Once
 
+// purgeSpy is a pipeline handler that records the questions purged.
+type purgeSpy struct {
+	mu     sync.Mutex
+	purged []dns.Question
+}
+
+func (*purgeSpy) Name() string                                       { return "purgespy" }
+func (*purgeSpy) ServeDNS(ctx context.Context, ch *middleware.Chain) { ch.Next(ctx) }
+
+func (s *purgeSpy) Purge(q dns.Question) {
+	s.mu.Lock()
+	s.purged = append(s.purged, q)
+	s.mu.Unlock()
+}
+
+func (s *purgeSpy) take() []dns.Question {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	got := s.purged
+	s.purged = nil
+	return got
+}
+
+var spy = new(purgeSpy)
+
 // newTestAPI returns an API over the pipeline's blocklist, with the given
 // bearer token.
 func newTestAPI(t *testing.T, token string) *API {
@@ -32,6 +58,7 @@ func newTestAPI(t *testing.T, token string) *API {
 		cfg.Nullroutev6 = "::0"
 		cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp")
 		middleware.Register("blocklist", func(cfg *config.Config) middleware.Handler { return blocklist.New(cfg) })
+		middleware.Register("purgespy", func(*config.Config) middleware.Handler { return spy })
 		middleware.Setup(cfg)
 	})
 	a := New(&config.Config{BearerToken: token})
@@ -54,7 +81,13 @@ func call(h http.Handler, method, target, body string, header map[string]string)
 func TestAPICalls(t *testing.T) {
 	a := newTestAPI(t, "")
 	h := a.handler()
-	a.blocklist.Remove("api-test.com")
+	// Start and end from a blocklist without the keys used here, so the
+	// counts hold however often the test runs in one process.
+	reset := func() {
+		a.blocklist.RemoveBatch([]string{"api-test.com", "a.api-test.com", "b.api-test.com"})
+	}
+	reset()
+	t.Cleanup(reset)
 
 	for _, c := range []struct {
 		method, target, body string
@@ -204,9 +237,10 @@ func TestPprofRoutes(t *testing.T) {
 	if w := call(h, "GET", "/debug/pprof/", "", nil); !strings.Contains(w.Body.String(), "goroutineleak") {
 		t.Error("the index does not list goroutineleak")
 	}
-	// go tool pprof posts program counters to symbol.
-	if w := call(h, "POST", "/debug/pprof/symbol", "0x0", nil); w.Code != http.StatusOK {
-		t.Errorf("POST /debug/pprof/symbol = %d, want 200", w.Code)
+	// GET only: a POST body to symbol is unbounded input with a buffered,
+	// several times larger answer.
+	if w := call(h, "POST", "/debug/pprof/symbol", "0x0", nil); w.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /debug/pprof/symbol = %d, want 405", w.Code)
 	}
 }
 
@@ -220,5 +254,63 @@ func TestPanicIsRecovered(t *testing.T) {
 	}
 	if w := call(h, "GET", "/notfound", "", nil); w.Code != http.StatusNotFound {
 		t.Fatalf("after a panic = %d, want the listener still serving", w.Code)
+	}
+}
+
+// The root is a name a purge may be asked for. "." is also a path segment
+// URL cleaning removes, and the route must still see it as the qname,
+// written plainly or escaped.
+func TestPurgeTheRoot(t *testing.T) {
+	h := newTestAPI(t, "").handler()
+	spy.take()
+	for _, target := range []string{"/api/v1/purge/./NS", "/api/v1/purge/%2E/NS", "/api/v1/purge/%2e/DNSKEY"} {
+		w := call(h, "GET", target, "", nil)
+		if w.Code != http.StatusOK || w.Body.String() != `{"success":true}` {
+			t.Fatalf("%s = %d %q, want 200", target, w.Code, w.Body.String())
+		}
+		got := spy.take()
+		if len(got) != 1 || got[0].Name != "." {
+			t.Fatalf("%s purged %v, want the root", target, got)
+		}
+	}
+	if w := call(h, "GET", "/api/v1/purge/example.com./A", "", nil); w.Code != http.StatusOK {
+		t.Fatalf("an ordinary name = %d", w.Code)
+	}
+	if got := spy.take(); len(got) != 1 || got[0].Name != "example.com." || got[0].Qtype != dns.TypeA {
+		t.Fatalf("an ordinary name purged %v", got)
+	}
+}
+
+// A GET route answers HEAD too, and a probe for headers must not make a
+// change: HEAD on set, remove and purge is 405 and changes nothing, while
+// the reads still answer it.
+func TestHeadChangesNothing(t *testing.T) {
+	a := newTestAPI(t, "")
+	h := a.handler()
+	// The blocklist persists to a shared directory: start from a known
+	// state, whatever an earlier run left there.
+	a.blocklist.Remove("head-new.test")
+	a.blocklist.Set("head.test")
+	t.Cleanup(func() { a.blocklist.RemoveBatch([]string{"head.test", "head-new.test"}) })
+	spy.take()
+
+	for _, target := range []string{
+		"/api/v1/block/remove/head.test", "/api/v1/block/set/head-new.test", "/api/v1/purge/head.test/A",
+	} {
+		w := call(h, "HEAD", target, "", nil)
+		if w.Code != http.StatusMethodNotAllowed || w.Header().Get("Allow") != "GET" {
+			t.Errorf("HEAD %s = %d Allow %q, want 405 Allow GET", target, w.Code, w.Header().Get("Allow"))
+		}
+	}
+	if !a.blocklist.Exists("head.test") || a.blocklist.Exists("head-new.test") {
+		t.Error("HEAD changed the blocklist")
+	}
+	if got := spy.take(); len(got) != 0 {
+		t.Errorf("HEAD purged %v", got)
+	}
+	for _, target := range []string{"/api/v1/block/exists/head.test", "/api/v1/block/get/head.test", "/metrics"} {
+		if w := call(h, "HEAD", target, "", nil); w.Code != http.StatusOK {
+			t.Errorf("HEAD %s = %d, want 200", target, w.Code)
+		}
 	}
 }
