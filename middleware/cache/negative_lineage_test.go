@@ -8,6 +8,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 )
@@ -299,11 +300,9 @@ func TestDenialProofLookupReportsEarliestExpiry(t *testing.T) {
 	}
 
 	snapshot := denialProofOnlySnapshot(t, cache)
-	want := snapshot.soa.expires
+	want := lease.Of(snapshot.soa.expires, 0).Min(lease.Of(snapshot.soa.wallExpires, 0))
 	for _, entry := range snapshot.nsec {
-		if entry.expires.Before(want) {
-			want = entry.expires
-		}
+		want = want.Min(lease.Of(entry.expires, 0)).Min(lease.Of(entry.wallExpires, 0))
 	}
 
 	_, _, _, expires, ok := cache.lookupWithMeta(
@@ -311,8 +310,9 @@ func TestDenialProofLookupReportsEarliestExpiry(t *testing.T) {
 	if !ok {
 		t.Fatal("the proof did not answer")
 	}
-	if !expires.Equal(want) {
-		t.Fatalf("reported expiry %v, want the earliest record expiry %v",
+	if !expires.Mono().Until.Equal(want.Mono().Until) ||
+		!expires.Wall().Until.Equal(want.Wall().Until) {
+		t.Fatalf("reported expiry %+v, want the earliest record expiry %+v",
 			expires, want)
 	}
 }

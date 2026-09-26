@@ -302,7 +302,7 @@ func (s *Store) GetWithContext(ctx context.Context, req *dns.Msg) (*dns.Msg, boo
 				req,
 				newDenialProofWork(ctx, s.dnssecCryptoLimiter),
 			); ok {
-				boundRequestTo(ctx, expires)
+				boundRequestToLease(ctx, expires)
 				observeAggressiveNegativeHit(kind, msg.Rcode)
 				return msg, true
 			}
@@ -396,22 +396,22 @@ func (s *Store) LookupDenialProof(
 	return msg, kind, zone, ok
 }
 
-// lookupDenialProofWithExpiry is LookupDenialProof plus the instant past which
-// the synthesized answer must not be used: the earliest expiry among the SOA
-// and the proof records it was built from. Anything derived from the answer
-// inherits that bound. Kept separate so the exported signature above stays as
-// callers outside this repository have it.
+// lookupDenialProofWithExpiry is LookupDenialProof plus the deadline past
+// which the synthesized answer must not be used: the earliest expiry on each
+// clock among the SOA and the proof records it was built from. Anything
+// derived from the answer inherits that bound. Kept separate so the exported
+// signature above stays as callers outside this repository have it.
 func (s *Store) lookupDenialProofWithExpiry(
 	req *dns.Msg,
 	work dnssec.NSEC3Work,
-) (*dns.Msg, middleware.ValidatedNegativeProofKind, string, time.Time, bool) {
+) (*dns.Msg, middleware.ValidatedNegativeProofKind, string, lease.Lease, bool) {
 	if s == nil || s.denialProofs == nil ||
 		s.sharedDenialDisabled || s.rfc8198Disabled {
-		return nil, middleware.ValidatedNegativeProofUnknown, "", time.Time{}, false
+		return nil, middleware.ValidatedNegativeProofUnknown, "", lease.Lease{}, false
 	}
 	msg, kind, zone, expires, ok := s.denialProofs.lookupWithMeta(req, work)
 	if !ok {
-		return nil, middleware.ValidatedNegativeProofUnknown, "", time.Time{}, false
+		return nil, middleware.ValidatedNegativeProofUnknown, "", lease.Lease{}, false
 	}
 	switch kind {
 	case denialProofNSEC:
@@ -419,7 +419,7 @@ func (s *Store) lookupDenialProofWithExpiry(
 	case denialProofNSEC3:
 		return msg, middleware.ValidatedNegativeProofNSEC3, zone, expires, true
 	default:
-		return nil, middleware.ValidatedNegativeProofUnknown, "", time.Time{}, false
+		return nil, middleware.ValidatedNegativeProofUnknown, "", lease.Lease{}, false
 	}
 }
 
@@ -431,6 +431,17 @@ func (s *Store) RecordDenialProof(
 	zone string,
 	kind middleware.ValidatedNegativeProofKind,
 	cutUntil time.Time,
+) bool {
+	return s.recordDenialProof(proof, zone, kind, lease.Until(cutUntil))
+}
+
+// recordDenialProof is RecordDenialProof under the resolution's whole lease,
+// a deadline on each clock.
+func (s *Store) recordDenialProof(
+	proof *dns.Msg,
+	zone string,
+	kind middleware.ValidatedNegativeProofKind,
+	cut lease.Lease,
 ) bool {
 	if s == nil || s.denialProofs == nil || proof == nil ||
 		s.sharedDenialDisabled || s.rfc8198Disabled {
@@ -445,7 +456,7 @@ func (s *Store) RecordDenialProof(
 	default:
 		return false
 	}
-	return s.denialProofs.recordWithKind(proof, zone, expected, cutUntil)
+	return s.denialProofs.recordWithKind(proof, zone, expected, cut)
 }
 
 // LookupFailure returns an active exact or closest-ancestor RFC 9520 failure.

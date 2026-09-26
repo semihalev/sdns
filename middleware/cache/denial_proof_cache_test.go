@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/lease"
 )
 
 type denialProofTestFixture struct {
@@ -695,7 +696,7 @@ func TestDenialProofCacheExpectedKindUsesRetainedSignerZone(t *testing.T) {
 		fixture.msg,
 		"example.",
 		denialProofNSEC,
-		time.Time{},
+		lease.Lease{},
 	) {
 		t.Fatal("out-of-zone NSEC3 caused a false miss for retained NSEC")
 	}
@@ -705,7 +706,7 @@ func TestDenialProofCacheExpectedKindUsesRetainedSignerZone(t *testing.T) {
 		fixture.msg,
 		"example.",
 		denialProofNSEC3,
-		time.Time{},
+		lease.Lease{},
 	) {
 		t.Fatal("out-of-zone NSEC3 selected a family not retained from signer zone")
 	}

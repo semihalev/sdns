@@ -1099,7 +1099,7 @@ func (c *Cache) lookupDenialProof(
 	}
 	// The answer exists, so the records behind it were live: bind the request
 	// tree to the earliest of their expiries before it is used for anything.
-	boundRequestTo(ctx, proofExpires)
+	boundRequestToLease(ctx, proofExpires)
 	return msg, kind, zone
 }
 
@@ -1701,29 +1701,9 @@ func boundEntryAt(ctx context.Context, entry *CacheEntry, now time.Time) {
 	boundRequestToEntryLifetime(ctx, entry, now, ttlRemaining)
 }
 
-// sharedDenialDeadline is the deadline the RFC 8198 proof cache takes for
-// cut. It counts every expiry on the monotonic clock from admission, so a
-// lease holding a wall-clock deadline has no form it can keep, and a proof
-// under one is not shared at all: ok is false. A zero until is unbounded.
-// RFC 8020 cuts keep both clocks and take cut whole.
-func sharedDenialDeadline(cut lease.Lease) (until time.Time, ok bool) {
-	if !cut.Wall().Until.IsZero() {
-		return time.Time{}, false
-	}
-	return cut.Mono().Until, true
-}
-
-// boundRequestTo folds an absolute expiry that is already exact, a subtree
-// cut's, or the earliest among the records an RFC 8198 answer was synthesized
-// from, into the request tree.
-func boundRequestTo(ctx context.Context, expires time.Time) {
-	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
-		meta.BoundCutFor(expires, 0)
-	}
-}
-
-// boundRequestToLease is boundRequestTo for a deadline held on both clocks,
-// an RFC 8020 cut's: a wall-clock deadline cannot be ordered against a
+// boundRequestToLease folds a deadline held on both clocks, a subtree cut's
+// or the earliest among the records an RFC 8198 answer was synthesized from,
+// into the request tree: a wall-clock deadline cannot be ordered against a
 // monotonic one, so both travel.
 func boundRequestToLease(ctx context.Context, l lease.Lease) {
 	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
@@ -1994,14 +1974,12 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 		if negative, ok := middleware.ValidatedNegativeProofForResponse(ctx, res); ok &&
 			negative.Aggressive &&
 			negative.Proof != nil {
-			if until, shareable := sharedDenialDeadline(cut); shareable {
-				w.cache.store.RecordDenialProof(
-					negative.Proof,
-					negative.Zone,
-					negative.Kind,
-					until,
-				)
-			}
+			w.cache.store.recordDenialProof(
+				negative.Proof,
+				negative.Zone,
+				negative.Kind,
+				cut,
+			)
 			if negative.Proof.Rcode == dns.RcodeNameError {
 				w.cache.store.recordNXDomainCut(
 					negative.Proof,
