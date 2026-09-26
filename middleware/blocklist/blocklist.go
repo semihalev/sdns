@@ -1,6 +1,7 @@
 package blocklist
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
@@ -152,6 +154,40 @@ func (b *BlockList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
+	// A wire-born request is looked up by its wire name, and on the
+	// overwhelmingly common miss continues down the chain undecoded: a
+	// decode here took every query of a server with a loaded list off the
+	// byte path, cache hits included. A blocked name is answered from the
+	// request's parsed scalars, still without a decode.
+	if r := ch.Request; r.Undecoded() {
+		if blocked, ok := b.existsWire(r.WireName()); ok {
+			if !blocked {
+				ch.Next(ctx)
+				return
+			}
+			var buf [dnsname.MaxPresentationLength]byte
+			if pres, ok := dnsname.AppendPresentation(buf[:0], r.WireName()); ok {
+				blocklistHits.Inc()
+				msg := new(dns.Msg)
+				msg.MsgHdr = dns.MsgHdr{
+					Id:                 r.ID(),
+					Response:           true,
+					Opcode:             r.Opcode(),
+					Authoritative:      true,
+					RecursionDesired:   r.RD(),
+					RecursionAvailable: true,
+					CheckingDisabled:   r.CD(),
+				}
+				q := dns.Question{Name: string(pres), Qtype: r.Qtype(), Qclass: r.Qclass()}
+				msg.Question = []dns.Question{q}
+				b.answer(msg, q)
+				_ = ch.Writer.WriteMsg(msg)
+				ch.Cancel()
+				return
+			}
+		}
+	}
+
 	ctx, req := ch.Materialize(ctx)
 	if req == nil {
 		return
@@ -170,7 +206,16 @@ func (b *BlockList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	msg := new(dns.Msg)
 	msg.SetReply(req)
 	msg.Authoritative, msg.RecursionAvailable = true, true
+	b.answer(msg, q)
 
+	_ = w.WriteMsg(msg)
+
+	ch.Cancel()
+}
+
+// answer fills the blocked reply for q: the null route for A and AAAA, a
+// SOA in the authority section for anything else.
+func (b *BlockList) answer(msg *dns.Msg, q dns.Question) {
 	switch q.Qtype {
 	case dns.TypeA:
 		rrHeader := dns.RR_Header{
@@ -209,10 +254,64 @@ func (b *BlockList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		}
 		msg.Ns = append(msg.Ns, soa)
 	}
+}
 
-	_ = w.WriteMsg(msg)
+// existsWire is Exists for a wire-form name, without a string: the
+// canonical key, dns.CanonicalName's spelling, is written into a stack
+// buffer and indexes the maps directly, and the walk up the hierarchy is
+// Exists's own, byte for byte, so the two agree on every name, escaped
+// dots included. ok is false for a name the key cannot be built from; the
+// caller then takes the decoded path.
+func (b *BlockList) existsWire(wire []byte) (blocked, ok bool) {
+	var buf [dnsname.MaxPresentationLength]byte
+	key, _, ok := dnsname.AppendCanonicalLabels(buf[:0], wire, nil)
+	if !ok {
+		return false, false
+	}
 
-	ch.Cancel()
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	if matchHierarchyBytes(key, b.w) {
+		return false, true
+	}
+	if b.m[string(key)] {
+		return true, true
+	}
+	if len(b.m) == 0 && len(b.wild) == 0 {
+		return false, true
+	}
+	for offset := 0; ; {
+		idx := bytes.IndexByte(key[offset:], '.')
+		if idx == -1 {
+			return false, true
+		}
+		offset += idx + 1
+		if offset < len(key) && (b.m[string(key[offset:])] || b.wild[string(key[offset:])]) {
+			return true, true
+		}
+	}
+}
+
+// matchHierarchyBytes is matchHierarchy for a key held in a buffer; the
+// map lookups convert without allocating.
+func matchHierarchyBytes(name []byte, m map[string]bool) bool {
+	if len(m) == 0 {
+		return false
+	}
+	if m[string(name)] {
+		return true
+	}
+	for offset := 0; ; {
+		idx := bytes.IndexByte(name[offset:], '.')
+		if idx == -1 {
+			return false
+		}
+		offset += idx + 1
+		if offset < len(name) && m[string(name[offset:])] {
+			return true
+		}
+	}
 }
 
 // (*BlockList).Get get returns the entry for a key or an error.
