@@ -205,14 +205,12 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 		if negative, ok := middleware.ValidatedNegativeProofForResponse(ctx, resp); ok &&
 			negative.Aggressive &&
 			negative.Proof != nil {
-			if until, shareable := sharedDenialDeadline(cut); shareable {
-				req.Cache.store.RecordDenialProof(
-					negative.Proof,
-					negative.Zone,
-					negative.Kind,
-					until,
-				)
-			}
+			req.Cache.store.recordDenialProof(
+				negative.Proof,
+				negative.Zone,
+				negative.Kind,
+				cut,
+			)
 			if negative.Proof.Rcode == dns.RcodeNameError {
 				req.Cache.store.recordNXDomainCut(
 					negative.Proof,
