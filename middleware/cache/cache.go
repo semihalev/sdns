@@ -1115,7 +1115,7 @@ func (c *Cache) handleNXDomainCutHit(
 
 	// Same lineage rule as an exact hit: whatever is assembled from this cut
 	// inherits its lifetime.
-	boundRequestTo(ctx, entry.expires)
+	boundRequestToLease(ctx, entry.expires)
 
 	// A cut hit is locally authenticated state, so it can safely become the
 	// terminal proof source when an enclosing CNAME/DNAME response explicitly
@@ -1701,11 +1701,11 @@ func boundEntryAt(ctx context.Context, entry *CacheEntry, now time.Time) {
 	boundRequestToEntryLifetime(ctx, entry, now, ttlRemaining)
 }
 
-// sharedDenialDeadline is the deadline the RFC 8020/8198 denial caches take
-// for cut. They count every expiry on the monotonic clock from admission,
-// so a lease holding a wall-clock deadline has no form they can keep, and a
-// denial under one is not shared at all: ok is false. A zero until is
-// unbounded.
+// sharedDenialDeadline is the deadline the RFC 8198 proof cache takes for
+// cut. It counts every expiry on the monotonic clock from admission, so a
+// lease holding a wall-clock deadline has no form it can keep, and a proof
+// under one is not shared at all: ok is false. A zero until is unbounded.
+// RFC 8020 cuts keep both clocks and take cut whole.
 func sharedDenialDeadline(cut lease.Lease) (until time.Time, ok bool) {
 	if !cut.Wall().Until.IsZero() {
 		return time.Time{}, false
@@ -1719,6 +1719,15 @@ func sharedDenialDeadline(cut lease.Lease) (until time.Time, ok bool) {
 func boundRequestTo(ctx context.Context, expires time.Time) {
 	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
 		meta.BoundCutFor(expires, 0)
+	}
+}
+
+// boundRequestToLease is boundRequestTo for a deadline held on both clocks,
+// an RFC 8020 cut's: a wall-clock deadline cannot be ordered against a
+// monotonic one, so both travel.
+func boundRequestToLease(ctx context.Context, l lease.Lease) {
+	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
+		meta.BoundLease(l)
 	}
 }
 
@@ -1982,23 +1991,23 @@ func (w *ResponseWriter) WriteMsg(res *dns.Msg) error {
 	if !w.clientScope.IsValid() && !w.requestHasECS &&
 		!w.requestTreeBypassesSharedDenial &&
 		!w.requestCD && !res.CheckingDisabled {
-		until, shareable := sharedDenialDeadline(cut)
 		if negative, ok := middleware.ValidatedNegativeProofForResponse(ctx, res); ok &&
-			shareable &&
 			negative.Aggressive &&
 			negative.Proof != nil {
-			w.cache.store.RecordDenialProof(
-				negative.Proof,
-				negative.Zone,
-				negative.Kind,
-				until,
-			)
+			if until, shareable := sharedDenialDeadline(cut); shareable {
+				w.cache.store.RecordDenialProof(
+					negative.Proof,
+					negative.Zone,
+					negative.Kind,
+					until,
+				)
+			}
 			if negative.Proof.Rcode == dns.RcodeNameError {
-				w.cache.store.RecordNXDomainCut(
+				w.cache.store.recordNXDomainCut(
 					negative.Proof,
 					negative.Subject,
 					negative.Zone,
-					until,
+					cut,
 				)
 			}
 		}

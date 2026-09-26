@@ -292,7 +292,7 @@ func (s *Store) GetWithContext(ctx context.Context, req *dns.Msg) (*dns.Msg, boo
 	if !requestTreeBypassesDenial {
 		if cut, ok := s.LookupNXDomainCut(req); ok {
 			if msg := cut.response(req); msg != nil {
-				boundRequestTo(ctx, cut.expires)
+				boundRequestToLease(ctx, cut.expires)
 				nxDomainCutHits.Inc()
 				return msg, true
 			}
@@ -368,10 +368,21 @@ func (s *Store) RecordNXDomainCut(
 	zone string,
 	cutUntil time.Time,
 ) bool {
+	return s.recordNXDomainCut(proof, deniedName, zone, lease.Until(cutUntil))
+}
+
+// recordNXDomainCut is RecordNXDomainCut under the resolution's whole lease,
+// a deadline on each clock.
+func (s *Store) recordNXDomainCut(
+	proof *dns.Msg,
+	deniedName string,
+	zone string,
+	cut lease.Lease,
+) bool {
 	if s == nil || s.nxDomainCuts == nil || s.sharedDenialDisabled {
 		return false
 	}
-	return s.nxDomainCuts.record(proof, deniedName, zone, cutUntil)
+	return s.nxDomainCuts.record(proof, deniedName, zone, cut)
 }
 
 // LookupDenialProof evaluates the bounded RFC 8198 proof index for req.

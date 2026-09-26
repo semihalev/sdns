@@ -9,6 +9,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/middleware"
 )
 
@@ -39,7 +40,11 @@ type nxDomainCutEntry struct {
 	proofKind  middleware.ValidatedNegativeProofKind
 	msg        *dns.Msg
 	stored     time.Time
-	expires    time.Time
+	// expires holds the cut's deadline on each clock: the monotonic one
+	// from the TTL caps counted from admission, and the wall-clock one
+	// from the calendar instants it answers to, the proof's own signature
+	// expirations and any wall-clock lease inherited from the resolution.
+	expires    lease.Lease
 	wireBytes  int64
 	id         nxDomainCutID
 	zoneKey    nxDomainCutZoneKey
@@ -174,8 +179,8 @@ func nxDomainCutDerivedBytes(entries int) int64 {
 // record publishes a cut for the exact locally validated denied name. zone is
 // the signer zone selected by the validator; it is used to extract only the
 // terminal proof when an outer CNAME/DNAME response contains records from
-// multiple zones.
-func (c *nxDomainCutCache) record(msg *dns.Msg, deniedName, zone string, cutUntil time.Time) bool {
+// multiple zones. cut is the resolution's lease, on either clock or both.
+func (c *nxDomainCutCache) record(msg *dns.Msg, deniedName, zone string, cut lease.Lease) bool {
 	if c == nil || msg == nil || msg.Rcode != dns.RcodeNameError ||
 		msg.CheckingDisabled {
 		return false
@@ -203,6 +208,10 @@ func (c *nxDomainCutCache) record(msg *dns.Msg, deniedName, zone string, cutUnti
 		}
 	}
 
+	// The wall-clock side starts from the inherited lease's; the proof's
+	// signature expirations join it below.
+	expires := lease.Of(cut.Wall().Until, 0)
+
 	// RFC 2308 negative TTL. No configured minimum is applied: a cache floor
 	// must never extend an authenticated denial beyond any proof component.
 	bound(time.Duration(soa.Hdr.Ttl) * time.Second)
@@ -214,13 +223,22 @@ func (c *nxDomainCutCache) record(msg *dns.Msg, deniedName, zone string, cutUnti
 			bound(time.Duration(record.Minttl) * time.Second)
 		case *dns.RRSIG:
 			bound(time.Duration(record.OrigTtl) * time.Second)
-			bound(time.Unix(int64(record.Expiration), 0).Sub(now))
+			// A signature expires at a calendar instant: counted from
+			// admission it caps the cut as today, and kept as that instant
+			// it still binds when the wall clock steps forward past it.
+			expiration := time.Unix(int64(record.Expiration), 0)
+			bound(expiration.Sub(now))
+			expires.Fold(expiration, 0)
 		}
 	}
-	if !cutUntil.IsZero() {
-		bound(cutUntil.Sub(now))
+	if until := cut.Mono().Until; !until.IsZero() {
+		bound(until.Sub(now))
 	}
 	if ttl <= 0 {
+		return false
+	}
+	expires.Fold(now.Add(ttl), 0)
+	if expires.Expired(now) {
 		return false
 	}
 
@@ -231,7 +249,7 @@ func (c *nxDomainCutCache) record(msg *dns.Msg, deniedName, zone string, cutUnti
 		proofKind:  negativeProofKind(proof.Ns),
 		msg:        proof,
 		stored:     now,
-		expires:    now.Add(ttl),
+		expires:    expires,
 		wireBytes:  int64(proof.Len()),
 	}
 	entry.id = nxDomainCutID{deniedName: deniedName, qclass: entry.qclass}
@@ -477,7 +495,7 @@ func (c *nxDomainCutCache) lookup(q dns.Question) (*nxDomainCutEntry, bool) {
 		if entry == nil {
 			continue
 		}
-		if !now.Before(entry.expires) {
+		if entry.expires.Expired(now) {
 			c.mu.Lock()
 			c.removeEntryLocked(entry)
 			c.mu.Unlock()
@@ -492,8 +510,7 @@ func (e *nxDomainCutEntry) response(req *dns.Msg) *dns.Msg {
 	if e == nil || req == nil || len(req.Question) == 0 || req.CheckingDisabled {
 		return nil
 	}
-	now := time.Now()
-	remaining := e.expires.Sub(now)
+	remaining, _ := e.expires.Remaining(time.Now())
 	if remaining <= 0 {
 		return nil
 	}

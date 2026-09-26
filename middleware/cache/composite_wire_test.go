@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/middleware"
 )
 
@@ -65,7 +66,7 @@ func TestNXDomainCutWireServeParity(t *testing.T) {
 		},
 		sig("glib.zone.test.", dns.TypeNSEC),
 	}
-	if !c.record(proof, "gone.zone.test.", "zone.test.", time.Time{}) {
+	if !c.record(proof, "gone.zone.test.", "zone.test.", lease.Lease{}) {
 		t.Fatal("cut refused")
 	}
 

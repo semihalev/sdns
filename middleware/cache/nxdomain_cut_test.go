@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/lease"
 )
 
 type nxDomainCutFixture struct {
@@ -269,7 +270,7 @@ func TestNXDomainCutStrictTTLMinimum(t *testing.T) {
 			cutUntil := tt.configure(fixture)
 			cut := newNXDomainCutCache(32, tt.maxTTL)
 			t.Cleanup(cut.stop)
-			if !cut.record(fixture.msg, "missing.example.", "example.", cutUntil) {
+			if !cut.record(fixture.msg, "missing.example.", "example.", lease.Until(cutUntil)) {
 				t.Fatal("valid locally authenticated NXDOMAIN was not recorded")
 			}
 
@@ -283,12 +284,12 @@ func TestNXDomainCutStrictTTLMinimum(t *testing.T) {
 			}
 			if tt.wantTime != nil {
 				want := tt.wantTime(fixture, cutUntil)
-				if !entry.expires.Equal(want) {
-					t.Fatalf("expires = %v, want strict absolute bound %v", entry.expires, want)
+				if got := entry.expires.Mono().Until; !got.Equal(want) {
+					t.Fatalf("expires = %v, want strict absolute bound %v", got, want)
 				}
 				return
 			}
-			if got := entry.expires.Sub(entry.stored); got != tt.wantTTL {
+			if got := entry.expires.Mono().Until.Sub(entry.stored); got != tt.wantTTL {
 				t.Fatalf("cut lifetime = %v, want strict minimum %v", got, tt.wantTTL)
 			}
 		})
@@ -326,7 +327,7 @@ func TestNXDomainCutDoesNotApplyConfiguredMinTTL(t *testing.T) {
 	if !ok {
 		t.Fatal("short-lived cut was not found")
 	}
-	if got := entry.expires.Sub(entry.stored); got != 2*time.Second {
+	if got := entry.expires.Mono().Until.Sub(entry.stored); got != 2*time.Second {
 		t.Fatalf("configured MinTTL extended cut to %v, want proof minimum 2s", got)
 	}
 }
@@ -337,7 +338,7 @@ func TestNXDomainCutLookupBoundariesAndDimensions(t *testing.T) {
 	cut := newNXDomainCutCache(32, time.Minute)
 	t.Cleanup(cut.stop)
 	fixture := newNXDomainCutFixture(t, "missing.example.", "example.", dns.ClassINET)
-	if !cut.record(fixture.msg, "MiSsInG.ExAmPlE.", "ExAmPlE.", time.Time{}) {
+	if !cut.record(fixture.msg, "MiSsInG.ExAmPlE.", "ExAmPlE.", lease.Lease{}) {
 		t.Fatal("mixed-case validated denial was not recorded")
 	}
 
@@ -375,7 +376,7 @@ func TestNXDomainCutAdmissionRejectsSignerZoneApex(t *testing.T) {
 	// A zone apex cannot itself be absent while supplying its SOA and denial
 	// proof. Compare after DNS canonicalisation so presentation case cannot
 	// bypass this fail-closed admission invariant.
-	if cut.record(fixture.msg, "ExAmPlE.", "eXaMpLe.", time.Time{}) {
+	if cut.record(fixture.msg, "ExAmPlE.", "eXaMpLe.", lease.Lease{}) {
 		t.Fatal("signer-zone apex NXDOMAIN was admitted as a subtree cut")
 	}
 	if got := cut.len(); got != 0 {
@@ -410,7 +411,7 @@ func TestNXDomainCutAllowsExactDenialSignedByRoot(t *testing.T) {
 
 	cut := newNXDomainCutCache(8, time.Minute)
 	t.Cleanup(cut.stop)
-	if !cut.record(msg, "nonexistent.", ".", time.Time{}) {
+	if !cut.record(msg, "nonexistent.", ".", lease.Lease{}) {
 		t.Fatal("root-signed exact NXDOMAIN was not recorded")
 	}
 	if _, ok := cut.lookup(dns.Question{
@@ -432,7 +433,7 @@ func TestNXDomainCutUsesDNSASCIICaseFolding(t *testing.T) {
 	cut := newNXDomainCutCache(8, time.Minute)
 	t.Cleanup(cut.stop)
 	fixture := newNXDomainCutFixture(t, kelvinDenied, "example.", dns.ClassINET)
-	if !cut.record(fixture.msg, kelvinDenied, "example.", time.Time{}) {
+	if !cut.record(fixture.msg, kelvinDenied, "example.", lease.Lease{}) {
 		t.Fatal("validated non-ASCII octet name was not recorded")
 	}
 
@@ -613,7 +614,7 @@ func TestNXDomainCutAdmissionRejectsIncompleteOrOptOutProof(t *testing.T) {
 			}
 			cut := newNXDomainCutCache(8, time.Minute)
 			t.Cleanup(cut.stop)
-			if got := cut.record(fixture.msg, "missing.example.", "example.", time.Time{}); got != tt.want {
+			if got := cut.record(fixture.msg, "missing.example.", "example.", lease.Lease{}); got != tt.want {
 				t.Fatalf("record() = %v, want %v", got, tt.want)
 			}
 			if got := cut.len(); got != boolInt(tt.want) {
@@ -744,10 +745,10 @@ func TestNXDomainCutWireByteBudgets(t *testing.T) {
 		})
 		t.Cleanup(cut.stop)
 
-		if !cut.record(first.msg, "one.alpha.test.", "alpha.test.", time.Time{}) {
+		if !cut.record(first.msg, "one.alpha.test.", "alpha.test.", lease.Lease{}) {
 			t.Fatal("first global-byte fixture was not recorded")
 		}
-		if !cut.record(second.msg, "two.bravo.test.", "bravo.test.", time.Time{}) {
+		if !cut.record(second.msg, "two.bravo.test.", "bravo.test.", lease.Lease{}) {
 			t.Fatal("second global-byte fixture was not recorded")
 		}
 		assertNXDomainCutLookup(t, cut, "one.alpha.test.", false)
@@ -771,10 +772,10 @@ func TestNXDomainCutWireByteBudgets(t *testing.T) {
 		t.Cleanup(cut.stop)
 
 		mustRecordNXDomainCut(t, cut, "missing.healthy.test.", "healthy.test.")
-		if !cut.record(first.msg, "first.attack.test.", "attack.test.", time.Time{}) {
+		if !cut.record(first.msg, "first.attack.test.", "attack.test.", lease.Lease{}) {
 			t.Fatal("first per-zone-byte fixture was not recorded")
 		}
-		if !cut.record(second.msg, "second.attack.test.", "attack.test.", time.Time{}) {
+		if !cut.record(second.msg, "second.attack.test.", "attack.test.", lease.Lease{}) {
 			t.Fatal("second per-zone-byte fixture was not recorded")
 		}
 
@@ -802,7 +803,7 @@ func TestNXDomainCutOversizedReplacementPreservesCurrent(t *testing.T) {
 		MaxTTL:            time.Minute,
 	})
 	t.Cleanup(cut.stop)
-	if !cut.record(currentFixture.msg, deniedName, zone, time.Time{}) {
+	if !cut.record(currentFixture.msg, deniedName, zone, lease.Lease{}) {
 		t.Fatal("current cut was not recorded")
 	}
 	current, ok := cut.lookup(dns.Question{
@@ -823,7 +824,7 @@ func TestNXDomainCutOversizedReplacementPreservesCurrent(t *testing.T) {
 			maxNXDomainCutProofBytes,
 		)
 	}
-	if cut.record(replacement.msg, deniedName, zone, time.Time{}) {
+	if cut.record(replacement.msg, deniedName, zone, lease.Lease{}) {
 		t.Fatal("replacement exceeding the zone byte budget was admitted")
 	}
 	retained, ok := cut.lookup(dns.Question{
@@ -898,7 +899,7 @@ func TestNXDomainCutConcurrentBudgetAccounting(t *testing.T) {
 			defer wg.Done()
 			<-start
 			for round := range 8 {
-				cut.record(fixtures[i].msg, deniedNames[i], "attack.test.", time.Time{})
+				cut.record(fixtures[i].msg, deniedNames[i], "attack.test.", lease.Lease{})
 				cut.lookup(dns.Question{
 					Name:   "child." + deniedNames[i],
 					Qtype:  dns.TypeA + uint16(round%2),
@@ -937,7 +938,7 @@ func TestNXDomainCutStopClearsStateAndRejectsAdmission(t *testing.T) {
 	}
 
 	fixture := newNXDomainCutFixture(t, "after-stop.example.", "example.", dns.ClassINET)
-	if cut.record(fixture.msg, "after-stop.example.", "example.", time.Time{}) {
+	if cut.record(fixture.msg, "after-stop.example.", "example.", lease.Lease{}) {
 		t.Fatal("stopped cut cache admitted a new entry")
 	}
 	assertNXDomainCutLookup(t, cut, "after-stop.example.", false)
@@ -950,7 +951,7 @@ func TestNXDomainCutResponseMaterialization(t *testing.T) {
 	cut := newNXDomainCutCache(32, time.Minute)
 	t.Cleanup(cut.stop)
 	fixture := newNXDomainCutFixture(t, "missing.example.", "example.", dns.ClassINET)
-	if !cut.record(fixture.msg, "missing.example.", "example.", time.Time{}) {
+	if !cut.record(fixture.msg, "missing.example.", "example.", lease.Lease{}) {
 		t.Fatal("valid cut was not recorded")
 	}
 	entry, ok := cut.lookup(dns.Question{
@@ -998,7 +999,7 @@ func TestNXDomainCutExpiryAndPurge(t *testing.T) {
 	cut := newNXDomainCutCache(32, time.Minute)
 	t.Cleanup(cut.stop)
 	fixture := newNXDomainCutFixture(t, "missing.example.", "example.", dns.ClassINET)
-	if !cut.record(fixture.msg, "missing.example.", "example.", time.Time{}) {
+	if !cut.record(fixture.msg, "missing.example.", "example.", lease.Lease{}) {
 		t.Fatal("valid cut was not recorded")
 	}
 	descendant := dns.Question{
@@ -1010,7 +1011,7 @@ func TestNXDomainCutExpiryAndPurge(t *testing.T) {
 	if !ok {
 		t.Fatal("precondition: descendant lookup missed")
 	}
-	entry.expires = time.Now().Add(-time.Second)
+	entry.expires = lease.Until(time.Now().Add(-time.Second))
 	if expired, hit := cut.lookup(descendant); hit {
 		t.Fatalf("expired cut was served: %#v", expired)
 	}
@@ -1019,7 +1020,7 @@ func TestNXDomainCutExpiryAndPurge(t *testing.T) {
 	}
 	assertNXDomainCutAccounting(t, cut)
 
-	if !cut.record(fixture.msg, "missing.example.", "example.", time.Time{}) {
+	if !cut.record(fixture.msg, "missing.example.", "example.", lease.Lease{}) {
 		t.Fatal("cut could not be re-recorded after expiry")
 	}
 	cut.purge(dns.Question{
@@ -1043,7 +1044,7 @@ func TestNXDomainCutConcurrentResponseIsolation(t *testing.T) {
 	cut := newNXDomainCutCache(32, time.Minute)
 	t.Cleanup(cut.stop)
 	fixture := newNXDomainCutFixture(t, "missing.example.", "example.", dns.ClassINET)
-	if !cut.record(fixture.msg, "missing.example.", "example.", time.Time{}) {
+	if !cut.record(fixture.msg, "missing.example.", "example.", lease.Lease{}) {
 		t.Fatal("valid cut was not recorded")
 	}
 	entry, ok := cut.lookup(dns.Question{
@@ -1116,7 +1117,7 @@ func mustRecordNXDomainCut(
 ) {
 	tb.Helper()
 	fixture := newNXDomainCutFixture(tb, deniedName, zone, dns.ClassINET)
-	if !cut.record(fixture.msg, deniedName, zone, time.Time{}) {
+	if !cut.record(fixture.msg, deniedName, zone, lease.Lease{}) {
 		tb.Fatalf("record(%q, %q) = false, want true", deniedName, zone)
 	}
 }

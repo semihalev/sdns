@@ -85,11 +85,15 @@ func nxCutWireServable(body []byte) bool {
 // walk over the denied names, probing the hash index and verifying by
 // fold comparison. Expired entries are skipped, not pruned, the Msg
 // path's lookup owns eviction.
+//
+// Only the monotonic deadline is checked here, on the clock read that needs
+// no wall time. The wall-clock one is serveWireInto's, which reads both
+// clocks once for the TTL it serves: a cut past only that bound declines
+// there, and the Msg path's lookup prunes it.
 func (c *nxDomainCutCache) lookupWire(name []byte, qclass uint16) (*nxDomainCutEntry, bool) {
 	if c == nil || qclass == 0 {
 		return nil, false
 	}
-	now := time.Now()
 	var found *nxDomainCutEntry
 	c.mu.RLock()
 	walkWireSuffixes(name, func(candidate []byte) bool {
@@ -100,7 +104,7 @@ func (c *nxDomainCutCache) lookupWire(name []byte, qclass uint16) (*nxDomainCutE
 		entry := c.byHash[hash^nxDomainCutHashSalt]
 		if entry == nil || entry.qclass != qclass || entry.wireFull == nil ||
 			!internalcache.WireNameEqualsPresentation(candidate, entry.deniedName) ||
-			!now.Before(entry.expires) {
+			time.Until(entry.expires.Mono().Until) <= 0 {
 			return true
 		}
 		found = entry
@@ -120,7 +124,7 @@ func (e *nxDomainCutEntry) serveWireInto(
 	req *middleware.Request,
 	do bool,
 ) ([]byte, bool) {
-	remaining := time.Until(e.expires)
+	remaining, _ := e.expires.Remaining(time.Now())
 	if remaining <= 0 {
 		return nil, false
 	}
@@ -259,7 +263,7 @@ func (c *Cache) serveCutHitFromWire(
 	}
 	switch err := leaser.CommitWire(body, info); {
 	case err == nil:
-		boundRequestTo(ctx, cut.expires)
+		boundRequestToLease(ctx, cut.expires)
 		c.metrics.Hit()
 		nxDomainCutHits.Inc()
 		wireCutServed.Inc()
@@ -269,7 +273,7 @@ func (c *Cache) serveCutHitFromWire(
 		wireFastFallback.Inc()
 		return false
 	default:
-		boundRequestTo(ctx, cut.expires)
+		boundRequestToLease(ctx, cut.expires)
 		c.metrics.Hit()
 		ch.Cancel()
 		return true
