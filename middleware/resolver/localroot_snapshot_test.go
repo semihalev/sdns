@@ -28,10 +28,12 @@ func TestLocalRootAnswersSurviveARestart(t *testing.T) {
 			zone := net.DelegateInsecure("snap.")
 			zone.Serve(mustRR(t, "www.snap. 300 IN A 192.0.2.44"))
 
+			// The snapshot goes in the net's own working directory. A
+			// t.TempDir would fail its cleanup whenever the resolver's
+			// background trust-anchor write lands there after the test.
 			cfg := net.Config()
 			cfg.CacheSize = 1024
 			cfg.CachePersist = true
-			cfg.Directory = t.TempDir()
 			handler := net.handlerWithConfig(cfg)
 			if tc.localRoot {
 				z, err := roottest.BuildZone(localroot.ComputeDigest, []string{
