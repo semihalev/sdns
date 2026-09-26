@@ -208,12 +208,10 @@ func TestSnapshotKeepsEachBoundOnItsClock(t *testing.T) {
 	})
 }
 
-// A validated NXDOMAIN is shared as an RFC 8020 cut that keeps its lease on
-// both clocks, on the miss path and on a prefetch refresh alike. The RFC
-// 8198 proof cache counts every expiry on the monotonic clock from
-// admission and cannot keep a wall-clock deadline, so under a lease holding
-// one the proof is not shared. A monotonic lease shares both.
-func TestDenialUnderAWallClockLeaseSharesOnlyTheCut(t *testing.T) {
+// A validated NXDOMAIN is shared as an RFC 8020 cut and as RFC 8198 proof
+// sets, each keeping the lease it was learned under on both clocks, on the
+// miss path and on a prefetch refresh alike.
+func TestDenialUnderAWallClockLeaseIsShared(t *testing.T) {
 	var wall time.Time
 	bind := func(ctx context.Context, withWall bool) {
 		meta := middleware.ResponseMetaFrom(ctx)
@@ -238,8 +236,19 @@ func TestDenialUnderAWallClockLeaseSharesOnlyTheCut(t *testing.T) {
 		if got := cut.expires.Wall().Until; withWall && !got.Equal(wall) {
 			t.Fatalf("the cut's wall-clock deadline is %v, want the lease's %v", got, wall)
 		}
-		if proofs := cache.store.DenialProofLen(); (proofs == 0) != withWall {
-			t.Fatalf("RFC 8198 proofs = %d, wall-clock lease %v", proofs, withWall)
+		proofs := cache.store.denialProofs
+		proofs.mu.RLock()
+		defer proofs.mu.RUnlock()
+		if len(proofs.byID) == 0 {
+			t.Fatal("the RFC 8198 proof was not shared")
+		}
+		for id, entry := range proofs.byID {
+			if left := time.Until(entry.expires); left > time.Minute {
+				t.Fatalf("proof set %v outlives the monotonic lease: %v left", id.owner, left)
+			}
+			if withWall && !entry.wallExpires.Equal(wall) {
+				t.Fatalf("proof set %v wall-clock deadline %v, want the lease's %v", id.owner, entry.wallExpires, wall)
+			}
 		}
 	}
 

@@ -14,6 +14,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 )
 
@@ -75,10 +76,15 @@ type denialProofEntry struct {
 	// this zone. Empty for SOA and NSEC3 sets.
 	preparedNSEC []dnssec.PreparedNSEC
 	records      []dns.RR
-	expires      time.Time
-	wireBytes    int64
-	sequence     uint64
-	queue        *list.Element
+	// expires is the deadline from the TTL caps, counted on the cache's
+	// clock from admission. wallExpires is the calendar instant the set
+	// answers to, the earliest of its signatures' expirations and any
+	// wall-clock lease it was learned under; zero is none.
+	expires     time.Time
+	wallExpires time.Time
+	wireBytes   int64
+	sequence    uint64
+	queue       *list.Element
 }
 
 // denialProofZoneSnapshot is published copy-on-write. Readers may retain a
@@ -101,9 +107,14 @@ type denialProofZoneSnapshot struct {
 	// every snapshot entry is live, an expired subset selects through its
 	// own filtered map.
 	nsecOwners map[dns.RR]*denialProofEntry
-	nsec3      map[denialProofNSEC3Params][]*denialProofEntry
-	nsec3Order []denialProofNSEC3Params
-	wireBytes  int64
+	// nsecExpires and nsecWallExpires are the earliest deadlines on each
+	// clock among nsec, so a lookup that finds nothing expired decides so
+	// in two comparisons instead of one per set.
+	nsecExpires     time.Time
+	nsecWallExpires time.Time
+	nsec3           map[denialProofNSEC3Params][]*denialProofEntry
+	nsec3Order      []denialProofNSEC3Params
+	wireBytes       int64
 }
 
 type denialProofCacheConfig struct {
@@ -261,25 +272,26 @@ func (c *denialProofCache) record(
 	zone string,
 	cutUntil time.Time,
 ) bool {
-	return c.recordWithKind(msg, zone, 0, cutUntil)
+	return c.recordWithKind(msg, zone, 0, lease.Until(cutUntil))
 }
 
 // recordWithKind additionally binds admission to the resolver-authenticated
 // denial family. The comparison happens after extract has canonicalized the
 // signer zone and discarded out-of-zone records; checking the raw authority
 // section would let unrelated records either cause false misses or select a
-// family the retained proof did not use.
+// family the retained proof did not use. cut is the lease the proof was
+// learned under, on either clock or both.
 func (c *denialProofCache) recordWithKind(
 	msg *dns.Msg,
 	zone string,
 	expected denialProofKind,
-	cutUntil time.Time,
+	cut lease.Lease,
 ) bool {
 	if c == nil {
 		return false
 	}
 	now := c.now()
-	entries, ok := c.extract(msg, zone, cutUntil, now)
+	entries, ok := c.extract(msg, zone, cut, now)
 	if !ok {
 		return false
 	}
@@ -334,7 +346,7 @@ func (c *denialProofCache) recordWithKind(
 			continue
 		}
 		previous := c.byID[entry.id]
-		if previous == nil || !now.Before(previous.expires) ||
+		if !previous.live(now) ||
 			denialProofNSEC3EntriesEquivalent(previous, entry) {
 			continue
 		}
@@ -464,7 +476,7 @@ func denialProofNSEC3EntriesEquivalent(a, b *denialProofEntry) bool {
 func (c *denialProofCache) extract(
 	msg *dns.Msg,
 	zone string,
-	cutUntil time.Time,
+	cut lease.Lease,
 	now time.Time,
 ) ([]*denialProofEntry, bool) {
 	if msg == nil || len(msg.Question) != 1 || msg.CheckingDisabled ||
@@ -685,7 +697,7 @@ func (c *denialProofCache) extract(
 	commonRecords := make([]dns.RR, 0, len(soaSet.data)+len(soaSet.sigs))
 	commonRecords = append(commonRecords, soaSet.data...)
 	commonRecords = append(commonRecords, soaSet.sigs...)
-	commonExpiry, ok := denialProofExpiry(now, c.maxTTL, cutUntil, commonRecords)
+	commonExpiry, commonWall, ok := denialProofExpiry(now, c.maxTTL, cut, commonRecords)
 	if !ok {
 		return nil, false
 	}
@@ -697,6 +709,7 @@ func (c *denialProofCache) extract(
 		zoneKey,
 		now,
 		commonExpiry,
+		commonWall,
 	)
 	if !ok {
 		return nil, false
@@ -712,16 +725,16 @@ func (c *denialProofCache) extract(
 		lifetimeRecords = append(lifetimeRecords, commonRecords...)
 		lifetimeRecords = append(lifetimeRecords, set.data...)
 		lifetimeRecords = append(lifetimeRecords, set.sigs...)
-		expiry, valid := denialProofExpiry(
+		expiry, wall, valid := denialProofExpiry(
 			now,
 			c.maxTTL,
-			cutUntil,
+			cut,
 			lifetimeRecords,
 		)
 		if !valid {
 			return nil, false
 		}
-		entry, valid := newDenialProofEntry(set, zoneKey, now, expiry)
+		entry, valid := newDenialProofEntry(set, zoneKey, now, expiry, wall)
 		if !valid {
 			return nil, false
 		}
@@ -735,9 +748,11 @@ func newDenialProofEntry(
 	zoneKey denialProofZoneKey,
 	now time.Time,
 	expires time.Time,
+	wallExpires time.Time,
 ) (*denialProofEntry, bool) {
 	if set == nil || len(set.data) == 0 || len(set.sigs) == 0 ||
-		!now.Before(expires) {
+		!now.Before(expires) ||
+		(!wallExpires.IsZero() && !now.Before(wallExpires)) {
 		return nil, false
 	}
 
@@ -800,16 +815,20 @@ func newDenialProofEntry(
 		preparedNSEC: prepared,
 		records:      records,
 		expires:      expires,
+		wallExpires:  wallExpires,
 		wireBytes:    wireBytes,
 	}, true
 }
 
+// denialProofExpiry returns the deadlines of a set built from records under
+// cut: the TTL caps counted from now, and the earliest calendar instant, of
+// the records' signature expirations and cut's wall-clock deadline.
 func denialProofExpiry(
 	now time.Time,
 	maxTTL time.Duration,
-	cutUntil time.Time,
+	cut lease.Lease,
 	records []dns.RR,
-) (time.Time, bool) {
+) (expires, wall time.Time, ok bool) {
 	if maxTTL <= 0 || maxTTL > maxDenialProofTTL {
 		maxTTL = maxDenialProofTTL
 	}
@@ -819,13 +838,19 @@ func denialProofExpiry(
 			ttl = candidate
 		}
 	}
+	wall = cut.Wall().Until
+	boundWall := func(candidate time.Time) {
+		if wall.IsZero() || candidate.Before(wall) {
+			wall = candidate
+		}
+	}
 
-	if !cutUntil.IsZero() {
-		bound(cutUntil.Sub(now))
+	if until := cut.Mono().Until; !until.IsZero() {
+		bound(until.Sub(now))
 	}
 	for _, rr := range records {
 		if rr == nil || rr.Header() == nil {
-			return time.Time{}, false
+			return time.Time{}, time.Time{}, false
 		}
 		bound(time.Duration(rr.Header().Ttl) * time.Second)
 		switch record := rr.(type) {
@@ -833,13 +858,30 @@ func denialProofExpiry(
 			bound(time.Duration(record.Minttl) * time.Second)
 		case *dns.RRSIG:
 			bound(time.Duration(record.OrigTtl) * time.Second)
-			bound(time.Unix(int64(record.Expiration), 0).Sub(now))
+			// A signature expires at a calendar instant: counted from
+			// admission it caps the set as it always has, and kept as that
+			// instant it still binds when the wall clock steps past it.
+			expiration := time.Unix(int64(record.Expiration), 0)
+			bound(expiration.Sub(now))
+			boundWall(expiration)
 		}
 	}
-	if ttl <= 0 {
-		return time.Time{}, false
+	if ttl <= 0 || (!wall.IsZero() && !now.Before(wall)) {
+		return time.Time{}, time.Time{}, false
 	}
-	return now.Add(ttl), true
+	return now.Add(ttl), wall, true
+}
+
+// live reports whether the set is still usable at now, on both clocks.
+func (e *denialProofEntry) live(now time.Time) bool {
+	return e != nil && now.Before(e.expires) &&
+		(e.wallExpires.IsZero() || now.Before(e.wallExpires))
+}
+
+// nsecLive reports whether every NSEC set in the snapshot is live at now.
+func (s *denialProofZoneSnapshot) nsecLive(now time.Time) bool {
+	return now.Before(s.nsecExpires) &&
+		(s.nsecWallExpires.IsZero() || now.Before(s.nsecWallExpires))
 }
 
 var denialProofBase32Hex = base32.HexEncoding.WithPadding(base32.NoPadding)
@@ -1023,6 +1065,13 @@ func (c *denialProofCache) publishZoneLocked(key denialProofZoneKey) {
 			snapshot.nsecPrepared,
 			entry.preparedNSEC...,
 		)
+		if snapshot.nsecExpires.IsZero() || entry.expires.Before(snapshot.nsecExpires) {
+			snapshot.nsecExpires = entry.expires
+		}
+		if !entry.wallExpires.IsZero() &&
+			(snapshot.nsecWallExpires.IsZero() || entry.wallExpires.Before(snapshot.nsecWallExpires)) {
+			snapshot.nsecWallExpires = entry.wallExpires
+		}
 	}
 	if len(snapshot.nsecPrepared) != 0 {
 		// A set that fails validation stays nil: per-query evaluation of
@@ -1195,7 +1244,7 @@ func (c *denialProofCache) pruneZoneLocked(
 	}
 	pruned := false
 	for _, entry := range c.zoneEntries[key] {
-		if mode != denialProofPruneZone && now.Before(entry.expires) {
+		if mode != denialProofPruneZone && entry.live(now) {
 			continue
 		}
 		if c.detachEntryLocked(entry) {
@@ -1284,24 +1333,24 @@ func (c *denialProofCache) Lookup(
 // response shaping. This is required for DO=0 hits, where the wire response
 // correctly strips NSEC/NSEC3 records and therefore cannot be inspected to
 // recover safe resolver-local provenance.
-// lookupWithMeta additionally reports the instant past which the synthesized
-// answer must not be used: the earliest expiry among the SOA and the proof
-// records it was built from. Anything derived from this answer inherits that
-// bound, and without it the TTL floor would re-publish a proof that had
-// seconds left for the cache minimum.
+// lookupWithMeta additionally reports the deadline past which the synthesized
+// answer must not be used: the earliest expiry on each clock among the SOA
+// and the proof records it was built from. Anything derived from this answer
+// inherits that bound, and without it the TTL floor would re-publish a proof
+// that had seconds left for the cache minimum.
 func (c *denialProofCache) lookupWithMeta(
 	req *dns.Msg,
 	work dnssec.NSEC3Work,
-) (*dns.Msg, denialProofKind, string, time.Time, bool) {
+) (*dns.Msg, denialProofKind, string, lease.Lease, bool) {
 	if c == nil || req == nil || len(req.Question) != 1 ||
 		req.CheckingDisabled {
-		return nil, 0, "", time.Time{}, false
+		return nil, 0, "", lease.Lease{}, false
 	}
 	q := req.Question[0]
 	qname := dns.CanonicalName(q.Name)
 	if _, valid := dns.IsDomainName(qname); !valid ||
 		q.Qclass == 0 || q.Qclass == dns.ClassANY || q.Qclass == dns.ClassNONE {
-		return nil, 0, "", time.Time{}, false
+		return nil, 0, "", lease.Lease{}, false
 	}
 
 	// A name deep enough to overflow either buffer simply grows it; the sizes
@@ -1315,7 +1364,7 @@ func (c *denialProofCache) lookupWithMeta(
 	c.mu.RLock()
 	if c.stopped {
 		c.mu.RUnlock()
-		return nil, 0, "", time.Time{}, false
+		return nil, 0, "", lease.Lease{}, false
 	}
 	candidates := candidateStorage[:0]
 	for _, zone := range denialProofAncestors(qname, ancestorStorage[:0]) {
@@ -1380,7 +1429,7 @@ func (c *denialProofCache) lookupWithMeta(
 		}
 		c.mu.RUnlock()
 	}
-	return nil, 0, "", time.Time{}, false
+	return nil, 0, "", lease.Lease{}, false
 }
 
 func (c *denialProofCache) nsec3SelectionConflictedLocked(
@@ -1452,15 +1501,18 @@ func denialProofEvaluate(
 	if snapshot == nil {
 		return dnssec.AggressiveNegativeResult{}, nil, denialProofPruneNone, false
 	}
-	if snapshot.soa == nil || !now.Before(snapshot.soa.expires) {
+	if !snapshot.soa.live(now) {
 		return dnssec.AggressiveNegativeResult{}, nil, denialProofPruneZone, false
 	}
 
-	nsecEntries, nsecPrepared := denialProofLivePreparedNSEC(
-		snapshot.nsec,
-		snapshot.nsecPrepared,
-		now,
-	)
+	nsecEntries, nsecPrepared := snapshot.nsec, snapshot.nsecPrepared
+	if !snapshot.nsecLive(now) {
+		nsecEntries, nsecPrepared = denialProofLivePreparedNSEC(
+			snapshot.nsec,
+			snapshot.nsecPrepared,
+			now,
+		)
+	}
 	if len(nsecEntries) != len(snapshot.nsec) {
 		prune = denialProofPruneExpired
 	}
@@ -1526,7 +1578,7 @@ func denialProofLivePreparedNSEC(
 ) ([]*denialProofEntry, []dnssec.PreparedNSEC) {
 	expired := false
 	for _, entry := range entries {
-		if entry == nil || !now.Before(entry.expires) {
+		if !entry.live(now) {
 			expired = true
 			break
 		}
@@ -1538,7 +1590,7 @@ func denialProofLivePreparedNSEC(
 	live := make([]*denialProofEntry, 0, len(entries))
 	prepared := make([]dnssec.PreparedNSEC, 0, len(published))
 	for _, entry := range entries {
-		if entry == nil || !now.Before(entry.expires) {
+		if !entry.live(now) {
 			continue
 		}
 		live = append(live, entry)
@@ -1554,7 +1606,7 @@ func denialProofLiveRecords(
 	live := make([]*denialProofEntry, 0, len(entries))
 	records := make([]dns.RR, 0, len(entries))
 	for _, entry := range entries {
-		if entry == nil || !now.Before(entry.expires) {
+		if !entry.live(now) {
 			continue
 		}
 		live = append(live, entry)
@@ -1605,25 +1657,33 @@ func denialProofResponse(
 	proofEntries []*denialProofEntry,
 	soa *denialProofEntry,
 	now time.Time,
-) (*dns.Msg, time.Time) {
-	if req == nil || soa == nil || !now.Before(soa.expires) ||
+) (*dns.Msg, lease.Lease) {
+	if req == nil || soa == nil ||
 		(result.Rcode != dns.RcodeNameError && result.Rcode != dns.RcodeSuccess) ||
 		len(proofEntries) == 0 {
-		return nil, time.Time{}
+		return nil, lease.Lease{}
 	}
 
-	expires := soa.expires
+	// Every record is live exactly when the earliest deadline on each clock
+	// is, so the minimums are taken first and checked once.
+	expires, wall := soa.expires, soa.wallExpires
 	for _, entry := range proofEntries {
-		if entry == nil || !now.Before(entry.expires) {
-			return nil, time.Time{}
+		if entry == nil {
+			return nil, lease.Lease{}
 		}
 		if entry.expires.Before(expires) {
 			expires = entry.expires
 		}
+		if !entry.wallExpires.IsZero() && (wall.IsZero() || entry.wallExpires.Before(wall)) {
+			wall = entry.wallExpires
+		}
 	}
 	remaining := expires.Sub(now)
+	if !wall.IsZero() {
+		remaining = min(remaining, wall.Sub(now))
+	}
 	if remaining <= 0 {
-		return nil, time.Time{}
+		return nil, lease.Lease{}
 	}
 
 	response := new(dns.Msg)
@@ -1661,7 +1721,7 @@ func denialProofResponse(
 	if opt := req.IsEdns0(); opt == nil || !opt.Do() {
 		dnsutil.ClearDNSSECInPlace(response)
 	}
-	return response, expires
+	return response, lease.Of(expires, 0).Min(lease.Of(wall, 0))
 }
 
 // purge removes denial RRsets from every cached signer-zone shard that is an

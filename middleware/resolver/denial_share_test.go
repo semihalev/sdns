@@ -111,15 +111,12 @@ func sharedHits() float64 {
 	return counterSum("nxdomain_cut_hits_total") + counterSum("aggressive_negative_hits_total")
 }
 
-// A validated NXDOMAIN is shared as an RFC 8020 cut whatever root the
-// resolution started from. The hyperlocal root bounds every lease by its
-// copy's signature expiration, a wall-clock deadline; the same signed child
-// must be treated alike under it and under the root on the wire, and what
-// the cut answers must end no later than the denial it was cut from.
-//
-// The RFC 8198 proof cache does not keep a wall-clock deadline yet, so under
-// the hyperlocal root it still declines to share: covered names keep going
-// to the authority.
+// A validated NXDOMAIN is shared as an RFC 8020 cut and as an RFC 8198 proof
+// whatever root the resolution started from. The hyperlocal root bounds
+// every lease by its copy's signature expiration, a wall-clock deadline; the
+// same signed child must be treated alike under it and under the root on
+// the wire, and what the shared state answers must end no later than the
+// denial it was learned from.
 func TestValidatedDenialIsSharedUnderEitherRoot(t *testing.T) {
 	for _, root := range []struct {
 		name  string
@@ -183,20 +180,25 @@ func TestValidatedDenialIsSharedUnderEitherRoot(t *testing.T) {
 					t.Fatalf("lease wall-clock bound %v, want %v", wall, root.local)
 				}
 
-				want := 1
-				if root.local {
-					want = 0
-				}
 				hits := counterSum("aggressive_negative_hits_total")
-				other, _ := h.ask(t, "other.signed.")
+				other, derived := h.ask(t, "other.signed.")
 				if other.Rcode != dns.RcodeNameError {
 					t.Fatalf("another covered name: %s", dns.RcodeToString[other.Rcode])
 				}
-				if n := h.zone.asked("other.signed.", dns.TypeA); (n == 0) != (want == 1) {
+				if n := h.zone.asked("other.signed.", dns.TypeA); n != 0 {
 					t.Errorf("another name the proof covers reached the authority %d times", n)
 				}
-				if d := counterSum("aggressive_negative_hits_total") - hits; d != float64(want) {
-					t.Errorf("aggressive negative hits %+v, want %d", d, want)
+				if d := counterSum("aggressive_negative_hits_total") - hits; d != 1 {
+					t.Errorf("aggressive negative hits %+v, want one", d)
+				}
+
+				// Both bounds reach the synthesized answer, as for a cut.
+				if derived.Mono().Until.IsZero() || derived.Wall().Until.IsZero() {
+					t.Fatalf("the synthesized answer is bound to %+v, want a deadline on each clock", derived)
+				}
+				if root.local && derived.Wall().Until.After(cut.Wall().Until) {
+					t.Fatalf("the synthesized answer ends at %v on the wall clock, after the denial's %v",
+						derived.Wall().Until, cut.Wall().Until)
 				}
 			})
 		}
