@@ -222,15 +222,15 @@ func (d *DDR) SetQueryer(q middleware.Queryer) { d.queryer = q }
 // The lookups are optional work: they stop at the request tree's shared
 // limits without failing a discovery answer that is already complete. Each
 // is its own question with its own lineage, so neither is bounded by what
-// the other found, and each set is published no longer than its own lease
-// allows; a set whose lease has run out is left out.
-func (d *DDR) addresses(ctx context.Context) [][]dns.RR {
+// the other found. Each set keeps its own lookup's lease, for its TTLs to be
+// read against when the answer is composed.
+func (d *DDR) addresses(ctx context.Context) []addressSet {
 	if d.queryer == nil {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(middleware.WithBestEffortRecursionWork(ctx), addressBudget)
 	defer cancel()
-	var sets [][]dns.RR
+	var sets []addressSet
 	for _, qtype := range []uint16{dns.TypeA, dns.TypeAAAA} {
 		req := new(dns.Msg)
 		req.SetQuestion(d.target, qtype)
@@ -239,26 +239,23 @@ func (d *DDR) addresses(ctx context.Context) [][]dns.RR {
 		if err != nil || resp == nil || resp.Rcode != dns.RcodeSuccess {
 			continue
 		}
-		ceiling := uint32(math.MaxUint32)
-		if left, bounded := meta.Cut().Remaining(time.Now()); bounded {
-			if left < time.Second {
-				continue
-			}
-			ceiling = uint32(min(left/time.Second, math.MaxUint32)) //nolint:gosec // G115 - clamped above
-		}
-		var set []dns.RR
+		set := addressSet{lease: meta.Cut()}
 		for _, rr := range resp.Answer {
 			if rr.Header().Rrtype == qtype && strings.EqualFold(rr.Header().Name, d.target) {
-				rr = dns.Copy(rr)
-				rr.Header().Ttl = min(rr.Header().Ttl, ceiling)
-				set = append(set, rr)
+				set.rrs = append(set.rrs, dns.Copy(rr))
 			}
 		}
-		if len(set) > 0 {
+		if len(set.rrs) > 0 {
 			sets = append(sets, set)
 		}
 	}
 	return sets
+}
+
+// addressSet is one family's records and the lease its lookup found.
+type addressSet struct {
+	rrs   []dns.RR
+	lease middleware.Lease
 }
 
 // budgeted is a writer that bounds the response, the edns layer.
@@ -270,7 +267,11 @@ type budgeted interface {
 // buffer, whole, and leaves out any that does not: the addresses are
 // optional (RFC 2181 §9), and a set that overflowed would truncate the
 // discovery answer itself. A writer that bounds nothing takes every set.
-func additional(w middleware.ResponseWriter, msg *dns.Msg, sets [][]dns.RR) {
+//
+// The TTLs are read against each set's lease here, as the answer is
+// composed, so the time the other lookup took comes off them; a set with
+// less than a second left is left out.
+func additional(w middleware.ResponseWriter, msg *dns.Msg, sets []addressSet) {
 	limit := 0
 	if b, ok := w.(budgeted); ok {
 		l, reserve, known := b.ResponseBudget()
@@ -282,9 +283,19 @@ func additional(w middleware.ResponseWriter, msg *dns.Msg, sets [][]dns.RR) {
 		}
 	}
 	msg.Compress = true
+	now := time.Now()
 	for _, set := range sets {
+		if left, bounded := set.lease.Remaining(now); bounded {
+			if left < time.Second {
+				continue
+			}
+			ceiling := uint32(min(left/time.Second, math.MaxUint32)) //nolint:gosec // G115 - clamped above
+			for _, rr := range set.rrs {
+				rr.Header().Ttl = min(rr.Header().Ttl, ceiling)
+			}
+		}
 		kept := msg.Extra
-		msg.Extra = append(msg.Extra, set...)
+		msg.Extra = append(msg.Extra, set.rrs...)
 		if limit > 0 && msg.Len() > limit {
 			msg.Extra = kept
 		}

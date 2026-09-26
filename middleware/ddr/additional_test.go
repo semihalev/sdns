@@ -225,3 +225,27 @@ func TestAdditionalBudgetEdges(t *testing.T) {
 		}
 	}
 }
+
+// A set's TTL is read against its lease when the answer is composed, not
+// when its own lookup returned: time spent on the other lookup comes off
+// it. An A whose 1.5-second lease has run below a second by then is left
+// out, not published with a TTL of one.
+func TestAdditionalTTLsAtComposition(t *testing.T) {
+	d := New(enabled(":443", ":853", ""))
+	d.SetQueryer(&addressQueryer{
+		n:     1,
+		bound: map[uint16]time.Duration{dns.TypeA: 1500 * time.Millisecond},
+		onCall: func(_ context.Context, qtype uint16) {
+			if qtype == dns.TypeAAAA {
+				time.Sleep(700 * time.Millisecond)
+			}
+		},
+	})
+	resp, _, _ := serve(t, d, discovery, dns.TypeSVCB, dns.ClassINET, false)
+	if n := count(resp.Extra, dns.TypeA); n != 0 {
+		t.Fatalf("A published with %d record(s) after its lease fell below a second: %v", n, resp.Extra)
+	}
+	if count(resp.Extra, dns.TypeAAAA) != 1 {
+		t.Fatalf("additional %v, want the AAAA", resp.Extra)
+	}
+}
