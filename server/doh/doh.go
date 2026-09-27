@@ -121,10 +121,45 @@ func HandleWireFormat(handle func(*dns.Msg) *dns.Msg) http.HandlerFunc {
 		}
 
 		w.Header().Set("Content-Type", contentTypeDNS)
-		w.Header().Set("Cache-Control", "no-cache, no-store")
+		w.Header().Set("Cache-Control", cacheControl(msg))
 
 		_, _ = w.Write(packed)
 	}
+}
+
+// noStore is the Cache-Control of a response an HTTP cache must not keep.
+const noStore = "no-cache, no-store"
+
+// cacheControl is the HTTP freshness of msg (RFC 8484 §5.1): no longer than
+// the smallest TTL it carries, and for a denial no longer than its SOA says
+// a denial lives (RFC 2308 §5). A failure, or a reply with nothing to take
+// a lifetime from, is not kept.
+func cacheControl(msg *dns.Msg) string {
+	if msg.Rcode != dns.RcodeSuccess && msg.Rcode != dns.RcodeNameError {
+		return noStore
+	}
+	ttl, found := uint32(0), false
+	lower := func(v uint32) {
+		if !found || v < ttl {
+			ttl, found = v, true
+		}
+	}
+	for _, rr := range msg.Answer {
+		lower(rr.Header().Ttl)
+	}
+	for _, rr := range msg.Ns {
+		lower(rr.Header().Ttl)
+		if soa, ok := rr.(*dns.SOA); ok && len(msg.Answer) == 0 {
+			lower(soa.Minttl)
+		}
+	}
+	if !found {
+		return noStore
+	}
+	// private: the answer can be this client's own, shaped by its source
+	// address through ECS or carrying a server cookie derived from it, and
+	// a shared HTTP cache keyed by URL would hand it to another client.
+	return "private, max-age=" + strconv.FormatUint(uint64(ttl), 10)
 }
 
 // HandleJSON handle json format.
@@ -182,7 +217,7 @@ func HandleJSON(handle func(*dns.Msg) *dns.Msg) http.HandlerFunc {
 		} else {
 			w.Header().Set("Content-Type", contentTypeJSON)
 		}
-		w.Header().Set("Cache-Control", "no-cache, no-store")
+		w.Header().Set("Cache-Control", cacheControl(msg))
 
 		_, _ = w.Write(jsonData)
 	}

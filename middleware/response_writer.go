@@ -41,6 +41,9 @@ type responseWriter struct {
 	proto    string
 	remoteip net.IP
 	internal bool
+	// encrypted marks a transport whose bytes travel encrypted: DoT, DoH,
+	// DoQ. It is what lets a reply be padded (RFC 7830).
+	encrypted bool
 
 	// directPack records that the transport beneath this writer is an
 	// SDNS-owned UDP, TCP or DoT sink whose Write sends raw wire bytes
@@ -73,6 +76,7 @@ func (w *responseWriter) Reset(rw Transport) {
 	w.proto = ""
 	w.remoteip = nil
 	w.internal = false
+	w.encrypted = false
 	w.directPack = false
 
 	switch a := rw.RemoteAddr().(type) {
@@ -91,6 +95,16 @@ func (w *responseWriter) Reset(rw Transport) {
 	if p, ok := rw.(interface{ Proto() string }); ok {
 		if proto := p.Proto(); proto != "" {
 			w.proto = proto
+		}
+	}
+	switch w.proto {
+	case "doh", "doh3", "doq":
+		w.encrypted = true
+	case "tcp":
+		// A stream job cannot tell DoT from TCP by its address; the job
+		// says. Datagrams are never encrypted and skip the question.
+		if e, ok := rw.(interface{ Encrypted() bool }); ok {
+			w.encrypted = e.Encrypted()
 		}
 	}
 

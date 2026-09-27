@@ -852,7 +852,16 @@ type Chain struct {
 	inlineOnly bool
 	handoff    bool
 	replay     bool
+
+	// encrypted records, at binding, whether the transport is DoT, DoH or
+	// DoQ. It is the chain's rather than a writer's, so no response-writer
+	// wrapper a middleware installs can hide it.
+	encrypted bool
 }
+
+// Encrypted reports whether the request arrived over an encrypted
+// transport: DoT, DoH or DoQ.
+func (ch *Chain) Encrypted() bool { return ch.encrypted }
 
 // NewChain returns a Chain bound to the given handler pipeline. The slice
 // is captured by reference and must not be mutated by the caller after
@@ -1085,6 +1094,7 @@ func (ch *Chain) rebindWriter(w Transport) {
 		ch.Writer = base
 	}
 	base.Reset(w)
+	ch.encrypted = base.encrypted
 }
 
 // ResetWire rebinds the chain to a wire-born request living in transport

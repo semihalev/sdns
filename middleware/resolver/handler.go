@@ -75,13 +75,14 @@ func (h *DNSHandler) Name() string { return name }
 
 // (*DNSHandler).ServeDNS serveDNS implements the Handle interface.
 func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	// ANY is declined on every path, the forwarding ones included: the
-	// policy is this server's, not an upstream's, so a forwarder never sees
-	// the question. Read off the wire facts, so a server that hands its
-	// questions on still pays no decode for them.
-	if ch.Request != nil && ch.Request.Qtype() == dns.TypeANY {
+	// ANY, zone transfers and NXNAME are declined on every path, the
+	// forwarding ones included: the policy is this server's, not an
+	// upstream's, so a forwarder never sees the question. Read off the wire
+	// facts, so a server that hands its questions on still pays no decode
+	// for them.
+	if ch.Request != nil && dnsutil.DeclinedQtype(ch.Request.Qtype()) {
 		if _, req := ch.Materialize(ctx); req != nil {
-			_ = ch.Writer.WriteMsg(anyNotImplemented(req))
+			_ = ch.Writer.WriteMsg(declined(req))
 		}
 		return
 	}
@@ -156,8 +157,8 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) (resp *dns.Msg) {
 		do = opt.Do()
 	}
 
-	if q.Qtype == dns.TypeANY {
-		return anyNotImplemented(req)
+	if dnsutil.DeclinedQtype(q.Qtype) {
+		return declined(req)
 	}
 
 	// CHAOS queries: debug nameserver stats (HINFO) or cache purge (NULL)
@@ -369,17 +370,33 @@ func (h *DNSHandler) Stop() {
 
 const name = "resolver"
 
-// anyNotImplemented is the answer to a QTYPE=ANY question: NOTIMP, with the
-// client's DO echoed on the OPT. It is a policy answer about the question,
-// not a resolution failure, and the cache classifies it as neither storable
-// nor a failure, so the next question for the name resolves normally.
-func anyNotImplemented(req *dns.Msg) *dns.Msg {
+// declined is the answer to a question dnsutil.DeclinedQtype names, with the
+// client's DO echoed on the OPT:
+//
+//   - ANY: NOTIMP, EDE 21 (Not Supported).
+//   - AXFR, IXFR: REFUSED. A resolver serves no zones to transfer.
+//   - NXNAME: FORMERR, EDE 30 (Invalid Query Type), RFC 9824 §3.5.
+//
+// It is a policy answer about the question, not a resolution failure, and
+// the cache passes these questions by, so the answer is neither stored nor
+// recorded as a failure.
+func declined(req *dns.Msg) *dns.Msg {
 	do := false
 	if opt := req.IsEdns0(); opt != nil {
 		do = opt.Do()
 	}
-	resp := dnsutil.SetRcode(req, dns.RcodeNotImplemented, do)
-	// The client's RD, echoed: ServeDNS answers ANY before the resolution
+	var resp *dns.Msg
+	switch req.Question[0].Qtype {
+	case dns.TypeAXFR, dns.TypeIXFR:
+		resp = dnsutil.SetRcode(req, dns.RcodeRefused, do)
+	case dns.TypeNXNAME:
+		resp = dnsutil.SetRcode(req, dns.RcodeFormatError, do)
+		dnsutil.SetEDE(resp, dns.ExtendedErrorCodeInvalidQueryType, "")
+	default:
+		resp = dnsutil.SetRcode(req, dns.RcodeNotImplemented, do)
+		dnsutil.SetEDE(resp, dns.ExtendedErrorCodeNotSupported, "")
+	}
+	// The client's RD, echoed: ServeDNS answers these before the resolution
 	// touches the request, and SetRcode asserts RD for internal replies.
 	resp.RecursionDesired = req.RecursionDesired
 	return resp

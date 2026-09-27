@@ -48,6 +48,7 @@ type Request struct {
 	hasECS       bool
 	hasNSID      bool
 	hasKeepalive bool
+	hasPadding   bool
 	cookieOff    int // raw client cookie bytes within raw; 0 when absent
 	cookieLen    int
 
@@ -264,6 +265,16 @@ func (r *Request) HasTCPKeepalive() bool {
 	return r.msgHasOption(dns.EDNS0TCPKEEPALIVE)
 }
 
+// HasPadding reports whether the request carried the RFC 7830 padding
+// option. Whether the reply is padded is the edns layer's call: only over
+// an encrypted transport.
+func (r *Request) HasPadding() bool {
+	if r.wireBorn() {
+		return r.hasPadding
+	}
+	return r.msgHasOption(dns.EDNS0PADDING)
+}
+
 // HasNSID reports whether the request asked for NSID.
 func (r *Request) HasNSID() bool {
 	if r.wireBorn() {
@@ -463,11 +474,13 @@ func (r *Request) parseWireOPT(off int) bool {
 		}
 		switch code {
 		case dns.EDNS0COOKIE:
-			// RFC 7873: client half is 8 bytes, full cookie 8..40. A
-			// packet with more than one cookie option is not a shape the
-			// strict path knows, the decoded entry keeps its option-loop
-			// semantics for it.
-			if optLen < 8 || optLen > 40 || r.cookieLen != 0 {
+			// RFC 7873 §5.2.2: a client cookie alone is 8 bytes, with a
+			// server cookie 16..40; any other length is malformed and owed
+			// a FORMERR, which the decoded entry answers. A packet with
+			// more than one cookie option is not a shape the strict path
+			// knows, the decoded entry keeps its option-loop semantics for
+			// it.
+			if optLen < 8 || (optLen > 8 && optLen < 16) || optLen > 40 || r.cookieLen != 0 {
 				return false
 			}
 			r.cookieOff = off
@@ -506,6 +519,7 @@ func (r *Request) parseWireOPT(off int) bool {
 			r.hasECS = true
 		case dns.EDNS0PADDING:
 			// Any payload; the library validates nothing either.
+			r.hasPadding = true
 		case dns.EDNS0TCPKEEPALIVE:
 			// RFC 7828: a query carries either no timeout or one word.
 			if optLen != 0 && optLen != 2 {
