@@ -304,6 +304,9 @@ func composeWireChase(
 	}
 
 	clientName := req.WireName()
+	// The question's name is the first every answer record can point at.
+	var names replyNames
+	names.seed(body, wire.HeaderLen)
 	for i := range segs {
 		seg := &segs[i]
 		off := seg.ansOff
@@ -312,7 +315,7 @@ func composeWireChase(
 			if !parsed {
 				return nil, middleware.WireInfo{}, false
 			}
-			body, ok = appendRecomposedRR(body, seg.body, rr, seg.ttl, clientName)
+			body, ok = appendRecomposedRR(body, seg.body, rr, seg.ttl, clientName, &names)
 			if !ok {
 				return nil, middleware.WireInfo{}, false
 			}
