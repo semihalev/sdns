@@ -1281,6 +1281,10 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 		return nil, err
 	}
 
+	// insecureEDE says why an answer is insecure when the reason is its
+	// zone's unusable DS; it goes on the reply once it is final.
+	var insecureEDE uint16
+
 	if !req.CheckingDisabled {
 		// Fail closed when trust anchors are unavailable. AutoTA
 		// clears r.rootKeys on unrecoverable errors (e.g. corrupt
@@ -1314,6 +1318,10 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 					zlog.Warn("DNSSEC verify failed (answer)", "query", dnsutil.FormatQuestion(q), "error", dnssec.ErrNoSignatures.Error())
 					return nil, dnssec.ErrNoSignatures
 				}
+			} else if code, unsupported := ownZoneUnsupportedDSEDE(parentDS, zone); unsupported {
+				// Unsigned, and acceptably so: the zone's own DS names
+				// nothing this validator verifies.
+				insecureEDE = code
 			}
 		} else {
 			origDSRR := parentDS
@@ -1380,6 +1388,8 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 						return nil, asBogus(werr)
 					}
 					ok = wildcardSecure
+				} else if code, unsupported := unsupportedDSEDE(candidateDSRR); unsupported {
+					insecureEDE = code
 				}
 				resp.AuthenticatedData = ok
 				settled = true
@@ -1411,6 +1421,12 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 		}
 		resp.Answer = append(resp.Answer, targetMsg.Answer...)
 		resp.Rcode = targetMsg.Rcode
+		// The target's records are the client's now, and so is the reason
+		// they are insecure, unless the outer zone has its own.
+		if ede := dnsutil.GetEDE(targetMsg); insecureEDE == 0 && ede != nil &&
+			dnsutil.IsUnsupportedDSEDE(ede.InfoCode) {
+			insecureEDE = ede.InfoCode
+		}
 		terminalDenial := targetMsg.Rcode == dns.RcodeNameError
 		if !req.CheckingDisabled {
 			resp.AuthenticatedData = resp.AuthenticatedData && targetMsg.AuthenticatedData
@@ -1424,6 +1440,9 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 			targetAuthority := append([]dns.RR(nil), targetMsg.Ns...)
 			resp = r.clearAdditional(req, resp, extra...)
 			resp.Ns = targetAuthority
+			if insecureEDE != 0 {
+				withEDE(resp, insecureEDE)
+			}
 			return resp, nil
 		}
 		negative, markedNegative := middleware.ValidatedNegativeProofForResponse(ctx, targetMsg)
@@ -1443,6 +1462,9 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 			if targetVerdict {
 				middleware.MarkValidationFailureResponse(ctx, resp)
 			}
+			if insecureEDE != 0 {
+				withEDE(resp, insecureEDE)
+			}
 			return resp, nil
 		}
 	}
@@ -1450,6 +1472,9 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 	resp = r.clearAdditional(req, resp, extra...)
 	if targetVerdict {
 		middleware.MarkValidationFailureResponse(ctx, resp)
+	}
+	if insecureEDE != 0 {
+		withEDE(resp, insecureEDE)
 	}
 
 	return resp, nil
@@ -1469,6 +1494,9 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 		return nil, ErrQuestion
 	}
 
+	// insecureEDE, as in answer().
+	var insecureEDE uint16
+
 	if !req.CheckingDisabled {
 		if r.dnssec && !r.hasTrustAnchors() {
 			return nil, dnssec.ErrTrustAnchorsUnavailable
@@ -1487,6 +1515,9 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 					zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", dnsutil.FormatQuestion(q), "error", err.Error())
 					return nil, err
 				}
+			} else if code, unsupported := ownZoneUnsupportedDSEDE(parentDS, zone); unsupported {
+				// As in answer().
+				insecureEDE = code
 			}
 		} else {
 			origDSRR := parentDS
@@ -1525,6 +1556,11 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 					}
 					lastErr = verr
 					continue
+				}
+				if !ok {
+					if code, unsupported := unsupportedDSEDE(candidateDSRR); unsupported {
+						insecureEDE = code
+					}
 				}
 				verified = ok
 				chosenSigner = signer
@@ -1652,6 +1688,9 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 				}
 			}
 		}
+	}
+	if insecureEDE != 0 {
+		withEDE(resp, insecureEDE)
 	}
 
 	return resp, nil
@@ -2956,6 +2995,40 @@ func hasSupportedDS(dsset []dns.RR) bool {
 		}
 	}
 	return false
+}
+
+// unsupportedDSEDE is the Extended DNS Error for an answer left insecure
+// because every DS its zone has names something this validator does not
+// verify (RFC 6840 §5.2): Unsupported DNSKEY Algorithm when one of them
+// names such an algorithm, Unsupported DS Digest Type otherwise (RFC 8914
+// §4.2, §4.3). It reports false for a set with a usable DS, or none.
+func unsupportedDSEDE(dsset []dns.RR) (uint16, bool) {
+	if len(dsset) == 0 || hasSupportedDS(dsset) {
+		return 0, false
+	}
+	for _, rr := range dsset {
+		if ds, ok := rr.(*dns.DS); ok && !dnssec.IsSupportedDNSKEYAlgorithm(ds.Algorithm) {
+			return dns.ExtendedErrorCodeUnsupportedDNSKEYAlgorithm, true
+		}
+	}
+	return dns.ExtendedErrorCodeUnsupportedDSDigestType, true
+}
+
+// ownZoneUnsupportedDSEDE is unsupportedDSEDE for an answer that carries no
+// signatures: the reason holds only when dsset is the answering zone's own
+// DS. An ancestor's unusable DS makes the zone below insecure through an
+// unsigned delegation, which is no reason of this kind.
+func ownZoneUnsupportedDSEDE(dsset []dns.RR, zone string) (uint16, bool) {
+	if len(dsset) == 0 || zone == "" ||
+		!strings.EqualFold(dsset[0].Header().Name, dns.Fqdn(zone)) {
+		return 0, false
+	}
+	return unsupportedDSEDE(dsset)
+}
+
+// withEDE puts the reason an answer is insecure on it.
+func withEDE(resp *dns.Msg, code uint16) {
+	dnsutil.PrependEDE(resp, code, "")
 }
 
 func (r *Resolver) lookupDS(ctx context.Context, qname string, cd bool) (msg *dns.Msg, err error) {

@@ -56,6 +56,39 @@ func SetEDE(msg *dns.Msg, code uint16, extraText string) {
 	opt.Option = append(opt.Option, ede)
 }
 
+// PrependEDE puts an Extended DNS Error first on msg's OPT, on a copy of
+// it: a message's OPT can be the very record the request carries, still in
+// use, and the cache keeps a message's first EDE only. A message without
+// an OPT gets one; the client-facing EDNS layer sets its size and flags,
+// or drops it for a client without EDNS.
+func PrependEDE(msg *dns.Msg, code uint16, extraText string) {
+	ede := &dns.EDNS0_EDE{InfoCode: code, ExtraText: extraText}
+	for i, rr := range msg.Extra {
+		opt, ok := rr.(*dns.OPT)
+		if !ok {
+			continue
+		}
+		own := &dns.OPT{Hdr: opt.Hdr}
+		own.Option = append(append(make([]dns.EDNS0, 0, len(opt.Option)+1), ede), opt.Option...)
+		extra := append([]dns.RR(nil), msg.Extra...)
+		extra[i] = own
+		msg.Extra = extra
+		return
+	}
+	own := &dns.OPT{Hdr: dns.RR_Header{Name: ".", Rrtype: dns.TypeOPT}}
+	own.SetUDPSize(DefaultMsgSize)
+	own.Option = []dns.EDNS0{ede}
+	msg.Extra = append(msg.Extra[:len(msg.Extra):len(msg.Extra)], own)
+}
+
+// IsUnsupportedDSEDE reports whether code says an answer is insecure
+// because every DS its zone has names an algorithm or a digest the
+// validator does not verify (RFC 8914 §4.2, §4.3).
+func IsUnsupportedDSEDE(code uint16) bool {
+	return code == dns.ExtendedErrorCodeUnsupportedDNSKEYAlgorithm ||
+		code == dns.ExtendedErrorCodeUnsupportedDSDigestType
+}
+
 // GetEDE extracts Extended DNS Error from a message if present.
 func GetEDE(msg *dns.Msg) *dns.EDNS0_EDE {
 	opt := msg.IsEdns0()

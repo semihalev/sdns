@@ -174,6 +174,9 @@ type hermeticServer struct {
 	// test hold one server's reply until something else has happened,
 	// the only way to observe whether two servers were asked at once.
 	beforeReply func(dns.Question)
+	// shapeReply, when set, amends each reply before it is sent, an OPT
+	// an authority adds, say.
+	shapeReply func(*dns.Msg)
 
 	addr string
 	stop func()
@@ -232,6 +235,7 @@ func startHermeticServer(tb testing.TB, label string) *hermeticServer {
 			}
 		}
 		beforeReply := s.beforeReply
+		shapeReply := s.shapeReply
 		s.mu.Unlock()
 
 		if beforeReply != nil {
@@ -273,6 +277,9 @@ func startHermeticServer(tb testing.TB, label string) *hermeticServer {
 			reply.Rcode = dns.RcodeNameError
 			reply.Ns = append(reply.Ns, soaProof...)
 			reply.Ns = append(reply.Ns, nxProof...)
+		}
+		if shapeReply != nil {
+			shapeReply(reply)
 		}
 		_ = w.WriteMsg(reply)
 	})

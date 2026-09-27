@@ -2,14 +2,17 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/internal/wire"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/middleware/edns"
 )
 
 // captureSink is a mock transport that leases bodies from its own buffer and
@@ -106,6 +109,113 @@ func TestComposedChainIsNameCompressed(t *testing.T) {
 				}
 				off = rr.End
 			}
+		})
+	}
+}
+
+// A cached alias chain says the same thing on the byte path and the Msg
+// path: the alias's own EDE, or else the nearest hop's when it is the
+// reason that hop's records are insecure (an unusable DS). A nearer hop's
+// EDE of another kind is that hop's own and hides the ones behind it. The
+// byte path composes the chain without allocating, EDE included.
+func TestComposedChainCarriesTheTargetsInsecureReason(t *testing.T) {
+	const none = -1
+	unsupported := int(dns.ExtendedErrorCodeUnsupportedDSDigestType)
+	algorithm := int(dns.ExtendedErrorCodeUnsupportedDNSKEYAlgorithm)
+	filtered := int(dns.ExtendedErrorCodeFiltered)
+	other := int(dns.ExtendedErrorCodeOther)
+	for _, tc := range []struct {
+		name string
+		hops []int // each hop's EDE, alias first, address last; none for no EDE
+		want int
+	}{
+		{"the target's reason", []int{none, unsupported}, unsupported},
+		{"the alias's own EDE first", []int{filtered, unsupported}, filtered},
+		{"through a middle alias without an EDE", []int{none, none, unsupported}, unsupported},
+		{"a middle alias's own EDE hides the target's", []int{none, filtered, unsupported}, none},
+		{"a middle alias's EDE 0 hides the target's", []int{none, other, unsupported}, none},
+		{"the nearest reason", []int{none, algorithm, unsupported}, algorithm},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := New(&config.Config{CacheSize: 1024, Expire: 600})
+			defer c.Stop()
+			terminal := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+				ch.Cancel()
+			})
+			c.SetQueryer(&internalQueryer{handlers: []middleware.Handler{c, terminal}})
+			e := edns.New(&config.Config{})
+
+			names := make([]string, len(tc.hops))
+			for i := range names {
+				names[i] = fmt.Sprintf("hop%d.reason.test.", i)
+			}
+			for i, code := range tc.hops {
+				var rr dns.RR = seamA(names[i])
+				if i < len(names)-1 {
+					rr = &dns.CNAME{
+						Hdr:    dns.RR_Header{Name: names[i], Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+						Target: names[i+1],
+					}
+				}
+				resp := seamResponse(names[i], rr)
+				if code != none {
+					resp.SetEdns0(1232, true)
+					resp.IsEdns0().Option = []dns.EDNS0{&dns.EDNS0_EDE{InfoCode: uint16(code)}} //nolint:gosec // test codes
+				}
+				c.store.SetFromResponseWithCut(resp, false, lease.Lease{})
+			}
+			check := func(path string, got *dns.Msg) {
+				t.Helper()
+				if len(got.Answer) != len(tc.hops) {
+					t.Fatalf("%s: answer %v, want the whole chain", path, got.Answer)
+				}
+				ede := dnsutil.GetEDE(got)
+				switch {
+				case tc.want == none && ede != nil:
+					t.Fatalf("%s: EDE %v, want none", path, ede)
+				case tc.want != none && (ede == nil || int(ede.InfoCode) != tc.want):
+					t.Fatalf("%s: EDE %v, want %d", path, ede, tc.want)
+				}
+			}
+
+			// Byte path.
+			req, _ := wireTestRequest(t, names[0], dns.TypeA, false)
+			w := &captureSink{Writer: mock.NewWriter("udp", "192.0.2.9:53000")}
+			ch := middleware.NewChain([]middleware.Handler{e, c, terminal})
+			var meta middleware.ResponseMeta
+			ctx := middleware.WithResponseMeta(context.Background(), &meta)
+			serve := func() {
+				ch.ResetWire(w, req)
+				ch.AllowDirectPack()
+				ch.Next(ctx)
+			}
+			before := wireChaseServed.Value()
+			serve()
+			if wireChaseServed.Value() == before || w.last == nil {
+				t.Fatal("the chain was not composed on the byte path")
+			}
+			got := new(dns.Msg)
+			if err := got.Unpack(w.last); err != nil {
+				t.Fatalf("composed reply does not unpack: %v", err)
+			}
+			check("byte path", got)
+			if allocs := testing.AllocsPerRun(100, serve); allocs != 0 {
+				t.Fatalf("a composed chain allocated %.2f objects per serve", allocs)
+			}
+
+			// Msg path: the same question decoded, the hops chased through
+			// the cache.
+			q := new(dns.Msg)
+			q.SetQuestion(names[0], dns.TypeA)
+			q.SetEdns0(1232, false)
+			mw := mock.NewWriter("udp", "192.0.2.9:53000")
+			mch := middleware.NewChain([]middleware.Handler{e, c, terminal})
+			mch.Reset(mw, q)
+			mch.Next(context.Background())
+			if !mw.Written() {
+				t.Fatal("Msg path: no reply")
+			}
+			check("Msg path", mw.Msg())
 		})
 	}
 }

@@ -2403,6 +2403,9 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 			// fails as the target did.
 			return chaseFailure(ctx, msg, respCname)
 		}
+		if err == nil && respCname != nil {
+			carryInsecureReason(msg, respCname)
+		}
 		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
 			target, child = searchAdditionalAnswer(msg, respCname)
 			// The sub-query's records are now part of the outer answer, so
@@ -2459,6 +2462,18 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	}
 
 	return msg
+}
+
+// carryInsecureReason puts on the composed answer msg the reason the
+// target's records are insecure, when the target gave one of the kind the
+// validator states itself (an unusable DS) and msg has no EDE of its own:
+// the same data reached through an alias keeps its explanation.
+func carryInsecureReason(msg, target *dns.Msg) {
+	ede := dnsutil.GetEDE(target)
+	if ede == nil || !dnsutil.IsUnsupportedDSEDE(ede.InfoCode) || dnsutil.GetEDE(msg) != nil {
+		return
+	}
+	dnsutil.PrependEDE(msg, ede.InfoCode, ede.ExtraText)
 }
 
 // chaseFailure is the answer to an alias whose target answered with a
