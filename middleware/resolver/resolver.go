@@ -3617,13 +3617,15 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 		return
 	}
 
-	// we don't need to verify rrsig questions.
-	if q.Qtype == dns.TypeRRSIG {
-		return false, nil
-	}
-
 	if ok, err = dnssec.VerifyRRSIGWithWork(signer, keys, resp, r.dnssecWork(ctx)); err != nil {
 		return
+	}
+
+	// The answer to an RRSIG question is the signatures themselves, and an
+	// RRSIG RRset is not signed (RFC 4034 §3): the RRsets it carries are
+	// validated above, the signatures are served without AD.
+	if q.Qtype == dns.TypeRRSIG {
+		return false, nil
 	}
 
 	// Cannot verify DNSSEC keys with RSA exponents > 2^31-1 due to Go crypto/rsa limitation

@@ -3,11 +3,13 @@ package resolver
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 	answercache "github.com/semihalev/sdns/middleware/cache"
+	"github.com/semihalev/sdns/middleware/edns"
 )
 
 // Only an answer made of the signatures at the question name is served
@@ -35,6 +37,93 @@ func TestRRSIGQuestionCarriesNothingElseUnvalidated(t *testing.T) {
 	req.SetEdns0(1232, true)
 	if resp := handler.handle(context.Background(), req); resp.Rcode != dns.RcodeServerFailure {
 		t.Fatalf("%s %v, want the answer carrying an unsigned A refused", dns.RcodeToString[resp.Rcode], resp.Answer)
+	}
+}
+
+// A signed RRset riding in the answer to an RRSIG question is validated like
+// any other: one whose signature does not verify makes the answer bogus, and
+// one that verifies is served, still without AD, since the signatures the
+// question asked for are not themselves signed. Asked from the server's
+// entry, through the EDNS layer, the cache and the resolver, wire-born and
+// decoded.
+func TestRRSIGQuestionValidatesTheRRsetsItCarries(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		bogus    bool
+		wireBorn bool
+	}{
+		{"signature verifies/decoded", false, false},
+		{"signature verifies/wire-born", false, true},
+		{"signature does not verify/decoded", true, false},
+		{"signature does not verify/wire-born", true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			net := newHermeticNet(t)
+			zone := net.Delegate("signed.")
+			a := mustRR(t, "www.signed. 300 IN A 192.0.2.45")
+			zone.Serve(a)
+			carried := a
+			if tc.bogus {
+				carried = mustRR(t, "www.signed. 300 IN A 198.51.100.45")
+			}
+			zone.server.serve("www.signed.", dns.TypeRRSIG, carried, zone.key.sign(t, []dns.RR{a}))
+
+			cfg := net.Config()
+			cfg.CacheSize = 1024
+			handler := net.handlerWithConfig(cfg)
+			cache := answercache.New(cfg)
+			cache.SetDNSSECCryptoLimiter(handler.DNSSECCryptoLimiter())
+			handlers := []middleware.Handler{cache, handler}
+			var queryer middleware.Queryer = pipelineQueryer{handlers: handlers}
+			handler.resolver.queryer.Store(&queryer)
+			cache.SetQueryer(queryer)
+			client := append([]middleware.Handler{edns.New(cfg)}, handlers...)
+
+			ask := func(qtype uint16, wireBorn bool) *dns.Msg {
+				t.Helper()
+				q := new(dns.Msg)
+				q.SetQuestion("www.signed.", qtype)
+				q.SetEdns0(1232, true)
+				w := mock.NewWriter("udp", "127.0.0.1:0")
+				ch := middleware.NewChain(client)
+				if wireBorn {
+					raw, err := q.Pack()
+					if err != nil {
+						t.Fatal(err)
+					}
+					req := new(middleware.Request)
+					if !req.ParseWire(raw, time.Now(), nil) {
+						t.Fatal("eligible query refused by ParseWire")
+					}
+					ch.ResetWire(w, req)
+					ch.AllowDirectPack()
+				} else {
+					ch.Reset(w, q)
+				}
+				ch.Next(context.Background())
+				if !w.Written() {
+					t.Fatal("no reply")
+				}
+				return w.Msg()
+			}
+
+			// The delegation is learned, DS and all, by an ordinary question
+			// first, as on a running resolver.
+			if resp := ask(dns.TypeA, false); resp.Rcode != dns.RcodeSuccess || !resp.AuthenticatedData {
+				t.Fatalf("warming: %s AD=%v, want the validated A", dns.RcodeToString[resp.Rcode], resp.AuthenticatedData)
+			}
+
+			resp := ask(dns.TypeRRSIG, tc.wireBorn)
+			if tc.bogus {
+				if resp.Rcode != dns.RcodeServerFailure || !hasEDE(resp, dns.ExtendedErrorCodeDNSBogus) {
+					t.Fatalf("%s %v, want the forged A refused as DNSSEC Bogus", dns.RcodeToString[resp.Rcode], resp)
+				}
+				return
+			}
+			if resp.Rcode != dns.RcodeSuccess || resp.AuthenticatedData {
+				t.Fatalf("%s AD=%v %v, want NOERROR without AD", dns.RcodeToString[resp.Rcode], resp.AuthenticatedData, resp.Answer)
+			}
+		})
 	}
 }
 
