@@ -487,12 +487,6 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	// Check recursion desired
-	if q.Name != "." && !req.RecursionDesired {
-		ch.CancelWithRcode(dns.RcodeServerFailure, false)
-		return
-	}
-
 	// Derive the client's ECS source prefix once and reuse it for
 	// scoped lookup, dedup, and insert. Zero prefix means ECS-aware
 	// caching doesn't apply (policy off, client not in allow-list,
@@ -572,6 +566,17 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if hit, ok := c.lookupFailure(req, clientScope); ok {
 		c.metrics.Hit()
 		c.handleFailureHit(ctx, ch, clientScope, hit)
+		return
+	}
+	// A question that does not desire recursion is the cache's to answer
+	// or no one's: whatever the cache holds was served above, and a miss
+	// goes no further. The root is the exception, for a client's own
+	// question: a resolver priming from this one asks for it that way. An
+	// alias chased for such a client gets no exception, or an alias to the
+	// root would be resolved on its behalf.
+	if !req.RecursionDesired && (q.Name != "." || isNonRecursiveChase(ctx)) {
+		c.metrics.Miss()
+		c.declineNonRecursive(ch, req)
 		return
 	}
 	failureProbe := false
@@ -1183,7 +1188,7 @@ func (c *Cache) handleFailureHit(
 // and runs the ordinary body.
 func (c *Cache) serveWire(ctx context.Context, ch *middleware.Chain, spent **rate.Limiter) bool {
 	req := ch.Request
-	if !req.RD() || req.HasECS() {
+	if req.HasECS() {
 		return false
 	}
 	if _, ok := dns.TypeToString[req.Qtype()]; !ok {
@@ -1315,8 +1320,9 @@ func (c *Cache) serveHitFromWire(
 	// which no local can prevent across the inline/replay boundary.
 	//
 	// A prefetch-due hit needs a decoded request copy for the refresh
-	// queue; the ordinary body claims it.
-	if c.prefetchQueue != nil && entry.PrefetchEligible() && entry.ShouldPrefetch(c.config.Prefetch) {
+	// queue; the ordinary body claims it. A question that did not desire
+	// recursion claims none, so it has no reason to leave the byte path.
+	if ch.Request.RD() && c.prefetchQueue != nil && entry.PrefetchEligible() && entry.ShouldPrefetch(c.config.Prefetch) {
 		return false
 	}
 	if entry == nil || entry.wireServe&wireEligible == 0 {
@@ -1481,8 +1487,10 @@ func (c *Cache) handleCacheHit(
 	// PrefetchEligible() gates scoped entries out: the prefetch
 	// worker has no client IP, so a refresh would forward without
 	// ECS and create a shared-key entry under the scoped key,
-	// wrong audience, wrong answer. Scoped entries just expire.
-	if c.prefetchQueue != nil && entry.PrefetchEligible() && entry.ShouldPrefetch(c.config.Prefetch) {
+	// wrong audience, wrong answer. Scoped entries just expire. A question
+	// that did not desire recursion starts none either: it is answered
+	// from the cache, and a refresh is upstream work on its behalf.
+	if req.RecursionDesired && c.prefetchQueue != nil && entry.PrefetchEligible() && entry.ShouldPrefetch(c.config.Prefetch) {
 		if entry.prefetch.CompareAndSwap(false, true) {
 			if !c.prefetchQueue.Add(PrefetchRequest{
 				Request: req.Copy(),
@@ -2307,7 +2315,16 @@ func ReleaseMsg(m *dns.Msg) {
 }
 
 // additionalAnswer implements the v1 CNAME resolution logic.
-func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
+func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) (out *dns.Msg) {
+	// Every answer this returns, a local failure of the chase included,
+	// echoes the client's RD, which msg carries; SetRcode asserts RD=1.
+	clientRD := msg.RecursionDesired
+	defer func() {
+		if out != nil {
+			out.RecursionDesired = clientRD
+		}
+	}()
+
 	if len(msg.Question) == 0 {
 		return msg
 	}
@@ -2351,11 +2368,21 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	cnameDepth := 10
 	targets := []string{}
 
+	// A question that did not desire recursion completes its alias from the
+	// cache or not at all, the root included.
+	chaseCtx := ctx
+	if !msg.RecursionDesired {
+		chaseCtx = withNonRecursiveChase(ctx)
+	}
+
 	if len(cnameReq.Question) > 0 {
 	lookup:
 		child := false
 		target := cnameReq.Question[0].Name
-		cnameReq.RecursionDesired = true
+		// The client's own RD, which the answer echoes: a question that did
+		// not desire recursion completes its alias from the cache or not
+		// at all.
+		cnameReq.RecursionDesired = msg.RecursionDesired
 
 		// Check for loops
 		if slices.Contains(targets, target) {
@@ -2364,7 +2391,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 
 		targets = append(targets, target)
 
-		respCname, lineage, err := c.internalExchange(ctx, cnameReq)
+		respCname, lineage, err := c.internalExchange(chaseCtx, cnameReq)
 		if errors.Is(err, middleware.ErrRecursionWorkLimit) {
 			edeCode, edeText := middleware.RecursionWorkErrorEDE(ctx, err)
 			do := false
@@ -2462,6 +2489,38 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	}
 
 	return msg
+}
+
+// nonRecursiveMissText is the EDE text of a miss for a question that did
+// not desire recursion.
+const nonRecursiveMissText = "Not in cache, and recursion was not desired"
+
+type nonRecursiveChaseKey struct{}
+
+// withNonRecursiveChase marks ctx as an alias chase for a question that did
+// not desire recursion, whatever the name it asks.
+func withNonRecursiveChase(ctx context.Context) context.Context {
+	return context.WithValue(ctx, nonRecursiveChaseKey{}, true)
+}
+
+func isNonRecursiveChase(ctx context.Context) bool {
+	marked, _ := ctx.Value(nonRecursiveChaseKey{}).(bool)
+	return marked
+}
+
+// declineNonRecursive answers a question that did not desire recursion and
+// that the cache cannot answer: SERVFAIL, with an EDE saying why and the
+// client's RD echoed.
+func (c *Cache) declineNonRecursive(ch *middleware.Chain, req *dns.Msg) {
+	do := false
+	if opt := req.IsEdns0(); opt != nil {
+		do = opt.Do()
+	}
+	resp := dnsutil.SetRcodeWithEDE(req, dns.RcodeServerFailure, do,
+		dns.ExtendedErrorCodeOther, nonRecursiveMissText)
+	resp.RecursionDesired = req.RecursionDesired
+	_ = ch.Writer.WriteMsg(resp)
+	ch.Cancel()
 }
 
 // carryInsecureReason puts on the composed answer msg the reason the

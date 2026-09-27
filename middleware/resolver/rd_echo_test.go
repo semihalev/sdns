@@ -38,7 +38,8 @@ func TestServedRepliesEchoTheClientsRD(t *testing.T) {
 		{"ANY, RD=0", "www.signed.", dns.TypeANY, false, dns.RcodeNotImplemented},
 		{"ANY, RD=1", "www.signed.", dns.TypeANY, true, dns.RcodeNotImplemented},
 		{"resolved, RD=1", "www.signed.", dns.TypeA, true, dns.RcodeSuccess},
-		{"non-recursive question, RD=0", "www.signed.", dns.TypeA, false, dns.RcodeServerFailure},
+		{"non-recursive question, cached, RD=0", "www.signed.", dns.TypeA, false, dns.RcodeSuccess},
+		{"non-recursive question, not cached, RD=0", "missing.signed.", dns.TypeA, false, dns.RcodeServerFailure},
 		{"root, RD=0", ".", dns.TypeNS, false, dns.RcodeSuccess},
 	} {
 		for _, wireBorn := range []bool{false, true} {
