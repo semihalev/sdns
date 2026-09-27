@@ -86,6 +86,41 @@ type FailureHit struct {
 	Question   FailureQuestionKey
 	Zone       FailureZoneKey
 	witness    []denialWitnessPair
+	cause      failureCause
+}
+
+// failureCause is the Extended DNS Error the recorded failure carried, the
+// reason it failed. A replay says the same, as other resolvers answer from
+// their failure caches; a failure that carried none replays EDE 13, Cached
+// Error.
+type failureCause struct {
+	text string
+	code uint16
+	set  bool
+}
+
+// failureCauseOf reads the first Extended DNS Error off msg.
+func failureCauseOf(msg *dns.Msg) failureCause {
+	if msg == nil {
+		return failureCause{}
+	}
+	if opt := msg.IsEdns0(); opt != nil {
+		for _, o := range opt.Option {
+			if ede, ok := o.(*dns.EDNS0_EDE); ok {
+				return failureCause{code: ede.InfoCode, text: ede.ExtraText, set: true}
+			}
+		}
+	}
+	return failureCause{}
+}
+
+// ede is the Extended DNS Error a replay carries: the recorded cause, or
+// Cached Error when there was none.
+func (c failureCause) ede() (uint16, string) {
+	if c.set {
+		return c.code, c.text
+	}
+	return dns.ExtendedErrorCodeCachedError, failureCacheEDEText
 }
 
 // replay is Response for a request tree: a cached validation failure comes
@@ -99,8 +134,9 @@ func (h FailureHit) replay(ctx context.Context, req *dns.Msg) *dns.Msg {
 	return resp
 }
 
-// Response builds a clean SERVFAIL response for a cached failure. EDE 13 is
-// emitted only when the client sent EDNS, and no client EDNS options are copied.
+// Response builds a clean SERVFAIL response for a cached failure. Its EDE,
+// the recorded cause or else EDE 13, is emitted only when the client sent
+// EDNS, and no client EDNS options are copied.
 func (h FailureHit) Response(req *dns.Msg) *dns.Msg {
 	resp := new(dns.Msg)
 	if req != nil {
@@ -130,10 +166,8 @@ func (h FailureHit) Response(req *dns.Msg) *dns.Msg {
 	opt.Hdr.Rrtype = dns.TypeOPT
 	opt.SetUDPSize(reqOPT.UDPSize())
 	opt.SetDo(reqOPT.Do())
-	opt.Option = []dns.EDNS0{&dns.EDNS0_EDE{
-		InfoCode:  dns.ExtendedErrorCodeCachedError,
-		ExtraText: failureCacheEDEText,
-	}}
+	code, text := h.cause.ede()
+	opt.Option = []dns.EDNS0{&dns.EDNS0_EDE{InfoCode: code, ExtraText: text}}
 	resp.Extra = []dns.RR{opt}
 	return resp
 }
@@ -150,6 +184,7 @@ type failureEntry struct {
 	// denial provably missed, the wire path may serve this failure
 	// without materializing while the witness still holds.
 	witness []denialWitnessPair
+	cause   failureCause
 }
 
 func (e *failureEntry) hit() FailureHit {
@@ -161,6 +196,7 @@ func (e *failureEntry) hit() FailureHit {
 		Question:   e.question,
 		Zone:       e.zone,
 		witness:    e.witness,
+		cause:      e.cause,
 	}
 }
 
@@ -363,6 +399,11 @@ func (c *FailureCache) RetryKey(key FailureQuestionKey) (uint64, bool) {
 // generation are idempotent. After expiry, concurrent recorders advance the
 // streak exactly once.
 func (c *FailureCache) RecordQuestion(key FailureQuestionKey, provenance FailureProvenance, witness []denialWitnessPair) FailureHit {
+	return c.recordQuestion(key, provenance, witness, failureCause{})
+}
+
+// recordQuestion is RecordQuestion with the cause the failure carried.
+func (c *FailureCache) recordQuestion(key FailureQuestionKey, provenance FailureProvenance, witness []denialWitnessPair, cause failureCause) FailureHit {
 	key = normalizeFailureQuestionKey(key)
 	hash := failureQuestionHash(key)
 	return c.record(hash, &failureEntry{
@@ -370,6 +411,7 @@ func (c *FailureCache) RecordQuestion(key FailureQuestionKey, provenance Failure
 		provenance: provenance,
 		question:   key,
 		witness:    witness,
+		cause:      cause,
 	})
 }
 
@@ -517,13 +559,15 @@ func (c *FailureCache) record(hash uint64, candidate *failureEntry) FailureHit {
 			// to the generic failure that landed first: the generation
 			// takes the verdict's provenance, and nothing else changes, not
 			// its deadline, streak or witness. A generic failure arriving
-			// second changes nothing, so the verdict, once in, stays.
+			// second changes nothing, so the verdict, once in, stays. The
+			// verdict's cause comes with it: it is why the data failed.
 			if candidate.provenance != FailureProvenanceValidation ||
 				current.provenance == FailureProvenanceValidation {
 				return current.hit()
 			}
 			upgraded := *current
 			upgraded.provenance = FailureProvenanceValidation
+			upgraded.cause = candidate.cause
 			if c.entries.CompareAndSwap(hash, current, &upgraded) {
 				return upgraded.hit()
 			}
@@ -544,6 +588,8 @@ func (c *FailureCache) record(hash uint64, candidate *failureEntry) FailureHit {
 		// backoff life and fail the pointer check forever after the first
 		// on-path admission.
 		next.witness = candidate.witness
+		// So is its cause: the failure being replayed is this one.
+		next.cause = candidate.cause
 		next.retryAfter = now.Add(c.backoff(next.streak))
 		if c.entries.CompareAndSwap(hash, current, &next) {
 			return next.hit()

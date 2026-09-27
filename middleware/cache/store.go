@@ -496,10 +496,12 @@ func (s *Store) RecordFailure(req *dns.Msg, scope netip.Prefix, provenance Failu
 	if s.failureCacheDisabled || s.failure == nil || req == nil || len(req.Question) == 0 {
 		return
 	}
-	s.recordFailureQuestion(req.Question[0], req.CheckingDisabled, scope, provenance, witness)
+	// req is the failure as it is answered, so its EDE is the cause the
+	// failure cache replays.
+	s.recordFailureQuestion(req.Question[0], req.CheckingDisabled, scope, provenance, witness, failureCauseOf(req))
 }
 
-func (s *Store) recordFailureQuestion(q dns.Question, cd bool, scope netip.Prefix, provenance FailureProvenance, witness []denialWitnessPair) {
+func (s *Store) recordFailureQuestion(q dns.Question, cd bool, scope netip.Prefix, provenance FailureProvenance, witness []denialWitnessPair, cause failureCause) {
 	if s.failureCacheDisabled || s.failure == nil {
 		return
 	}
@@ -508,11 +510,11 @@ func (s *Store) recordFailureQuestion(q dns.Question, cd bool, scope netip.Prefi
 		// witness here could only ever mislead.
 		witness = nil
 	}
-	s.failure.RecordQuestion(FailureQuestionKey{
+	s.failure.recordQuestion(FailureQuestionKey{
 		Question: q,
 		CD:       cd,
 		Scope:    scope,
-	}, provenance, witness)
+	}, provenance, witness, cause)
 }
 
 // failureMissWitness captures the denial-zone state a failing question
@@ -706,7 +708,7 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Pr
 		// If a pre-keyed scoped caller reaches it, do not misfile that
 		// audience-specific failure as a global one without its prefix.
 		if !scoped {
-			s.recordFailureQuestion(resp.Question[0], keyCD, netip.Prefix{}, FailureProvenance("response"), nil)
+			s.recordFailureQuestion(resp.Question[0], keyCD, netip.Prefix{}, FailureProvenance("response"), nil, failureCauseOf(resp))
 		}
 	}
 }
@@ -796,7 +798,7 @@ func (s *Store) SetEntryWithKey(key uint64, entry *CacheEntry, mt dnsutil.Respon
 		}
 	case dnsutil.TypeServerFailure:
 		if entry != nil && entry.question.Name != "" {
-			s.recordFailureQuestion(entry.question, entry.cd, netip.Prefix{}, FailureProvenance("response"), nil)
+			s.recordFailureQuestion(entry.question, entry.cd, netip.Prefix{}, FailureProvenance("response"), nil, failureCause{})
 		}
 	}
 }

@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 )
@@ -17,6 +19,8 @@ import (
 // the client's buffer.
 type bulkResponder struct {
 	answer, ns, extra int
+	// edeText, when set, rides the response in an Extended DNS Error.
+	edeText string
 }
 
 func (b *bulkResponder) Name() string { return "bulk" }
@@ -45,6 +49,10 @@ func (b *bulkResponder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 	for i := 0; i < b.extra; i++ {
 		resp.Extra = append(resp.Extra, rr(2000+i))
+	}
+	if b.edeText != "" {
+		resp.SetEdns0(dns.DefaultMsgSize, false)
+		dnsutil.SetEDE(resp, dns.ExtendedErrorCodeOther, b.edeText)
 	}
 
 	_ = ch.Writer.WriteMsg(resp)
@@ -152,5 +160,55 @@ func TestTruncationWithoutEDNSCarriesNoOPT(t *testing.T) {
 	}
 	if len(packed) > 512 {
 		t.Fatalf("truncated response is %d bytes, larger than the 512 minimum", len(packed))
+	}
+}
+
+// RFC 8914 §3: an Extended DNS Error is dropped before any other data, with
+// TC set. A reply that overflows only by its EDE keeps its answer; one that
+// still overflows without it is truncated to the minimum. Either way the
+// client gets no more than its buffer.
+func TestTruncationDropsTheEDEFirst(t *testing.T) {
+	e := truncateHarness(t)
+	long := strings.Repeat("x", 600)
+
+	for _, tc := range []struct {
+		name       string
+		b          *bulkResponder
+		wantAnswer int
+	}{
+		{"only the EDE overflows", &bulkResponder{answer: 2, edeText: long}, 2},
+		{"the answer overflows too", &bulkResponder{answer: 60, edeText: long}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := serveBulk(t, e, 512, tc.b)
+			if !m.Truncated {
+				t.Fatal("dropping the EDE must set TC")
+			}
+			if len(m.Answer) != tc.wantAnswer {
+				t.Fatalf("answer carries %d records, want %d", len(m.Answer), tc.wantAnswer)
+			}
+			opt := m.IsEdns0()
+			if opt == nil {
+				t.Fatal("the OPT went with the EDE")
+			}
+			for _, o := range opt.Option {
+				if _, ok := o.(*dns.EDNS0_EDE); ok {
+					t.Fatal("the EDE rode an overflowing reply")
+				}
+			}
+			packed, err := m.Pack()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(packed) > 512 {
+				t.Fatalf("reply is %d bytes, larger than the advertised 512", len(packed))
+			}
+		})
+	}
+
+	// A reply that fits keeps its EDE.
+	m := serveBulk(t, e, 512, &bulkResponder{answer: 2, edeText: "short"})
+	if m.Truncated || dnsutil.GetEDE(m) == nil {
+		t.Fatalf("a reply that fits lost its EDE or gained TC: %v", m)
 	}
 }

@@ -240,8 +240,8 @@ func TestRecursionWorkPolicySERVFAILCacheIsolation(t *testing.T) {
 			}
 			cachedResp := hit.Response(req)
 			ede := dnsutil.GetEDE(cachedResp)
-			if ede == nil || ede.InfoCode != dns.ExtendedErrorCodeCachedError {
-				t.Fatalf("cached policy failure EDE = %+v, want EDE 13", ede)
+			if ede == nil || ede.InfoCode != tt.edeCode || ede.ExtraText != tt.extraText {
+				t.Fatalf("cached policy failure EDE = %+v, want the original (%d, %q)", ede, tt.edeCode, tt.extraText)
 			}
 		})
 	}

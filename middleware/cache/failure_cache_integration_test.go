@@ -50,7 +50,7 @@ func expireFailureProbeZone(t *testing.T, c *Cache, clock *failureFakeClock) uin
 	return retryKey
 }
 
-func TestFailureCacheFirstResponseThenEDE13Hit(t *testing.T) {
+func TestFailureCacheFirstResponseThenCauseHit(t *testing.T) {
 	c := New(&config.Config{CacheSize: 1024})
 	defer c.Stop()
 
@@ -94,8 +94,9 @@ func TestFailureCacheFirstResponseThenEDE13Hit(t *testing.T) {
 		t.Fatalf("cached request reached downstream; calls = %d", calls.Load())
 	}
 	secondEDE := dnsutil.GetEDE(second)
-	if secondEDE == nil || secondEDE.InfoCode != dns.ExtendedErrorCodeCachedError {
-		t.Fatalf("cached response EDE = %+v, want EDE 13", secondEDE)
+	if secondEDE == nil || secondEDE.InfoCode != dns.ExtendedErrorCodeNetworkError ||
+		secondEDE.ExtraText != "direct network failure" {
+		t.Fatalf("cached response EDE = %+v, want the original network error", secondEDE)
 	}
 	if second.AuthenticatedData {
 		t.Fatal("cached failure retained AD")
