@@ -431,14 +431,16 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// capability set the decline fell back for, and a second ladder walk
 	// would double the decline diagnostics and the per-entry limiter
 	// charge for the same client question.
-	// ANY, zone transfers and NXNAME never touch the cache. The answer to
-	// them is the resolver handler's policy, and nothing this cache holds
-	// for the name, an exact entry, a subtree cut, an aggressive denial, a
-	// zone in failure backoff, may stand in for it: a zone in backoff was
-	// answering ANY with SERVFAIL. Passed through with the writer unwrapped,
-	// so the policy answer is neither classified, stored, recorded as a
-	// failure, nor taken as the recovery that resets a zone's backoff.
-	if ch.Request != nil && dnsutil.DeclinedQtype(ch.Request.Qtype()) {
+	// ANY, zone transfers, NXNAME and every class but IN never touch the
+	// cache. The answer to them is the resolver handler's policy, and
+	// nothing this cache holds for the name, an exact entry, a subtree cut,
+	// an aggressive denial, a zone in failure backoff, may stand in for it:
+	// a zone in backoff was answering ANY with SERVFAIL. Passed through with
+	// the writer unwrapped, so the policy answer is neither classified,
+	// stored, recorded as a failure, nor taken as the recovery that resets a
+	// zone's backoff.
+	if ch.Request != nil &&
+		(dnsutil.DeclinedQtype(ch.Request.Qtype()) || dnsutil.DeclinedClass(ch.Request.Qclass())) {
 		ch.Next(ctx)
 		return
 	}
