@@ -156,7 +156,10 @@ func cacheControl(msg *dns.Msg) string {
 	if !found {
 		return noStore
 	}
-	return "max-age=" + strconv.FormatUint(uint64(ttl), 10)
+	// private: the answer can be this client's own, shaped by its source
+	// address through ECS or carrying a server cookie derived from it, and
+	// a shared HTTP cache keyed by URL would hand it to another client.
+	return "private, max-age=" + strconv.FormatUint(uint64(ttl), 10)
 }
 
 // HandleJSON handle json format.

@@ -32,9 +32,10 @@ var (
 	ednsErrorMalformedCookie = ednsErrors.Register("malformed_cookie")
 )
 
-// malformedCookie reports whether req carries a COOKIE option of a length
+// malformedCookie reports whether req's first COOKIE option has a length
 // RFC 7873 §5.2.2 calls malformed: valid lengths are 8, a client cookie
-// alone, and 16 to 40, with a server cookie.
+// alone, and 16 to 40, with a server cookie. Only the first counts, any
+// later one is ignored (RFC 7873 §5.2).
 func malformedCookie(req *dns.Msg) bool {
 	opt := req.IsEdns0()
 	if opt == nil {
@@ -43,9 +44,7 @@ func malformedCookie(req *dns.Msg) bool {
 	for _, o := range opt.Option {
 		if c, ok := o.(*dns.EDNS0_COOKIE); ok {
 			n := len(c.Cookie) / 2 // hex
-			if n != 8 && (n < 16 || n > 40) {
-				return true
-			}
+			return n != 8 && (n < 16 || n > 40)
 		}
 	}
 	return false
@@ -190,11 +189,6 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 		return
 	}
-	if malformed {
-		ednsErrorMalformedCookie.Inc()
-		ch.CancelWithRcode(dns.RcodeFormatError, do)
-		return
-	}
 
 	switch w.Proto() {
 	case "tcp", "doq", "doh":
@@ -216,7 +210,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	rw.noedns = noedns
 	rw.nsid = nsid
 	rw.keepalive = keepalive && w.Proto() == "tcp"
-	rw.pad = padded && encrypted(w)
+	rw.pad = padded && ch.Encrypted()
 	rw.respUDPSize = opt.UDPSize()
 	// Clear AD unless the client signalled it wants validation state (DO
 	// or AD bit set) AND did not set CD. RFC 4035 §3.2.3 / RFC 6840 §5.7:
@@ -235,6 +229,15 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		*rw = ResponseWriter{}
 		responseWriterPool.Put(rw)
 	}()
+	if malformed {
+		ednsErrorMalformedCookie.Inc()
+		// Through this layer's writer, so the error is padded like any
+		// other reply; a malformed cookie is not one to answer with a
+		// server cookie.
+		rw.cookie = ""
+		ch.CancelWithRcode(dns.RcodeFormatError, do)
+		return
+	}
 	ch.Next(ctx)
 }
 
@@ -280,7 +283,7 @@ func (e *EDNS) serveWire(ctx context.Context, ch *middleware.Chain) {
 	rw.noedns = noedns
 	rw.nsid = req.HasNSID()
 	rw.keepalive = req.HasTCPKeepalive() && w.Proto() == "tcp"
-	rw.pad = req.HasPadding() && encrypted(w)
+	rw.pad = req.HasPadding() && ch.Encrypted()
 	rw.respUDPSize = dnsutil.DefaultMsgSize
 	if cookie := req.ClientCookie(); len(cookie) >= 8 {
 		copy(rw.cookieRaw[:], cookie[:8])
@@ -308,17 +311,17 @@ func (e *EDNS) serveWire(ctx context.Context, ch *middleware.Chain) {
 // size RFC 8467 §4.1 recommends for responses.
 const paddingBlock = 468
 
-// encrypted reports whether w's transport is DoT, DoH or DoQ: padding on
-// a clear transport would only cost bytes (RFC 7830 §6).
-func encrypted(w middleware.ResponseWriter) bool {
-	e, ok := w.(interface{ Encrypted() bool })
-	return ok && e.Encrypted()
-}
-
 // paddingLen is the padding option payload that brings a reply of n bytes,
-// before the option, to a multiple of paddingBlock.
-func paddingLen(n int) int {
-	return (paddingBlock - (n+wire.OPTOptionHdrLen)%paddingBlock) % paddingBlock
+// before the option, to a multiple of paddingBlock, or as close as the DNS
+// message limit lets it: a padded reply the transport cannot send loses the
+// answer (RFC 7830 §4, padding only as space permits). ok is false when not
+// even an empty option fits.
+func paddingLen(n int) (pad int, ok bool) {
+	room := dns.MaxMsgSize - n - wire.OPTOptionHdrLen
+	if room < 0 {
+		return 0, false
+	}
+	return min((paddingBlock-(n+wire.OPTOptionHdrLen)%paddingBlock)%paddingBlock, room), true
 }
 
 func hasClientPadding(req *dns.Msg) bool {
@@ -435,9 +438,9 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 			return ok
 		})
 		if w.pad {
-			opt.Option = append(opt.Option, &dns.EDNS0_PADDING{
-				Padding: make([]byte, paddingLen(m.Len())),
-			})
+			if n, ok := paddingLen(m.Len()); ok {
+				opt.Option = append(opt.Option, &dns.EDNS0_PADDING{Padding: make([]byte, n)})
+			}
 		}
 	} else {
 		// EDNS disabled, remove all OPT records

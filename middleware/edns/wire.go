@@ -189,7 +189,9 @@ func (w *ResponseWriter) appendWireOPT(body []byte, info middleware.WireInfo) ([
 		body = wire.AppendOptionEDE(body, info.EDECode, info.EDEText)
 	}
 	if w.pad {
-		body = wire.AppendOption(body, dns.EDNS0PADDING, paddingZeros[:paddingLen(len(body))])
+		if n, ok := paddingLen(len(body)); ok {
+			body = wire.AppendOption(body, dns.EDNS0PADDING, paddingZeros[:n])
+		}
 	}
 
 	return wire.FinishOPT(body, rdlenOff), true

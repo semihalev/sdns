@@ -60,8 +60,9 @@ func SetEdns0(req *dns.Msg, policy *ecs.Policy, client netip.Addr) (*dns.OPT, in
 		for _, option := range opt.Option {
 			switch v := option.(type) {
 			case *dns.EDNS0_COOKIE:
-				// Client cookie is the first 8 bytes (16 hex chars).
-				if len(v.Cookie) >= 16 {
+				// Client cookie is the first 8 bytes (16 hex chars). Only
+				// the first COOKIE option counts (RFC 7873 §5.2).
+				if len(v.Cookie) >= 16 && cookie == "" {
 					cookie = v.Cookie[:16]
 				}
 			case *dns.EDNS0_NSID:

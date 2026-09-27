@@ -129,11 +129,6 @@ func (w *responseWriter) Proto() string {
 	return w.proto
 }
 
-// Encrypted reports whether the transport is DoT, DoH or DoQ.
-func (w *responseWriter) Encrypted() bool {
-	return w.encrypted
-}
-
 func (w *responseWriter) Rcode() int {
 	return w.rcode
 }

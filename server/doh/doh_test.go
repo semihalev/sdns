@@ -45,8 +45,9 @@ func handleTest(w http.ResponseWriter, r *http.Request) {
 
 // The HTTP freshness of a DoH answer follows its DNS lifetime (RFC 8484
 // §5.1): the smallest TTL it carries, a denial's SOA minimum too, and a
-// failure or an empty reply is not kept. Through the wire handler, GET and
-// POST, and the JSON one.
+// failure or an empty reply is not kept. It is private: the answer can be
+// this client's own, so no shared cache may hand it to another. Through
+// the wire handler, GET and POST, and the JSON one.
 func TestDoHCacheControlFollowsTheTTL(t *testing.T) {
 	rr := func(s string) dns.RR {
 		r, err := dns.NewRR(s)
@@ -64,13 +65,13 @@ func TestDoHCacheControlFollowsTheTTL(t *testing.T) {
 		want   string
 	}{
 		{"answer, smallest TTL", dns.RcodeSuccess,
-			[]dns.RR{rr("www.example. 300 IN A 192.0.2.1"), rr("www.example. 120 IN A 192.0.2.2")}, nil, "max-age=120"},
-		{"NXDOMAIN, SOA minimum below its TTL", dns.RcodeNameError, nil, []dns.RR{rr(soa)}, "max-age=60"},
+			[]dns.RR{rr("www.example. 300 IN A 192.0.2.1"), rr("www.example. 120 IN A 192.0.2.2")}, nil, "private, max-age=120"},
+		{"NXDOMAIN, SOA minimum below its TTL", dns.RcodeNameError, nil, []dns.RR{rr(soa)}, "private, max-age=60"},
 		{"NODATA, SOA TTL below its minimum", dns.RcodeSuccess, nil,
-			[]dns.RR{rr("example. 30 IN SOA ns.example. host.example. 1 3600 600 86400 600")}, "max-age=30"},
+			[]dns.RR{rr("example. 30 IN SOA ns.example. host.example. 1 3600 600 86400 600")}, "private, max-age=30"},
 		{"answer beside a SOA keeps the answer's TTL", dns.RcodeSuccess,
-			[]dns.RR{rr("www.example. 300 IN A 192.0.2.1")}, []dns.RR{rr(soa)}, "max-age=300"},
-		{"zero TTL", dns.RcodeSuccess, []dns.RR{rr("www.example. 0 IN A 192.0.2.1")}, nil, "max-age=0"},
+			[]dns.RR{rr("www.example. 300 IN A 192.0.2.1")}, []dns.RR{rr(soa)}, "private, max-age=300"},
+		{"zero TTL", dns.RcodeSuccess, []dns.RR{rr("www.example. 0 IN A 192.0.2.1")}, nil, "private, max-age=0"},
 		{"SERVFAIL", dns.RcodeServerFailure, nil, nil, "no-cache, no-store"},
 		{"REFUSED", dns.RcodeRefused, nil, nil, "no-cache, no-store"},
 		{"empty NOERROR", dns.RcodeSuccess, nil, nil, "no-cache, no-store"},
