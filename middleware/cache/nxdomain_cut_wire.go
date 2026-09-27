@@ -367,8 +367,8 @@ func (c *Cache) serveCutHitFromWire(
 
 // serveFailureFromWire synthesizes the RFC 9520 cached-failure SERVFAIL
 // straight into the writer's lease: a bare header, the client's question,
-// and the EDE the edns layer appends for EDNS clients.
-func (c *Cache) serveFailureFromWire(ch *middleware.Chain) bool {
+// and the hit's EDE the edns layer appends for EDNS clients.
+func (c *Cache) serveFailureFromWire(ch *middleware.Chain, hit FailureHit) bool {
 	w := ch.Writer
 	if w.Internal() {
 		return false
@@ -397,7 +397,8 @@ func (c *Cache) serveFailureFromWire(ch *middleware.Chain) bool {
 	// the caller's bytes to reserve. Leasing without it went unnoticed
 	// while a lease exposed the whole slab; a capacity-exact lease turns
 	// the shortfall into a reallocation on a path that must not have one.
-	const failureEDEReserve = wire.OPTOptionHdrLen + 2 + len(failureCacheEDEText)
+	edeCode, edeText := hit.cause.ede()
+	failureEDEReserve := wire.OPTOptionHdrLen + 2 + len(edeText)
 	dst := leaser.BeginWire(size, capability.Reserve+failureEDEReserve)
 	if dst == nil || cap(dst) < size {
 		if dst != nil {
@@ -424,8 +425,8 @@ func (c *Cache) serveFailureFromWire(ch *middleware.Chain) bool {
 	info := middleware.WireInfo{
 		Rcode:   dns.RcodeServerFailure,
 		HasEDE:  true,
-		EDECode: dns.ExtendedErrorCodeCachedError,
-		EDEText: failureCacheEDEText,
+		EDECode: edeCode,
+		EDEText: edeText,
 	}
 	switch err := leaser.CommitWire(body, info); {
 	case err == nil:

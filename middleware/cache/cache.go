@@ -1245,7 +1245,7 @@ func (c *Cache) serveCompositeFromWire(ctx context.Context, ch *middleware.Chain
 		// shared denial on the Msg path too, so it serves directly.
 		if cd || ((hit.Kind == FailureKindQuestion || c.store.sharedDenialImpossible()) &&
 			c.store.DenialMissHoldsWire(req.WireName(), req.Qclass(), hit)) {
-			return c.serveFailureFromWire(ch)
+			return c.serveFailureFromWire(ch, hit)
 		}
 	}
 	return false

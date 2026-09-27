@@ -118,19 +118,24 @@ func TestCNAMEToAFailingTargetIsNotAnAnswer(t *testing.T) {
 	})
 
 	// The whole question resolves: the alias fails with the target's DNSSEC
-	// Bogus, and later asks are the failure cache's (RFC 9520, Cached Error).
+	// Bogus, and later asks are the failure cache's (RFC 9520), which says
+	// the same: the target never asked again.
 	t.Run("bogus target, alias resolved", func(t *testing.T) {
 		f := newAliasFixture(t)
 		f.serveTarget(t, true)
 		wantAliasFailure(t, "resolved", f.ask(t, true), true, dns.ExtendedErrorCodeDNSBogus)
-		wantAliasFailure(t, "again", f.ask(t, true), true, dns.ExtendedErrorCodeCachedError)
+		asked := f.target.asked("www.target.test.", dns.TypeA)
+		wantAliasFailure(t, "again", f.ask(t, true), true, dns.ExtendedErrorCodeDNSBogus)
 		wantAliasFailure(t, "without EDNS", f.ask(t, false), false, 0)
+		if again := f.target.asked("www.target.test.", dns.TypeA); again != asked {
+			t.Fatalf("the target was asked %d more times, want the failure cache's answers", again-asked)
+		}
 	})
 
 	// The alias was cached while its target was sound, and the target has
 	// failed since. The alias is served from the cache, which materializes it
 	// without an OPT, and the chase fails: the target's EDE must still reach
-	// the client, DNSSEC Bogus when the target resolves, Cached Error once its
+	// the client, DNSSEC Bogus when the target resolves and again once its
 	// failure is cached.
 	t.Run("bogus target, alias served from the cache", func(t *testing.T) {
 		f := newAliasFixture(t)
@@ -142,9 +147,13 @@ func TestCNAMEToAFailingTargetIsNotAnAnswer(t *testing.T) {
 		f.cache.Purge(dns.Question{Name: "www.target.test.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
 
 		wantAliasFailure(t, "first", f.ask(t, true), true, dns.ExtendedErrorCodeDNSBogus)
-		wantAliasFailure(t, "second", f.ask(t, true), true, dns.ExtendedErrorCodeCachedError)
-		wantAliasFailure(t, "third", f.ask(t, true), true, dns.ExtendedErrorCodeCachedError)
+		asked := f.target.asked("www.target.test.", dns.TypeA)
+		wantAliasFailure(t, "second", f.ask(t, true), true, dns.ExtendedErrorCodeDNSBogus)
+		wantAliasFailure(t, "third", f.ask(t, true), true, dns.ExtendedErrorCodeDNSBogus)
 		wantAliasFailure(t, "without EDNS", f.ask(t, false), false, 0)
+		if again := f.target.asked("www.target.test.", dns.TypeA); again != asked {
+			t.Fatalf("the target was asked %d more times, want the failure cache's answers", again-asked)
+		}
 	})
 }
 
