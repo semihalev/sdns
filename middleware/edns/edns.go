@@ -30,7 +30,24 @@ var (
 	ednsErrorOpcodeUnsupp    = ednsErrors.Register("opcode_unsupported")
 	ednsErrorBadVersion      = ednsErrors.Register("bad_version")
 	ednsErrorMalformedCookie = ednsErrors.Register("malformed_cookie")
+	ednsErrorMalformedOPT    = ednsErrors.Register("malformed_opt")
 )
+
+// malformedOPT reports whether req carries more than one OPT, or one whose
+// owner is not the root (RFC 6891 §6.1.1, §6.1.2).
+func malformedOPT(req *dns.Msg) bool {
+	seen := false
+	for _, rr := range req.Extra {
+		if rr.Header().Rrtype != dns.TypeOPT {
+			continue
+		}
+		if seen || rr.Header().Name != "." {
+			return true
+		}
+		seen = true
+	}
+	return false
+}
 
 // malformedCookie reports whether req's first COOKIE option has a length
 // RFC 7873 §5.2.2 calls malformed: valid lengths are 8, a client cookie
@@ -155,6 +172,19 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		ednsErrorOpcodeUnsupp.Inc()
 		_ = dnsutil.NotSupported(w, req)
 
+		ch.Cancel()
+		return
+	}
+
+	// RFC 6891 §6.1.1: a query carries one OPT at most, owned by the root,
+	// and anything else is FORMERR. The reply carries no OPT, there being no
+	// single one to answer by.
+	if malformedOPT(req) {
+		ednsErrorMalformedOPT.Inc()
+		m := new(dns.Msg)
+		m.SetRcode(req, dns.RcodeFormatError)
+		m.RecursionAvailable = true
+		_ = w.WriteMsg(m)
 		ch.Cancel()
 		return
 	}

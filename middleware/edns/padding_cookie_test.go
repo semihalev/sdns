@@ -103,6 +103,43 @@ func TestPaddingSurvivesAWriterWrapper(t *testing.T) {
 	}
 }
 
+// A query carries one OPT at most, owned by the root (RFC 6891 §6.1.1):
+// two, or one owned by another name, is FORMERR, and the reply carries no
+// OPT. Wire-born and decoded; the strict parser hands these packets to the
+// decoded entry.
+func TestMalformedOPTIsFormErr(t *testing.T) {
+	e := truncateHarness(t)
+	handlers := []middleware.Handler{e, &bulkResponder{answer: 1}}
+	for _, tc := range []struct {
+		name  string
+		shape func(*dns.Msg)
+		rcode int
+	}{
+		{"one root OPT", func(*dns.Msg) {}, dns.RcodeSuccess},
+		{"two OPTs", func(m *dns.Msg) {
+			o := new(dns.OPT)
+			o.Hdr.Name = "."
+			o.Hdr.Rrtype = dns.TypeOPT
+			o.SetUDPSize(1232)
+			m.Extra = append(m.Extra, o)
+		}, dns.RcodeFormatError},
+		{"an OPT owned by another name", func(m *dns.Msg) { m.IsEdns0().Hdr.Name = "example.com." }, dns.RcodeFormatError},
+	} {
+		for _, wireBorn := range []bool{true, false} {
+			req := withOptions()
+			tc.shape(req)
+			resp, _ := serveOver(t, "udp", handlers, req, wireBorn)
+			if resp.Rcode != tc.rcode {
+				t.Fatalf("%s, wire-born=%v: %s, want %s", tc.name, wireBorn,
+					dns.RcodeToString[resp.Rcode], dns.RcodeToString[tc.rcode])
+			}
+			if tc.rcode == dns.RcodeFormatError && resp.IsEdns0() != nil {
+				t.Fatalf("%s, wire-born=%v: FORMERR carries an OPT", tc.name, wireBorn)
+			}
+		}
+	}
+}
+
 // Only the first COOKIE option counts (RFC 7873 §5.2): a malformed one
 // after a valid first is ignored, and a malformed first is FORMERR
 // whatever follows.

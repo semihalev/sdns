@@ -69,6 +69,9 @@ func Test_EDNS(t *testing.T) {
 		t.Errorf("ch.Writer.Msg().IsEdns0() = %v, want nil", ch.Writer.Msg().IsEdns0())
 	}
 
+	// The pass above gave the request an OPT of its own; a second one would
+	// make the query malformed (RFC 6891 §6.1.1).
+	req.Extra = nil
 	req.SetEdns0(4096, true)
 	opt := req.IsEdns0()
 	opt.SetVersion(100)
