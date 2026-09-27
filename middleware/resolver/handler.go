@@ -131,7 +131,19 @@ func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	_ = w.WriteMsg(msg)
 }
 
-func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) *dns.Msg {
+func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) (resp *dns.Msg) {
+	// The resolution clears RD on the request it works from, and the
+	// replies built on the way assert it. The client's own RD is what every
+	// reply echoes (RFC 1035 §4.1.1), and what the request holds again once
+	// this returns, a panic included, for any handler that answers after.
+	clientRD := req.RecursionDesired
+	defer func() {
+		req.RecursionDesired = clientRD
+		if resp != nil {
+			resp.RecursionDesired = clientRD
+		}
+	}()
+
 	if len(req.Question) == 0 {
 		return dnsutil.SetRcode(req, dns.RcodeFormatError, false)
 	}
@@ -366,5 +378,9 @@ func anyNotImplemented(req *dns.Msg) *dns.Msg {
 	if opt := req.IsEdns0(); opt != nil {
 		do = opt.Do()
 	}
-	return dnsutil.SetRcode(req, dns.RcodeNotImplemented, do)
+	resp := dnsutil.SetRcode(req, dns.RcodeNotImplemented, do)
+	// The client's RD, echoed: ServeDNS answers ANY before the resolution
+	// touches the request, and SetRcode asserts RD for internal replies.
+	resp.RecursionDesired = req.RecursionDesired
+	return resp
 }

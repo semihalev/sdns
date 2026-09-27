@@ -1042,9 +1042,10 @@ func (ch *Chain) CancelWithRcode(rcode int, do bool) {
 	}
 	m := new(dns.Msg)
 	m.Extra = req.Extra
+	// SetRcode echoes the request's RD, which is the client's: RFC 1035
+	// §4.1.1 copies it into the response, an RD=0 question included.
 	m.SetRcode(req, rcode)
 	m.RecursionAvailable = true
-	m.RecursionDesired = true
 
 	if opt := m.IsEdns0(); opt != nil {
 		opt.SetDo(do)

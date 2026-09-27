@@ -231,16 +231,16 @@ func isDNSSEC(rr dns.RR) bool {
 	return false
 }
 
-// NotSupported response to writer an empty notimplemented message.
+// NotSupported writes an empty NOTIMP reply to req. RD is the request's own
+// (RFC 1035 §4.1.1), and AD is clear: nothing in the reply is authenticated.
 func NotSupported(w interface{ WriteMsg(*dns.Msg) error }, req *dns.Msg) error {
 	return w.WriteMsg(&dns.Msg{
 		MsgHdr: dns.MsgHdr{
-			Rcode:             dns.RcodeNotImplemented,
-			Id:                req.Id,
-			Opcode:            req.Opcode,
-			Response:          true,
-			RecursionDesired:  true,
-			AuthenticatedData: true,
+			Rcode:            dns.RcodeNotImplemented,
+			Id:               req.Id,
+			Opcode:           req.Opcode,
+			Response:         true,
+			RecursionDesired: req.RecursionDesired,
 		},
 	})
 }

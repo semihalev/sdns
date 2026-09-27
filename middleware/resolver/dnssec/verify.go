@@ -677,8 +677,8 @@ func verifyOneSigWithWork(
 
 	// Signature validity is candidate-independent, so reject it before the
 	// first public-key operation.
-	if !sig.ValidityPeriod(time.Time{}) {
-		return ErrInvalidSignaturePeriod
+	if err := signatureValidity(sig); err != nil {
+		return err
 	}
 
 	if !IsSupportedDNSKEYAlgorithm(sig.Algorithm) {
@@ -725,12 +725,30 @@ func verifyOneSigWithWork(
 		// Preserve the validator's original acceptance-time check as well as
 		// the new preflight. A large same-tag candidate set can spend enough
 		// time in crypto to cross the signature's one-second expiry boundary.
-		if !sig.ValidityPeriod(time.Time{}) {
-			return ErrInvalidSignaturePeriod
+		if err := signatureValidity(sig); err != nil {
+			return err
 		}
 		return nil
 	}
 	return lastErr
+}
+
+// signatureValidity checks sig's validity period against the clock as
+// dns.RRSIG.ValidityPeriod does, RFC 1982 serial arithmetic included, and
+// says which side it failed on: not yet valid is EDE 8, expired EDE 7
+// (RFC 8914 §4.8, §4.9).
+func signatureValidity(sig *dns.RRSIG) error {
+	const year68 = 1 << 31
+	now := time.Now().UTC().Unix()
+	inception := int64(sig.Inception) + (int64(sig.Inception)-now)/year68*year68
+	expiration := int64(sig.Expiration) + (int64(sig.Expiration)-now)/year68*year68
+	switch {
+	case now < inception:
+		return ErrSignatureNotYetValid
+	case now > expiration:
+		return ErrInvalidSignaturePeriod
+	}
+	return nil
 }
 
 func usableSignatureCandidate(sig *dns.RRSIG, key *dns.DNSKEY) bool {
