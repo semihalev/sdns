@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"net/netip"
+	"slices"
 	"sync"
 
 	"github.com/miekg/dns"
@@ -373,6 +374,15 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	}
 
 	if w.Proto() == "udp" && udpOverflow(m, w.size) {
+		// RFC 8914 §3: Extended DNS Errors are dropped before any other
+		// data, with TC set. A cached cause can carry text recorded over
+		// TCP that no UDP buffer holds, and the OPT outlives the
+		// truncation below.
+		m.Truncated = true
+		if dropEDE(m) && !udpOverflow(m, w.size) {
+			return w.ResponseWriter.WriteMsg(m)
+		}
+
 		// A truncated response is a retry signal, not a partial answer
 		// (RFC 2181 §9): the client must discard the content and ask
 		// again over TCP, so everything but the question and the OPT
@@ -381,7 +391,6 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 		// it can be the very section that overflowed, and keeping it
 		// used to send a TC=1 message still larger than the buffer the
 		// client advertised.
-		m.Truncated = true
 		m.Answer = []dns.RR{}
 		m.Ns = []dns.RR{}
 		m.Extra = keepOPTOnly(m.Extra)
@@ -389,6 +398,23 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 	}
 
 	return w.ResponseWriter.WriteMsg(m)
+}
+
+// dropEDE removes every Extended DNS Error option from m's OPT, into a
+// fresh slice: the option list may still be referenced by upstream writer
+// layers. It reports whether there was one to remove.
+func dropEDE(m *dns.Msg) bool {
+	opt := m.IsEdns0()
+	if opt == nil || !slices.ContainsFunc(opt.Option, isEDE) {
+		return false
+	}
+	opt.Option = slices.DeleteFunc(slices.Clone(opt.Option), isEDE)
+	return true
+}
+
+func isEDE(o dns.EDNS0) bool {
+	_, ok := o.(*dns.EDNS0_EDE)
+	return ok
 }
 
 // keepOPTOnly returns just the OPT record from extra, or nil without one,

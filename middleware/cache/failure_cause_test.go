@@ -50,11 +50,17 @@ func newFailureCauseChain(t *testing.T, hasEDE bool, code uint16, text string) *
 // and whether the byte path composed it.
 func (f *failureCauseChain) ask(t *testing.T, name string, wireBorn bool) (*dns.Msg, bool) {
 	t.Helper()
+	return f.askOver(t, "udp", name, wireBorn)
+}
+
+// askOver is ask over the given transport.
+func (f *failureCauseChain) askOver(t *testing.T, proto, name string, wireBorn bool) (*dns.Msg, bool) {
+	t.Helper()
 	q := new(dns.Msg)
 	q.SetQuestion(name, dns.TypeA)
 	q.RecursionDesired = true
 	q.SetEdns0(1232, true)
-	writer := mock.NewWriter("udp", "198.51.100.9:40000")
+	writer := mock.NewWriter(proto, "198.51.100.9:40000")
 	ch := middleware.NewChain([]middleware.Handler{f.e, f.c, f.terminal})
 	if wireBorn {
 		raw, err := q.Pack()
@@ -139,15 +145,45 @@ func TestCachedFailureReplaysItsCause(t *testing.T) {
 	}
 }
 
-// A cause whose text would carry the reply past the client's limit is
-// the Msg path's to trim, the byte path does not send it.
-func TestCachedFailureCausePastTheLimitLeavesTheBytePath(t *testing.T) {
-	f := newFailureCauseChain(t, true, dns.ExtendedErrorCodeDNSBogus, strings.Repeat("x", 1300))
+// A cause recorded over TCP can be longer than a UDP client's buffer. Its
+// replay to that client keeps within the buffer: the EDE is dropped and TC
+// set (RFC 8914 §3), on the byte path, which declines, and the Msg path
+// alike. A TCP client still gets the whole cause.
+func TestCachedFailureCausePastTheLimitFitsTheClient(t *testing.T) {
+	text := strings.Repeat("x", 1300)
+	f := newFailureCauseChain(t, true, dns.ExtendedErrorCodeDNSBogus, text)
 	const name = "long.example."
-	f.ask(t, name, false)
-	if _, byWire := f.ask(t, name, true); byWire {
-		t.Fatal("a cause past the client's limit was served from bytes")
+	seed, _ := f.askOver(t, "tcp", name, false)
+	onlyEDE(t, "seeded over TCP", seed, dns.ExtendedErrorCodeDNSBogus, text)
+
+	for _, wireBorn := range []bool{true, false} {
+		resp, byWire := f.ask(t, name, wireBorn)
+		if byWire {
+			t.Fatalf("wire-born=%v: a cause past the client's limit was served from bytes", wireBorn)
+		}
+		packed, err := resp.Pack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(packed) > 1232 {
+			t.Fatalf("wire-born=%v: %d bytes to a client whose buffer is 1232", wireBorn, len(packed))
+		}
+		if !resp.Truncated {
+			t.Fatalf("wire-born=%v: EDE dropped without TC", wireBorn)
+		}
+		if opt := resp.IsEdns0(); opt == nil {
+			t.Fatalf("wire-born=%v: the OPT went with the EDE", wireBorn)
+		} else if len(opt.Option) != 0 {
+			for _, o := range opt.Option {
+				if _, ok := o.(*dns.EDNS0_EDE); ok {
+					t.Fatalf("wire-born=%v: the EDE rode an overflowing reply", wireBorn)
+				}
+			}
+		}
 	}
+
+	again, _ := f.askOver(t, "tcp", name, true)
+	onlyEDE(t, "replayed over TCP", again, dns.ExtendedErrorCodeDNSBogus, text)
 	if f.calls != 1 {
 		t.Fatalf("terminal reached %d times, want the first ask only", f.calls)
 	}
