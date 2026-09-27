@@ -171,7 +171,7 @@ func (e *nxDomainCutEntry) serveWireInto(
 		if !parsed {
 			return nil, false
 		}
-		body, ok = appendRecomposedRR(body, tmpl, rr, ttl, nil)
+		body, ok = appendRecomposedRR(body, tmpl, rr, ttl, nil, nil)
 		if !ok {
 			return nil, false
 		}
