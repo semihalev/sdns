@@ -129,8 +129,15 @@ func (w *ResponseWriter) wireOPTLen() (int, bool) {
 	if w.keepalive {
 		length += wire.OPTOptionHdrLen + 2
 	}
+	if w.pad {
+		// The most a reply can need, known exactly only once it is built.
+		length += wire.OPTOptionHdrLen + paddingBlock - 1
+	}
 	return length, true
 }
+
+// paddingZeros is the payload every padding option is cut from.
+var paddingZeros [paddingBlock]byte
 
 // BeginWire delegates the pre-build lease down the writer chain; edns has
 // no buffer of its own, its OPT lands in the reserve the lease carries.
@@ -180,6 +187,9 @@ func (w *ResponseWriter) appendWireOPT(body []byte, info middleware.WireInfo) ([
 	}
 	if info.HasEDE {
 		body = wire.AppendOptionEDE(body, info.EDECode, info.EDEText)
+	}
+	if w.pad {
+		body = wire.AppendOption(body, dns.EDNS0PADDING, paddingZeros[:paddingLen(len(body))])
 	}
 
 	return wire.FinishOPT(body, rdlenOff), true

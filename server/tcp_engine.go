@@ -173,6 +173,10 @@ func (j *tcpJob) FlushStaged() {
 	}
 }
 
+// Encrypted reports whether the job's connection is DNS over TLS, the one
+// thing a stream job's address does not say.
+func (j *tcpJob) Encrypted() bool { return j.engine.proto == "tls" }
+
 func (j *tcpJob) LocalAddr() net.Addr  { return j.conn.LocalAddr() }
 func (j *tcpJob) RemoteAddr() net.Addr { return j.conn.RemoteAddr() }
 func (j *tcpJob) Close() error         { return j.conn.Close() }

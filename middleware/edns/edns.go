@@ -13,6 +13,7 @@ import (
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/ecs"
 	"github.com/semihalev/sdns/internal/metric"
+	"github.com/semihalev/sdns/internal/wire"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
 )
@@ -26,9 +27,29 @@ var (
 		Help: "EDNS protocol errors that caused the query to be rejected, by reason",
 	}, []string{"reason"})
 
-	ednsErrorOpcodeUnsupp = ednsErrors.Register("opcode_unsupported")
-	ednsErrorBadVersion   = ednsErrors.Register("bad_version")
+	ednsErrorOpcodeUnsupp    = ednsErrors.Register("opcode_unsupported")
+	ednsErrorBadVersion      = ednsErrors.Register("bad_version")
+	ednsErrorMalformedCookie = ednsErrors.Register("malformed_cookie")
 )
+
+// malformedCookie reports whether req carries a COOKIE option of a length
+// RFC 7873 §5.2.2 calls malformed: valid lengths are 8, a client cookie
+// alone, and 16 to 40, with a server cookie.
+func malformedCookie(req *dns.Msg) bool {
+	opt := req.IsEdns0()
+	if opt == nil {
+		return false
+	}
+	for _, o := range opt.Option {
+		if c, ok := o.(*dns.EDNS0_COOKIE); ok {
+			n := len(c.Cookie) / 2 // hex
+			if n != 8 && (n < 16 || n > 40) {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // responseWriterPool reuses per-query ResponseWriter wrappers. A wrapper
 // is alive exactly for the duration of ch.Next in ServeDNS, so the pool
@@ -107,7 +128,11 @@ type ResponseWriter struct {
 	// is forbidden over UDP in both directions, and DoQ forbids it
 	// entirely (RFC 9250 §5.5.2).
 	keepalive bool
-	pooled    bool
+	// pad marks a client that sent the RFC 7830 padding option over an
+	// encrypted transport: the reply is padded to a multiple of
+	// paddingBlock (RFC 8467 §4.1).
+	pad    bool
+	pooled bool
 }
 
 // (*EDNS).ServeDNS serveDNS implements the Handle interface. A wire-born
@@ -137,6 +162,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	noedns := req.IsEdns0() == nil
 	keepalive := hasClientKeepalive(req)
+	padded := hasClientPadding(req)
 	if hasClientECS(req) {
 		// Preserve the ingress fact before SetEdns0 applies the forwarding
 		// policy. A disabled policy or an allow-list miss strips ECS from the
@@ -153,6 +179,8 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if clientAddr.Is4In6() {
 		clientAddr = clientAddr.Unmap()
 	}
+	// Read before SetEdns0, which strips the client's options.
+	malformed := malformedCookie(req)
 	opt, size, cookie, nsid, do := dnsutil.SetEdns0(req, e.ecsPolicy, clientAddr)
 	if opt.Version() != 0 {
 		ednsErrorBadVersion.Inc()
@@ -160,6 +188,11 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 		ch.CancelWithRcode(dns.RcodeBadVers, do)
 
+		return
+	}
+	if malformed {
+		ednsErrorMalformedCookie.Inc()
+		ch.CancelWithRcode(dns.RcodeFormatError, do)
 		return
 	}
 
@@ -183,6 +216,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	rw.noedns = noedns
 	rw.nsid = nsid
 	rw.keepalive = keepalive && w.Proto() == "tcp"
+	rw.pad = padded && encrypted(w)
 	rw.respUDPSize = opt.UDPSize()
 	// Clear AD unless the client signalled it wants validation state (DO
 	// or AD bit set) AND did not set CD. RFC 4035 §3.2.3 / RFC 6840 §5.7:
@@ -246,6 +280,7 @@ func (e *EDNS) serveWire(ctx context.Context, ch *middleware.Chain) {
 	rw.noedns = noedns
 	rw.nsid = req.HasNSID()
 	rw.keepalive = req.HasTCPKeepalive() && w.Proto() == "tcp"
+	rw.pad = req.HasPadding() && encrypted(w)
 	rw.respUDPSize = dnsutil.DefaultMsgSize
 	if cookie := req.ClientCookie(); len(cookie) >= 8 {
 		copy(rw.cookieRaw[:], cookie[:8])
@@ -267,6 +302,34 @@ func (e *EDNS) serveWire(ctx context.Context, ch *middleware.Chain) {
 		}
 	}()
 	ch.Next(ctx)
+}
+
+// paddingBlock is the block a padded reply's length is a multiple of, the
+// size RFC 8467 §4.1 recommends for responses.
+const paddingBlock = 468
+
+// encrypted reports whether w's transport is DoT, DoH or DoQ: padding on
+// a clear transport would only cost bytes (RFC 7830 §6).
+func encrypted(w middleware.ResponseWriter) bool {
+	e, ok := w.(interface{ Encrypted() bool })
+	return ok && e.Encrypted()
+}
+
+// paddingLen is the padding option payload that brings a reply of n bytes,
+// before the option, to a multiple of paddingBlock.
+func paddingLen(n int) int {
+	return (paddingBlock - (n+wire.OPTOptionHdrLen)%paddingBlock) % paddingBlock
+}
+
+func hasClientPadding(req *dns.Msg) bool {
+	if opt := req.IsEdns0(); opt != nil {
+		for _, option := range opt.Option {
+			if _, ok := option.(*dns.EDNS0_PADDING); ok {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func hasClientKeepalive(req *dns.Msg) bool {
@@ -362,6 +425,18 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 			opt.Option = append(opt.Option, &dns.EDNS0_TCP_KEEPALIVE{
 				Code:    dns.EDNS0TCPKEEPALIVE,
 				Timeout: tcpKeepaliveUnits,
+			})
+		}
+
+		// Padding is hop-by-hop as well: an upstream's is dropped, and
+		// this reply's own is added last, once its length is known.
+		opt.Option = slices.DeleteFunc(opt.Option, func(o dns.EDNS0) bool {
+			_, ok := o.(*dns.EDNS0_PADDING)
+			return ok
+		})
+		if w.pad {
+			opt.Option = append(opt.Option, &dns.EDNS0_PADDING{
+				Padding: make([]byte, paddingLen(m.Len())),
 			})
 		}
 	} else {

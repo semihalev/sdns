@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
@@ -88,6 +89,63 @@ func serveBulk(t *testing.T, e *EDNS, udpSize uint16, b *bulkResponder) *dns.Msg
 		t.Fatal("no response written")
 	}
 	return w.Msg()
+}
+
+// A COOKIE option of a length RFC 7873 §5.2.2 calls malformed is answered
+// FORMERR, with the OPT; the valid lengths, 8 and 16 to 40, are served.
+// Wire-born and decoded alike: the strict parser hands the malformed ones
+// to the decoded entry, which answers them.
+func TestMalformedCookieIsFormErr(t *testing.T) {
+	e := truncateHarness(t)
+	for _, n := range []int{5, 8, 12, 15, 16, 40, 41} {
+		for _, wireBorn := range []bool{true, false} {
+			req := new(dns.Msg)
+			req.SetQuestion("cookie.example.com.", dns.TypeA)
+			req.SetEdns0(1232, false)
+			opt := req.IsEdns0()
+			opt.Option = append(opt.Option, &dns.EDNS0_COOKIE{
+				Code: dns.EDNS0COOKIE, Cookie: strings.Repeat("ab", n),
+			})
+
+			w := mock.NewWriter("udp", "192.0.2.7:40000")
+			ch := middleware.NewChain([]middleware.Handler{e, &bulkResponder{answer: 1}})
+			if wireBorn {
+				raw, err := req.Pack()
+				if err != nil {
+					t.Fatal(err)
+				}
+				r := new(middleware.Request)
+				if r.ParseWire(raw, time.Now(), nil) {
+					ch.ResetWire(w, r)
+				} else {
+					// Declined by the strict parser, decoded as the server does.
+					m := new(dns.Msg)
+					if err := m.Unpack(raw); err != nil {
+						t.Fatalf("%d bytes: %v", n, err)
+					}
+					ch.Reset(w, m)
+				}
+			} else {
+				ch.Reset(w, req)
+			}
+			ch.Next(context.Background())
+			if !w.Written() {
+				t.Fatalf("%d bytes, wire-born=%v: no reply", n, wireBorn)
+			}
+			resp := w.Msg()
+			want := dns.RcodeSuccess
+			if n != 8 && (n < 16 || n > 40) {
+				want = dns.RcodeFormatError
+			}
+			if resp.Rcode != want {
+				t.Fatalf("%d-byte cookie, wire-born=%v: %s, want %s", n, wireBorn,
+					dns.RcodeToString[resp.Rcode], dns.RcodeToString[want])
+			}
+			if resp.IsEdns0() == nil {
+				t.Fatalf("%d-byte cookie, wire-born=%v: reply without an OPT", n, wireBorn)
+			}
+		}
+	}
 }
 
 // TestTruncatedResponseIsMinimal pins RFC 6891 §7: the truncated response
