@@ -2395,6 +2395,14 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 			middleware.MarkRequestLocalFailureResponse(ctx, out, err)
 			return out
 		}
+		if err == nil && respCname != nil &&
+			respCname.Rcode != dns.RcodeSuccess && respCname.Rcode != dns.RcodeNameError {
+			// The target answered with a failure, a bogus one above all. The
+			// alias alone does not answer the question asked, and its AD
+			// would vouch for data the client never got: the whole answer
+			// fails as the target did.
+			return chaseFailure(ctx, msg, respCname)
+		}
 		if err == nil && (len(respCname.Answer) > 0 || len(respCname.Ns) > 0) {
 			target, child = searchAdditionalAnswer(msg, respCname)
 			// The sub-query's records are now part of the outer answer, so
@@ -2451,6 +2459,41 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	}
 
 	return msg
+}
+
+// chaseFailure is the answer to an alias whose target answered with a
+// failure: SERVFAIL, with the target's Extended DNS Error when it gave one.
+// A target that validation refused keeps that verdict on the outer answer,
+// so failover leaves the alias alone as it does the target.
+func chaseFailure(ctx context.Context, msg, target *dns.Msg) *dns.Msg {
+	do := false
+	if opt := msg.IsEdns0(); opt != nil {
+		do = opt.Do()
+	}
+	code, text := dns.ExtendedErrorCodeOther, ""
+	if opt := target.IsEdns0(); opt != nil {
+		for _, o := range opt.Option {
+			if ede, ok := o.(*dns.EDNS0_EDE); ok {
+				code, text = ede.InfoCode, ede.ExtraText
+				break
+			}
+		}
+	}
+	out := dnsutil.SetRcode(msg, dns.RcodeServerFailure, do)
+	if out.IsEdns0() == nil {
+		// An alias served from the cache materializes without an OPT, and
+		// the EDE needs one to ride on. The EDNS layer shapes it to the
+		// client's request, or drops it for a client without EDNS. The
+		// capped slice keeps the append off the alias's own array.
+		opt := &dns.OPT{Hdr: dns.RR_Header{Name: ".", Rrtype: dns.TypeOPT}}
+		opt.SetUDPSize(dnsutil.DefaultMsgSize)
+		out.Extra = append(out.Extra[:len(out.Extra):len(out.Extra)], opt)
+	}
+	dnsutil.SetEDE(out, code, text)
+	if middleware.IsValidationFailureResponse(ctx, target) {
+		middleware.MarkValidationFailureResponse(ctx, out)
+	}
+	return out
 }
 
 // respCnameHasType reports whether the CNAME-chase response
