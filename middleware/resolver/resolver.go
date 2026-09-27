@@ -1318,6 +1318,10 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 					zlog.Warn("DNSSEC verify failed (answer)", "query", dnsutil.FormatQuestion(q), "error", dnssec.ErrNoSignatures.Error())
 					return nil, dnssec.ErrNoSignatures
 				}
+			} else if code, unsupported := ownZoneUnsupportedDSEDE(parentDS, zone); unsupported {
+				// Unsigned, and acceptably so: the zone's own DS names
+				// nothing this validator verifies.
+				insecureEDE = code
 			}
 		} else {
 			origDSRR := parentDS
@@ -1417,6 +1421,12 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 		}
 		resp.Answer = append(resp.Answer, targetMsg.Answer...)
 		resp.Rcode = targetMsg.Rcode
+		// The target's records are the client's now, and so is the reason
+		// they are insecure, unless the outer zone has its own.
+		if ede := dnsutil.GetEDE(targetMsg); insecureEDE == 0 && ede != nil &&
+			dnsutil.IsUnsupportedDSEDE(ede.InfoCode) {
+			insecureEDE = ede.InfoCode
+		}
 		terminalDenial := targetMsg.Rcode == dns.RcodeNameError
 		if !req.CheckingDisabled {
 			resp.AuthenticatedData = resp.AuthenticatedData && targetMsg.AuthenticatedData
@@ -1505,6 +1515,9 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 					zlog.Warn("DNSSEC verify failed (NXDOMAIN)", "query", dnsutil.FormatQuestion(q), "error", err.Error())
 					return nil, err
 				}
+			} else if code, unsupported := ownZoneUnsupportedDSEDE(parentDS, zone); unsupported {
+				// As in answer().
+				insecureEDE = code
 			}
 		} else {
 			origDSRR := parentDS
@@ -3001,29 +3014,21 @@ func unsupportedDSEDE(dsset []dns.RR) (uint16, bool) {
 	return dns.ExtendedErrorCodeUnsupportedDSDigestType, true
 }
 
-// withEDE puts an Extended DNS Error on resp's OPT, on a copy of it: the
-// OPT a reply carries is often the request's own, which is still in use.
-// A reply from an authority that sent no OPT gets one of its own; the
-// client-facing EDNS layer sets its size and flags, or drops it for a
-// client without EDNS.
-func withEDE(resp *dns.Msg, code uint16) {
-	ede := &dns.EDNS0_EDE{InfoCode: code}
-	for i, rr := range resp.Extra {
-		opt, ok := rr.(*dns.OPT)
-		if !ok {
-			continue
-		}
-		own := &dns.OPT{Hdr: opt.Hdr}
-		own.Option = append(slices.Clip(opt.Option), ede)
-		extra := slices.Clone(resp.Extra)
-		extra[i] = own
-		resp.Extra = extra
-		return
+// ownZoneUnsupportedDSEDE is unsupportedDSEDE for an answer that carries no
+// signatures: the reason holds only when dsset is the answering zone's own
+// DS. An ancestor's unusable DS makes the zone below insecure through an
+// unsigned delegation, which is no reason of this kind.
+func ownZoneUnsupportedDSEDE(dsset []dns.RR, zone string) (uint16, bool) {
+	if len(dsset) == 0 || zone == "" ||
+		!strings.EqualFold(dsset[0].Header().Name, dns.Fqdn(zone)) {
+		return 0, false
 	}
-	own := &dns.OPT{Hdr: dns.RR_Header{Name: rootzone, Rrtype: dns.TypeOPT}}
-	own.SetUDPSize(dnsutil.DefaultMsgSize)
-	own.Option = []dns.EDNS0{ede}
-	resp.Extra = append(slices.Clip(resp.Extra), own)
+	return unsupportedDSEDE(dsset)
+}
+
+// withEDE puts the reason an answer is insecure on it.
+func withEDE(resp *dns.Msg, code uint16) {
+	dnsutil.PrependEDE(resp, code, "")
 }
 
 func (r *Resolver) lookupDS(ctx context.Context, qname string, cd bool) (msg *dns.Msg, err error) {

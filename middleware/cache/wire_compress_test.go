@@ -6,10 +6,12 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/internal/wire"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/middleware/edns"
 )
 
 // captureSink is a mock transport that leases bodies from its own buffer and
@@ -105,6 +107,73 @@ func TestComposedChainIsNameCompressed(t *testing.T) {
 					t.Fatalf("record %d owner %q written in full, want a pointer", i, got.Answer[i].Header().Name)
 				}
 				off = rr.End
+			}
+		})
+	}
+}
+
+// A chain composed on the byte path carries the reason a hop's records are
+// insecure when the hop's entry holds one, an unusable DS, and the alias
+// has no EDE of its own; an alias EDE keeps precedence. Nothing allocated.
+func TestComposedChainCarriesTheTargetsInsecureReason(t *testing.T) {
+	const alias, host = "alias.reason.test.", "host.reason.example.net."
+	withEDE := func(m *dns.Msg, code uint16) *dns.Msg {
+		m.SetEdns0(1232, true)
+		m.IsEdns0().Option = []dns.EDNS0{&dns.EDNS0_EDE{InfoCode: code}}
+		return m
+	}
+	for _, tc := range []struct {
+		name     string
+		aliasEDE uint16 // 0: none
+		want     uint16
+	}{
+		{"the target's reason", 0, dns.ExtendedErrorCodeUnsupportedDSDigestType},
+		{"the alias's own EDE first", dns.ExtendedErrorCodeFiltered, dns.ExtendedErrorCodeFiltered},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := New(&config.Config{CacheSize: 1024, Expire: 600})
+			defer c.Stop()
+			e := edns.New(&config.Config{})
+			aliasResp := seamResponse(alias, &dns.CNAME{
+				Hdr:    dns.RR_Header{Name: alias, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+				Target: host,
+			})
+			if tc.aliasEDE != 0 {
+				withEDE(aliasResp, tc.aliasEDE)
+			}
+			c.store.SetFromResponseWithCut(aliasResp, false, lease.Lease{})
+			c.store.SetFromResponseWithCut(withEDE(seamResponse(host, seamA(host)),
+				dns.ExtendedErrorCodeUnsupportedDSDigestType), false, lease.Lease{})
+
+			req, _ := wireTestRequest(t, alias, dns.TypeA, false)
+			w := &captureSink{Writer: mock.NewWriter("udp", "192.0.2.9:53000")}
+			ch := middleware.NewChain([]middleware.Handler{e, c, middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+				ch.Cancel()
+			})})
+			var meta middleware.ResponseMeta
+			ctx := middleware.WithResponseMeta(context.Background(), &meta)
+			serve := func() {
+				ch.ResetWire(w, req)
+				ch.AllowDirectPack()
+				ch.Next(ctx)
+			}
+			before := wireChaseServed.Value()
+			serve()
+			if wireChaseServed.Value() == before || w.last == nil {
+				t.Fatal("the chain was not composed on the byte path")
+			}
+			got := new(dns.Msg)
+			if err := got.Unpack(w.last); err != nil {
+				t.Fatalf("composed reply does not unpack: %v", err)
+			}
+			if len(got.Answer) != 2 {
+				t.Fatalf("answer %v, want the alias and the address", got.Answer)
+			}
+			if ede := dnsutil.GetEDE(got); ede == nil || ede.InfoCode != tc.want {
+				t.Fatalf("EDE %v, want %d", ede, tc.want)
+			}
+			if allocs := testing.AllocsPerRun(100, serve); allocs != 0 {
+				t.Fatalf("a composed chain with an EDE allocated %.2f objects per serve", allocs)
 			}
 		})
 	}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/miekg/dns"
 	internalcache "github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/wire"
 	"github.com/semihalev/sdns/middleware"
 	"golang.org/x/time/rate"
@@ -100,20 +101,25 @@ func (c *Cache) serveChaseHit(
 	for i := range n {
 		size += len(segs[i].body) + segs[i].anCount*wireChaseHeadroom
 	}
-	dst := leaser.BeginWire(size, capability.Reserve+alias.wireEDEReserve())
+	ede := chaseEDE(segs[:n])
+	edeReserve := 0
+	if ede != nil {
+		edeReserve = wire.OPTOptionHdrLen + 2 + len(ede.ExtraText)
+	}
+	dst := leaser.BeginWire(size, capability.Reserve+edeReserve)
 	if dst == nil {
 		wireSkipWriter.Inc()
 		return false
 	}
 
-	body, info, built := composeWireChase(dst, ch.Request, alias, segs[:n])
+	body, info, built := composeWireChase(dst, ch.Request, ede, segs[:n])
 	if !built {
 		leaser.AbortWire()
 		wireSkipBuild.Inc()
 		return false
 	}
 	if capability.MaxSize > 0 &&
-		len(body)+capability.Reserve+alias.wireEDEReserve() > capability.MaxSize {
+		len(body)+capability.Reserve+edeReserve > capability.MaxSize {
 		leaser.AbortWire()
 		wireSkipSize.Inc()
 		return false
@@ -271,7 +277,7 @@ func (c *Cache) collectWireChase(
 func composeWireChase(
 	dst []byte,
 	req *middleware.Request,
-	alias *CacheEntry,
+	ede *dns.EDNS0_EDE,
 	segs []wireChaseSegment,
 ) ([]byte, middleware.WireInfo, bool) {
 	if cap(dst) < wire.HeaderLen {
@@ -338,12 +344,27 @@ func composeWireChase(
 		AuthenticatedData: authData,
 		HasDNSSEC:         hasDNSSEC,
 	}
-	if ede := alias.edeOption(); ede != nil {
+	if ede != nil {
 		info.HasEDE = true
 		info.EDECode = ede.InfoCode
 		info.EDEText = ede.ExtraText
 	}
 	return body, info, true
+}
+
+// chaseEDE is the Extended DNS Error a composed chain carries: the alias
+// entry's own, or else the first hop's that says why its records are
+// insecure (carryInsecureReason on the Msg path).
+func chaseEDE(segs []wireChaseSegment) *dns.EDNS0_EDE {
+	if ede := segs[0].entry.edeOption(); ede != nil {
+		return ede
+	}
+	for i := 1; i < len(segs); i++ {
+		if ede := segs[i].entry.edeOption(); ede != nil && dnsutil.IsUnsupportedDSEDE(ede.InfoCode) {
+			return ede
+		}
+	}
+	return nil
 }
 
 // appendCapped appends b without ever growing dst's backing array.
