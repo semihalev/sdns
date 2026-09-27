@@ -2315,7 +2315,16 @@ func ReleaseMsg(m *dns.Msg) {
 }
 
 // additionalAnswer implements the v1 CNAME resolution logic.
-func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
+func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) (out *dns.Msg) {
+	// Every answer this returns, a local failure of the chase included,
+	// echoes the client's RD, which msg carries; SetRcode asserts RD=1.
+	clientRD := msg.RecursionDesired
+	defer func() {
+		if out != nil {
+			out.RecursionDesired = clientRD
+		}
+	}()
+
 	if len(msg.Question) == 0 {
 		return msg
 	}
@@ -2545,8 +2554,6 @@ func chaseFailure(ctx context.Context, msg, target *dns.Msg) *dns.Msg {
 		}
 	}
 	out := dnsutil.SetRcode(msg, dns.RcodeServerFailure, do)
-	// The client's RD, which the alias answer echoes; SetRcode asserts RD.
-	out.RecursionDesired = msg.RecursionDesired
 	if out.IsEdns0() == nil {
 		// An alias served from the cache materializes without an OPT, and
 		// the EDE needs one to ride on. The EDNS layer shapes it to the

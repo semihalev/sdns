@@ -3,14 +3,72 @@ package cache
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/edns"
 )
+
+// Every local failure of an alias chase echoes the client's RD: an alias to
+// itself and an alias loop, served from the cache to a question that did
+// not desire recursion, are SERVFAIL with RD=0, and with RD=1 for one that
+// did.
+func TestFailedChaseEchoesTheClientsRD(t *testing.T) {
+	cname := func(owner, target string) dns.RR {
+		return &dns.CNAME{
+			Hdr:    dns.RR_Header{Name: owner, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+			Target: target,
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		qname  string
+		chains [][2]string
+	}{
+		{"an alias to itself", "self.loop.test.", [][2]string{{"self.loop.test.", "self.loop.test."}}},
+		{"an alias loop", "a.loop.test.", [][2]string{{"a.loop.test.", "b.loop.test."}, {"b.loop.test.", "a.loop.test."}}},
+	} {
+		for _, rd := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, RD=%v", tc.name, rd), func(t *testing.T) {
+				cfg := makeTestConfig()
+				cfg.RateLimit = 0
+				c := New(cfg)
+				defer c.Stop()
+				terminal := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+					m := new(dns.Msg)
+					m.SetRcode(ch.Request.Msg(), dns.RcodeServerFailure)
+					_ = ch.Writer.WriteMsg(m)
+					ch.Cancel()
+				})
+				c.SetQueryer(&internalQueryer{handlers: []middleware.Handler{c, terminal}})
+				for _, link := range tc.chains {
+					c.store.SetFromResponseWithCut(seamResponse(link[0], cname(link[0], link[1])), false, lease.Lease{})
+				}
+
+				q := new(dns.Msg)
+				q.SetQuestion(tc.qname, dns.TypeA)
+				q.RecursionDesired = rd
+				q.SetEdns0(1232, false)
+				w := mock.NewWriter("udp", "192.0.2.9:53000")
+				ch := middleware.NewChain([]middleware.Handler{edns.New(cfg), c, terminal})
+				ch.Reset(w, q)
+				ch.Next(context.Background())
+				resp := w.Msg()
+				if resp == nil || resp.Rcode != dns.RcodeServerFailure {
+					t.Fatalf("reply %v, want SERVFAIL", resp)
+				}
+				if resp.RecursionDesired != rd {
+					t.Fatalf("reply RD = %v, want the client's %v", resp.RecursionDesired, rd)
+				}
+			})
+		}
+	}
+}
 
 // A hit for a question that does not desire recursion starts no refresh:
 // answering from the cache is all it asked for, and a prefetch is upstream
