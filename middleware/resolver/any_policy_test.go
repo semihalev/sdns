@@ -146,6 +146,10 @@ func TestOnlyClassINIsResolved(t *testing.T) {
 		{"NONE", "www.signed.", dns.TypeA, dns.ClassNONE, dns.RcodeNotImplemented, int(dns.ExtendedErrorCodeNotSupported)},
 		{"HESIOD", "www.signed.", dns.TypeA, dns.ClassHESIOD, dns.RcodeNotImplemented, int(dns.ExtendedErrorCodeNotSupported)},
 		{"unassigned", "www.signed.", dns.TypeA, 1234, dns.RcodeNotImplemented, int(dns.ExtendedErrorCodeNotSupported)},
+		// RFC 9824 §3.5 names no class: NXNAME is FORMERR in every one.
+		{"NXNAME in CHAOS", "www.signed.", dns.TypeNXNAME, dns.ClassCHAOS, dns.RcodeFormatError, int(dns.ExtendedErrorCodeInvalidQueryType)},
+		{"NXNAME in ANY", "www.signed.", dns.TypeNXNAME, dns.ClassANY, dns.RcodeFormatError, int(dns.ExtendedErrorCodeInvalidQueryType)},
+		{"NXNAME in HESIOD", "www.signed.", dns.TypeNXNAME, dns.ClassHESIOD, dns.RcodeFormatError, int(dns.ExtendedErrorCodeInvalidQueryType)},
 	} {
 		for _, wireBorn := range []bool{false, true, false, true} {
 			q := new(dns.Msg)
@@ -192,6 +196,46 @@ func TestOnlyClassINIsResolved(t *testing.T) {
 	debugns = true
 	if isDeclined(dns.TypeHINFO, dns.ClassCHAOS) {
 		t.Fatal("the debug CHAOS HINFO question was declined")
+	}
+}
+
+// The debug nameserver stats are answered by this server, ahead of any
+// forwarding: with forwarders configured, and on a transport reader that
+// may not block, the question is answered where it lands, never handed on
+// to a forwarder or off to a worker.
+func TestDebugNSStatsAreAnsweredAheadOfForwarding(t *testing.T) {
+	was := debugns
+	t.Cleanup(func() { debugns = was })
+	debugns = true
+
+	cfg := makeTestConfig()
+	cfg.ForwarderServers = []string{"192.0.2.53:53"}
+	cfg.CacheSize = 1024
+	h := New(cfg)
+	c := answercache.New(cfg)
+	handedOn := false
+	next := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		handedOn = true
+		ch.Cancel()
+	})
+
+	req := new(dns.Msg)
+	req.SetQuestion("example.", dns.TypeHINFO)
+	req.Question[0].Qclass = dns.ClassCHAOS
+	w := mock.NewWriter("udp", "127.0.0.1:0")
+	ch := middleware.NewChain([]middleware.Handler{c, h, next})
+	ch.Reset(w, req)
+	ch.SetInlineOnly()
+	ch.Next(context.Background())
+
+	if handedOn {
+		t.Fatal("the debug question was handed on to the forwarder")
+	}
+	if ch.Handoff() {
+		t.Fatal("the debug question was handed off to a worker")
+	}
+	if !w.Written() || w.Msg().Rcode != dns.RcodeSuccess {
+		t.Fatalf("reply %v, want the nameserver stats", w.Msg())
 	}
 }
 

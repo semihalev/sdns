@@ -87,6 +87,18 @@ func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
+	// The debug nameserver stats are this server's too, read from its own
+	// delegation cache: answered here, ahead of any forwarding, so the
+	// question never leaves the server. The cache passes it by, as it does
+	// every class but IN, and it must be answerable where it lands, on a
+	// transport reader that may not block included.
+	if ch.Request != nil && isDebugNSStats(ch.Request.Qtype(), ch.Request.Qclass()) {
+		if _, req := ch.Materialize(ctx); req != nil {
+			_ = ch.Writer.WriteMsg(h.nsStats(req))
+		}
+		return
+	}
+
 	// Skip resolver if forwarders are configured
 	if len(h.cfg.ForwarderServers) > 0 {
 		ch.Next(ctx)
@@ -162,7 +174,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) (resp *dns.Msg) {
 	}
 
 	// CHAOS queries: debug nameserver stats (HINFO) or cache purge (NULL)
-	if debugns && q.Qclass == dns.ClassCHAOS && q.Qtype == dns.TypeHINFO {
+	if isDebugNSStats(q.Qtype, q.Qclass) {
 		return h.nsStats(req)
 	}
 
@@ -373,11 +385,12 @@ const name = "resolver"
 // declined is the answer to a question isDeclined names, with the client's
 // DO echoed on the OPT:
 //
+//   - NXNAME, in any class: FORMERR, EDE 30 (Invalid Query Type), RFC 9824
+//     §3.5.
 //   - CHAOS, a name the chaos middleware did not answer: REFUSED.
 //   - Any other class but IN: NOTIMP, EDE 21 (Not Supported).
 //   - ANY: NOTIMP, EDE 21 (Not Supported).
 //   - AXFR, IXFR: REFUSED. A resolver serves no zones to transfer.
-//   - NXNAME: FORMERR, EDE 30 (Invalid Query Type), RFC 9824 §3.5.
 //
 // It is a policy answer about the question, not a resolution failure, and
 // the cache passes these questions by, so the answer is neither stored nor
@@ -390,6 +403,9 @@ func declined(req *dns.Msg) *dns.Msg {
 	var resp *dns.Msg
 	q := req.Question[0]
 	switch {
+	case q.Qtype == dns.TypeNXNAME:
+		// RFC 9824 §3.5 names no class: FORMERR in every one.
+		resp = declinedQtype(req, do)
 	case q.Qclass == dns.ClassCHAOS:
 		// The CHAOS names this server answers are the chaos middleware's;
 		// any other is refused, not resolved at the roots.
@@ -410,10 +426,16 @@ func declined(req *dns.Msg) *dns.Msg {
 // dnsutil.DeclinedQtype names, or a class other than IN, except the CHAOS
 // HINFO question the debug nameserver stats answer.
 func isDeclined(qtype, qclass uint16) bool {
-	if debugns && qclass == dns.ClassCHAOS && qtype == dns.TypeHINFO {
+	if isDebugNSStats(qtype, qclass) {
 		return false
 	}
 	return dnsutil.DeclinedQtype(qtype) || dnsutil.DeclinedClass(qclass)
+}
+
+// isDebugNSStats reports whether a question asks for the debug nameserver
+// stats, CHAOS HINFO with SDNS_DEBUGNS set.
+func isDebugNSStats(qtype, qclass uint16) bool {
+	return debugns && qclass == dns.ClassCHAOS && qtype == dns.TypeHINFO
 }
 
 // declinedQtype is declined's answer for an IN question of a declined type.
