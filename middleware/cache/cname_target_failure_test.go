@@ -72,6 +72,29 @@ func TestAdditionalAnswerTargetFailureFailsTheAlias(t *testing.T) {
 		})
 	}
 
+	// An alias served from the cache materializes without an OPT; the
+	// failure still carries the target's EDE, on an OPT of its own.
+	t.Run("alias without an OPT", func(t *testing.T) {
+		c := New(&config.Config{CacheSize: 1024, Expire: 300})
+		defer c.Stop()
+		c.SetQueryer(queryerFunc(func(_ context.Context, req *dns.Msg) (*dns.Msg, error) {
+			return dnsutil.SetRcodeWithEDE(req, dns.RcodeServerFailure, true, dns.ExtendedErrorCodeDNSBogus, "target refused"), nil
+		}))
+		msg := alias()
+		msg.Extra = nil
+		got := c.additionalAnswer(context.Background(), msg)
+		opt := got.IsEdns0()
+		if got.Rcode != dns.RcodeServerFailure || opt == nil || len(opt.Option) != 1 {
+			t.Fatalf("%s OPT %v, want SERVFAIL with the target's EDE", dns.RcodeToString[got.Rcode], opt)
+		}
+		if ede, ok := opt.Option[0].(*dns.EDNS0_EDE); !ok || ede.InfoCode != dns.ExtendedErrorCodeDNSBogus {
+			t.Fatalf("OPT %v, want the target's DNSSEC Bogus", opt)
+		}
+		if len(msg.Extra) != 0 {
+			t.Fatal("the failure's OPT was appended to the alias's own additional section")
+		}
+	})
+
 	t.Run("denied target still composes", func(t *testing.T) {
 		c := New(&config.Config{CacheSize: 1024, Expire: 300})
 		defer c.Stop()

@@ -2496,7 +2496,17 @@ func chaseFailure(ctx context.Context, msg, target *dns.Msg) *dns.Msg {
 			}
 		}
 	}
-	out := dnsutil.SetRcodeWithEDE(msg, dns.RcodeServerFailure, do, code, text)
+	out := dnsutil.SetRcode(msg, dns.RcodeServerFailure, do)
+	if out.IsEdns0() == nil {
+		// An alias served from the cache materializes without an OPT, and
+		// the EDE needs one to ride on. The EDNS layer shapes it to the
+		// client's request, or drops it for a client without EDNS. The
+		// capped slice keeps the append off the alias's own array.
+		opt := &dns.OPT{Hdr: dns.RR_Header{Name: ".", Rrtype: dns.TypeOPT}}
+		opt.SetUDPSize(dnsutil.DefaultMsgSize)
+		out.Extra = append(out.Extra[:len(out.Extra):len(out.Extra)], opt)
+	}
+	dnsutil.SetEDE(out, code, text)
 	if middleware.IsValidationFailureResponse(ctx, target) {
 		middleware.MarkValidationFailureResponse(ctx, out)
 	}
