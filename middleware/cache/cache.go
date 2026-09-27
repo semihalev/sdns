@@ -570,9 +570,11 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 	// A question that does not desire recursion is the cache's to answer
 	// or no one's: whatever the cache holds was served above, and a miss
-	// goes no further. The root is the exception, a resolver priming from
-	// this one asks for it that way.
-	if !req.RecursionDesired && q.Name != "." {
+	// goes no further. The root is the exception, for a client's own
+	// question: a resolver priming from this one asks for it that way. An
+	// alias chased for such a client gets no exception, or an alias to the
+	// root would be resolved on its behalf.
+	if !req.RecursionDesired && (q.Name != "." || isNonRecursiveChase(ctx)) {
 		c.metrics.Miss()
 		c.declineNonRecursive(ch, req)
 		return
@@ -1318,8 +1320,9 @@ func (c *Cache) serveHitFromWire(
 	// which no local can prevent across the inline/replay boundary.
 	//
 	// A prefetch-due hit needs a decoded request copy for the refresh
-	// queue; the ordinary body claims it.
-	if c.prefetchQueue != nil && entry.PrefetchEligible() && entry.ShouldPrefetch(c.config.Prefetch) {
+	// queue; the ordinary body claims it. A question that did not desire
+	// recursion claims none, so it has no reason to leave the byte path.
+	if ch.Request.RD() && c.prefetchQueue != nil && entry.PrefetchEligible() && entry.ShouldPrefetch(c.config.Prefetch) {
 		return false
 	}
 	if entry == nil || entry.wireServe&wireEligible == 0 {
@@ -1484,8 +1487,10 @@ func (c *Cache) handleCacheHit(
 	// PrefetchEligible() gates scoped entries out: the prefetch
 	// worker has no client IP, so a refresh would forward without
 	// ECS and create a shared-key entry under the scoped key,
-	// wrong audience, wrong answer. Scoped entries just expire.
-	if c.prefetchQueue != nil && entry.PrefetchEligible() && entry.ShouldPrefetch(c.config.Prefetch) {
+	// wrong audience, wrong answer. Scoped entries just expire. A question
+	// that did not desire recursion starts none either: it is answered
+	// from the cache, and a refresh is upstream work on its behalf.
+	if req.RecursionDesired && c.prefetchQueue != nil && entry.PrefetchEligible() && entry.ShouldPrefetch(c.config.Prefetch) {
 		if entry.prefetch.CompareAndSwap(false, true) {
 			if !c.prefetchQueue.Add(PrefetchRequest{
 				Request: req.Copy(),
@@ -2354,6 +2359,13 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	cnameDepth := 10
 	targets := []string{}
 
+	// A question that did not desire recursion completes its alias from the
+	// cache or not at all, the root included.
+	chaseCtx := ctx
+	if !msg.RecursionDesired {
+		chaseCtx = withNonRecursiveChase(ctx)
+	}
+
 	if len(cnameReq.Question) > 0 {
 	lookup:
 		child := false
@@ -2370,7 +2382,7 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 
 		targets = append(targets, target)
 
-		respCname, lineage, err := c.internalExchange(ctx, cnameReq)
+		respCname, lineage, err := c.internalExchange(chaseCtx, cnameReq)
 		if errors.Is(err, middleware.ErrRecursionWorkLimit) {
 			edeCode, edeText := middleware.RecursionWorkErrorEDE(ctx, err)
 			do := false
@@ -2474,6 +2486,19 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 // not desire recursion.
 const nonRecursiveMissText = "Not in cache, and recursion was not desired"
 
+type nonRecursiveChaseKey struct{}
+
+// withNonRecursiveChase marks ctx as an alias chase for a question that did
+// not desire recursion, whatever the name it asks.
+func withNonRecursiveChase(ctx context.Context) context.Context {
+	return context.WithValue(ctx, nonRecursiveChaseKey{}, true)
+}
+
+func isNonRecursiveChase(ctx context.Context) bool {
+	marked, _ := ctx.Value(nonRecursiveChaseKey{}).(bool)
+	return marked
+}
+
 // declineNonRecursive answers a question that did not desire recursion and
 // that the cache cannot answer: SERVFAIL, with an EDE saying why and the
 // client's RD echoed.
@@ -2520,6 +2545,8 @@ func chaseFailure(ctx context.Context, msg, target *dns.Msg) *dns.Msg {
 		}
 	}
 	out := dnsutil.SetRcode(msg, dns.RcodeServerFailure, do)
+	// The client's RD, which the alias answer echoes; SetRcode asserts RD.
+	out.RecursionDesired = msg.RecursionDesired
 	if out.IsEdns0() == nil {
 		// An alias served from the cache materializes without an OPT, and
 		// the EDE needs one to ride on. The EDNS layer shapes it to the

@@ -8,6 +8,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
+	answercache "github.com/semihalev/sdns/middleware/cache"
 )
 
 // askRD is edeClient.ask with the client's RD bit chosen.
@@ -100,9 +101,9 @@ func TestNonRecursiveQuestionsAreAnsweredFromTheCache(t *testing.T) {
 	c.cache.Purge(dns.Question{Name: "target.signed.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
 	asked := zone.asked("target.signed.", dns.TypeA)
 	for _, wireBorn := range []bool{false, true} {
-		if resp := c.askRD("alias.signed.", dns.TypeA, false, wireBorn); resp.Rcode != dns.RcodeServerFailure {
-			t.Fatalf("alias cached, target not, RD=0, wire-born=%v: %s %v, want SERVFAIL",
-				wireBorn, dns.RcodeToString[resp.Rcode], resp.Answer)
+		if resp := c.askRD("alias.signed.", dns.TypeA, false, wireBorn); resp.Rcode != dns.RcodeServerFailure || resp.RecursionDesired {
+			t.Fatalf("alias cached, target not, RD=0, wire-born=%v: %s RD=%v %v, want SERVFAIL with RD echoed",
+				wireBorn, dns.RcodeToString[resp.Rcode], resp.RecursionDesired, resp.Answer)
 		}
 	}
 	if n := zone.asked("target.signed.", dns.TypeA) - asked; n != 0 {
@@ -111,5 +112,35 @@ func TestNonRecursiveQuestionsAreAnsweredFromTheCache(t *testing.T) {
 	// With RD=1 the same alias completes, the target resolved again.
 	if resp := c.askRD("alias.signed.", dns.TypeA, true, false); resp.Rcode != dns.RcodeSuccess || len(resp.Answer) < 2 {
 		t.Fatalf("alias, RD=1: %s %v, want the target resolved", dns.RcodeToString[resp.Rcode], resp.Answer)
+	}
+}
+
+// The root stays resolvable without RD for a client's own question only: an
+// alias whose target is the root is completed from the cache, like any
+// other, and the root is not asked on the client's behalf.
+func TestNonRecursiveAliasToTheRootIsNotResolved(t *testing.T) {
+	net := newHermeticNet(t)
+	net.Delegate("signed.")
+	c := newEDEClient(t, net)
+
+	// The alias alone in the cache, its target not: the shape a chase
+	// completes.
+	q := dns.Question{Name: "toroot.signed.", Qtype: dns.TypeTXT, Qclass: dns.ClassINET}
+	alias := new(dns.Msg)
+	alias.SetQuestion(q.Name, q.Qtype)
+	alias.Response = true
+	alias.RecursionAvailable = true
+	alias.Answer = []dns.RR{mustRR(t, "toroot.signed. 300 IN CNAME .")}
+	c.cache.Set(answercache.CacheKey{Question: q}.Hash(), alias)
+	asked := net.root.asked(".", dns.TypeTXT)
+	for _, wireBorn := range []bool{false, true} {
+		resp := c.askRD("toroot.signed.", dns.TypeTXT, false, wireBorn)
+		if resp.Rcode != dns.RcodeServerFailure || resp.RecursionDesired {
+			t.Fatalf("alias to the root, RD=0, wire-born=%v: %s RD=%v %v, want SERVFAIL with RD echoed",
+				wireBorn, dns.RcodeToString[resp.Rcode], resp.RecursionDesired, resp.Answer)
+		}
+	}
+	if n := net.root.asked(".", dns.TypeTXT) - asked; n != 0 {
+		t.Fatalf("the root was asked %d times for an alias chased without recursion", n)
 	}
 }

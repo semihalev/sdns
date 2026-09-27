@@ -2,13 +2,108 @@ package cache
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/middleware/edns"
 )
+
+// A hit for a question that does not desire recursion starts no refresh:
+// answering from the cache is all it asked for, and a prefetch is upstream
+// work on its behalf. The same hit with RD=1 does start one.
+func TestNonRecursiveHitStartsNoPrefetch(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		rd       bool
+		wireBorn bool
+		claimed  bool
+	}{
+		{"RD=0, decoded", false, false, false},
+		{"RD=0, wire-born", false, true, false},
+		{"RD=1, decoded", true, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := makeTestConfig()
+			cfg.RateLimit = 0
+			cfg.Prefetch = 90
+			c := New(cfg)
+			defer c.Stop()
+			e := edns.New(cfg)
+			// The refresh is held until the check below has read the claim:
+			// a finished one releases it.
+			hold := make(chan struct{})
+			defer close(hold)
+			c.SetPrefetchQueryer(queryerFunc(func(context.Context, *dns.Msg) (*dns.Msg, error) {
+				<-hold
+				return nil, errors.New("refresh not wanted here")
+			}))
+
+			const qname = "due.example.com."
+			msg := wireFastEntry(t, qname, dns.TypeA, false)
+			key := CacheKey{Question: msg.Question[0]}.Hash()
+			entry := NewCacheEntryWithKey(msg, 5*time.Second, 0, key)
+			entry.origTTL = 100 // well past the refresh threshold
+			c.positive.Set(key, entry)
+
+			q := new(dns.Msg)
+			q.SetQuestion(qname, dns.TypeA)
+			q.RecursionDesired = tc.rd
+			q.SetEdns0(1232, false)
+			w := &captureSink{Writer: mock.NewWriter("udp", "192.0.2.9:53000")}
+			ch := middleware.NewChain([]middleware.Handler{e, c, middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+				t.Error("a cached question reached the handler below")
+				ch.Cancel()
+			})})
+			var meta middleware.ResponseMeta
+			ctx := middleware.WithResponseMeta(context.Background(), &meta)
+			raw, err := q.Pack()
+			if err != nil {
+				t.Fatal(err)
+			}
+			req := new(middleware.Request)
+			serve := func() {
+				if tc.wireBorn {
+					if !req.ParseWire(raw, time.Now(), nil) {
+						t.Fatal("eligible query refused")
+					}
+					ch.ResetWire(w, req)
+					ch.AllowDirectPack()
+				} else {
+					ch.Reset(w, q.Copy())
+				}
+				ch.Next(ctx)
+			}
+			serve()
+			resp := w.Msg()
+			if w.last != nil {
+				resp = new(dns.Msg)
+				if err := resp.Unpack(w.last); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if resp == nil || resp.Rcode != dns.RcodeSuccess || len(resp.Answer) == 0 {
+				t.Fatalf("answer %v, want the cached one", resp)
+			}
+			if got := entry.prefetch.Load(); got != tc.claimed {
+				t.Fatalf("prefetch claimed = %v, want %v", got, tc.claimed)
+			}
+			// Still due, and still no refresh of its own to start: an RD=0 hit
+			// stays on the byte path, allocation free.
+			if tc.wireBorn {
+				if allocs := testing.AllocsPerRun(50, serve); allocs != 0 {
+					t.Fatalf("a refresh-due RD=0 hit allocated %.2f objects per serve", allocs)
+				}
+			}
+			if got := entry.prefetch.Load(); got != tc.claimed {
+				t.Fatalf("prefetch claimed = %v, want %v", got, tc.claimed)
+			}
+		})
+	}
+}
 
 // A question that does not desire recursion is served from the cache on
 // the byte path like any other hit, RD echoed as the client sent it, and
