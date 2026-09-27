@@ -121,6 +121,80 @@ func TestDeclinedQuestionsFromTheServersEntry(t *testing.T) {
 	}
 }
 
+// Only class IN is resolved. A CHAOS name the chaos middleware did not
+// answer is refused, and any other class, ANY and NONE included, is NOTIMP
+// with EDE 21: from the server's entry, wire-born and decoded, again and
+// again, the authority never asked, whatever the class, and the policy
+// answer never replayed from the failure cache. The debug CHAOS HINFO
+// question stays the resolver's.
+func TestOnlyClassINIsResolved(t *testing.T) {
+	net := newHermeticNet(t)
+	zone := net.Delegate("signed.")
+	zone.Serve(mustRR(t, "www.signed. 300 IN A 192.0.2.45"))
+	c := newEDEClient(t, net)
+
+	for _, tc := range []struct {
+		name   string
+		qname  string
+		qtype  uint16
+		qclass uint16
+		rcode  int
+		ede    int // -1: none
+	}{
+		{"CHAOS", "authors.bind.", dns.TypeTXT, dns.ClassCHAOS, dns.RcodeRefused, -1},
+		{"ANY", "www.signed.", dns.TypeA, dns.ClassANY, dns.RcodeNotImplemented, int(dns.ExtendedErrorCodeNotSupported)},
+		{"NONE", "www.signed.", dns.TypeA, dns.ClassNONE, dns.RcodeNotImplemented, int(dns.ExtendedErrorCodeNotSupported)},
+		{"HESIOD", "www.signed.", dns.TypeA, dns.ClassHESIOD, dns.RcodeNotImplemented, int(dns.ExtendedErrorCodeNotSupported)},
+		{"unassigned", "www.signed.", dns.TypeA, 1234, dns.RcodeNotImplemented, int(dns.ExtendedErrorCodeNotSupported)},
+	} {
+		for _, wireBorn := range []bool{false, true, false, true} {
+			q := new(dns.Msg)
+			q.SetQuestion(tc.qname, tc.qtype)
+			q.Question[0].Qclass = tc.qclass
+			q.SetEdns0(1232, false)
+			w := mock.NewWriter("udp", "127.0.0.1:0")
+			ch := middleware.NewChain(c.client)
+			req := new(middleware.Request)
+			raw, err := q.Pack()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if wireBorn && req.ParseWire(raw, time.Now(), nil) {
+				ch.ResetWire(w, req)
+				ch.AllowDirectPack()
+			} else {
+				ch.Reset(w, q)
+			}
+			ch.Next(context.Background())
+			if !w.Written() {
+				t.Fatalf("%s wire-born=%v: no reply", tc.name, wireBorn)
+			}
+			resp := w.Msg()
+			if resp.Rcode != tc.rcode {
+				t.Fatalf("%s wire-born=%v: %s, want %s", tc.name, wireBorn,
+					dns.RcodeToString[resp.Rcode], dns.RcodeToString[tc.rcode])
+			}
+			got := edeCodes(resp)
+			switch {
+			case tc.ede < 0 && len(got) != 0:
+				t.Fatalf("%s wire-born=%v: EDE %v, want none", tc.name, wireBorn, got)
+			case tc.ede >= 0 && (len(got) != 1 || int(got[0]) != tc.ede):
+				t.Fatalf("%s wire-born=%v: EDE %v, want exactly %d", tc.name, wireBorn, got, tc.ede)
+			}
+		}
+	}
+	if n := zone.asked("www.signed.", dns.TypeA); n != 0 {
+		t.Fatalf("a question outside class IN reached the authority %d times", n)
+	}
+
+	was := debugns
+	t.Cleanup(func() { debugns = was })
+	debugns = true
+	if isDeclined(dns.TypeHINFO, dns.ClassCHAOS) {
+		t.Fatal("the debug CHAOS HINFO question was declined")
+	}
+}
+
 // declinedCases are the questions the server answers by its own policy.
 var declinedCases = []struct {
 	qtype uint16

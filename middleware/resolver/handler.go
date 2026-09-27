@@ -75,12 +75,12 @@ func (h *DNSHandler) Name() string { return name }
 
 // (*DNSHandler).ServeDNS serveDNS implements the Handle interface.
 func (h *DNSHandler) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	// ANY, zone transfers and NXNAME are declined on every path, the
-	// forwarding ones included: the policy is this server's, not an
-	// upstream's, so a forwarder never sees the question. Read off the wire
-	// facts, so a server that hands its questions on still pays no decode
-	// for them.
-	if ch.Request != nil && dnsutil.DeclinedQtype(ch.Request.Qtype()) {
+	// ANY, zone transfers, NXNAME and every class but IN are declined on
+	// every path, the forwarding ones included: the policy is this server's,
+	// not an upstream's, so a forwarder never sees the question. Read off
+	// the wire facts, so a server that hands its questions on still pays no
+	// decode for them.
+	if ch.Request != nil && isDeclined(ch.Request.Qtype(), ch.Request.Qclass()) {
 		if _, req := ch.Materialize(ctx); req != nil {
 			_ = ch.Writer.WriteMsg(declined(req))
 		}
@@ -157,7 +157,7 @@ func (h *DNSHandler) handle(ctx context.Context, req *dns.Msg) (resp *dns.Msg) {
 		do = opt.Do()
 	}
 
-	if dnsutil.DeclinedQtype(q.Qtype) {
+	if isDeclined(q.Qtype, q.Qclass) {
 		return declined(req)
 	}
 
@@ -370,9 +370,11 @@ func (h *DNSHandler) Stop() {
 
 const name = "resolver"
 
-// declined is the answer to a question dnsutil.DeclinedQtype names, with the
-// client's DO echoed on the OPT:
+// declined is the answer to a question isDeclined names, with the client's
+// DO echoed on the OPT:
 //
+//   - CHAOS, a name the chaos middleware did not answer: REFUSED.
+//   - Any other class but IN: NOTIMP, EDE 21 (Not Supported).
 //   - ANY: NOTIMP, EDE 21 (Not Supported).
 //   - AXFR, IXFR: REFUSED. A resolver serves no zones to transfer.
 //   - NXNAME: FORMERR, EDE 30 (Invalid Query Type), RFC 9824 §3.5.
@@ -386,6 +388,37 @@ func declined(req *dns.Msg) *dns.Msg {
 		do = opt.Do()
 	}
 	var resp *dns.Msg
+	q := req.Question[0]
+	switch {
+	case q.Qclass == dns.ClassCHAOS:
+		// The CHAOS names this server answers are the chaos middleware's;
+		// any other is refused, not resolved at the roots.
+		resp = dnsutil.SetRcode(req, dns.RcodeRefused, do)
+	case dnsutil.DeclinedClass(q.Qclass):
+		resp = dnsutil.SetRcode(req, dns.RcodeNotImplemented, do)
+		dnsutil.SetEDE(resp, dns.ExtendedErrorCodeNotSupported, "")
+	default:
+		resp = declinedQtype(req, do)
+	}
+	// The client's RD, echoed: ServeDNS answers these before the resolution
+	// touches the request, and SetRcode asserts RD for internal replies.
+	resp.RecursionDesired = req.RecursionDesired
+	return resp
+}
+
+// isDeclined reports whether a question is one declined answers: a qtype
+// dnsutil.DeclinedQtype names, or a class other than IN, except the CHAOS
+// HINFO question the debug nameserver stats answer.
+func isDeclined(qtype, qclass uint16) bool {
+	if debugns && qclass == dns.ClassCHAOS && qtype == dns.TypeHINFO {
+		return false
+	}
+	return dnsutil.DeclinedQtype(qtype) || dnsutil.DeclinedClass(qclass)
+}
+
+// declinedQtype is declined's answer for an IN question of a declined type.
+func declinedQtype(req *dns.Msg, do bool) *dns.Msg {
+	var resp *dns.Msg
 	switch req.Question[0].Qtype {
 	case dns.TypeAXFR, dns.TypeIXFR:
 		resp = dnsutil.SetRcode(req, dns.RcodeRefused, do)
@@ -396,8 +429,5 @@ func declined(req *dns.Msg) *dns.Msg {
 		resp = dnsutil.SetRcode(req, dns.RcodeNotImplemented, do)
 		dnsutil.SetEDE(resp, dns.ExtendedErrorCodeNotSupported, "")
 	}
-	// The client's RD, echoed: ServeDNS answers these before the resolution
-	// touches the request, and SetRcode asserts RD for internal replies.
-	resp.RecursionDesired = req.RecursionDesired
 	return resp
 }
