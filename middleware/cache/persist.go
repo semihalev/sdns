@@ -155,9 +155,12 @@ var validatorSupport = func() (algorithms, digests []string) {
 //     leases that way.
 //  2. The RRsets an answer to an RRSIG question carries are validated;
 //     earlier builds admitted them unchecked, a forged one included.
+//  3. An RRSIG question no longer takes the referrals on its way for
+//     insecure; earlier builds then admitted every later answer from such
+//     a zone unvalidated.
 //
 // A variable only so a test can stand in for the build before.
-var snapshotSemantics = 2
+var snapshotSemantics = 3
 
 // snapshotFingerprint names the configuration a saved cache is valid
 // under: what decides which answers the cache is handed and whether they

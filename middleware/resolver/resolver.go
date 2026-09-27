@@ -1358,6 +1358,16 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 					lastErr = verr
 					continue
 				}
+				if ok && q.Qtype == dns.TypeRRSIG {
+					// The answer to an RRSIG question is the signatures
+					// themselves, and an RRSIG RRset is not signed (RFC 4034
+					// §3): the RRsets it carries are validated above, the
+					// signatures are served without AD. Only the answer:
+					// the referrals and denials met on the way to it are
+					// validated like any other, and one taken for insecure
+					// here left its zone insecure for every question after.
+					ok = false
+				}
 				if ok {
 					// VerifyRRSIG tolerates out-of-zone authority
 					// records (referral remnants for a CNAME target)
@@ -3692,13 +3702,6 @@ func (r *Resolver) verifyDNSSEC(ctx context.Context, signer, signed string, resp
 
 	if ok, err = dnssec.VerifyRRSIGWithWork(signer, keys, resp, r.dnssecWork(ctx)); err != nil {
 		return
-	}
-
-	// The answer to an RRSIG question is the signatures themselves, and an
-	// RRSIG RRset is not signed (RFC 4034 §3): the RRsets it carries are
-	// validated above, the signatures are served without AD.
-	if q.Qtype == dns.TypeRRSIG {
-		return false, nil
 	}
 
 	// Cannot verify DNSSEC keys with RSA exponents > 2^31-1 due to Go crypto/rsa limitation

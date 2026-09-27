@@ -179,9 +179,9 @@ func TestRRSIGQuestionIsAnsweredUnvalidated(t *testing.T) {
 	handler.resolver.queryer.Store(&queryer)
 	cache.SetQueryer(queryer)
 
-	// The zone's delegation is learned, DS and all, by an ordinary question
-	// first, as it is on a running resolver. Asked cold, the RRSIG question
-	// learns the delegation without its DS and nothing is validated.
+	// The zone's delegation is learned by an ordinary question first, as it
+	// is on a running resolver. The cold case has its own test,
+	// TestColdRRSIGQuestionLeavesTheZoneSecure.
 	for _, owner := range []string{"www.signed.", "signed."} {
 		req := new(dns.Msg)
 		req.SetQuestion(owner, dns.TypeA)
