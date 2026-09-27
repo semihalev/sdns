@@ -506,37 +506,34 @@ func TestClearDNSSEC(t *testing.T) {
 	}
 }
 
+// A NOTIMP reply echoes the request's RD, either way, and never claims AD:
+// nothing in it is authenticated.
 func TestNotSupported(t *testing.T) {
-	req := new(dns.Msg)
-	req.SetQuestion("example.com.", dns.TypeA)
-	req.Id = 12345
-	req.Opcode = dns.OpcodeQuery
+	for _, rd := range []bool{true, false} {
+		req := new(dns.Msg)
+		req.SetQuestion("example.com.", dns.TypeA)
+		req.Id = 12345
+		req.Opcode = dns.OpcodeNotify
+		req.RecursionDesired = rd
+		req.AuthenticatedData = true
 
-	w := mock.NewWriter("tcp", "127.0.0.1:0")
-
-	err := NotSupported(w, req)
-	if err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-
-	msg := w.Msg()
-	if msg == nil {
-		t.Fatalf("msg is nil")
-	}
-	if !reflect.DeepEqual(dns.RcodeNotImplemented, msg.Rcode) {
-		t.Errorf("msg.Rcode = %v, want %v", msg.Rcode, dns.RcodeNotImplemented)
-	}
-	if !reflect.DeepEqual(req.Id, msg.Id) {
-		t.Errorf("msg.Id = %v, want %v", msg.Id, req.Id)
-	}
-	if !(msg.Response) {
-		t.Errorf("msg.Response is false")
-	}
-	if !(msg.RecursionDesired) {
-		t.Errorf("msg.RecursionDesired is false")
-	}
-	if !(msg.AuthenticatedData) {
-		t.Errorf("msg.AuthenticatedData is false")
+		w := mock.NewWriter("tcp", "127.0.0.1:0")
+		if err := NotSupported(w, req); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+		msg := w.Msg()
+		if msg == nil {
+			t.Fatalf("msg is nil")
+		}
+		if msg.Rcode != dns.RcodeNotImplemented || msg.Id != req.Id || msg.Opcode != req.Opcode || !msg.Response {
+			t.Errorf("header %+v, want a NOTIMP reply to the request", msg.MsgHdr)
+		}
+		if msg.RecursionDesired != rd {
+			t.Errorf("RD = %v, want the request's %v", msg.RecursionDesired, rd)
+		}
+		if msg.AuthenticatedData {
+			t.Error("AD set on a reply that authenticates nothing")
+		}
 	}
 }
 
