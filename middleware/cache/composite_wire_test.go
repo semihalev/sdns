@@ -79,8 +79,10 @@ func TestNXDomainCutWireServeParity(t *testing.T) {
 		t.Fatalf("wrong cut: %s", entry.deniedName)
 	}
 	// A signed proof retains three bodies: the decoded proof and two wire
-	// templates. The budget must be charged for all of them.
-	wantBytes := int64(entry.msg.Len()) + int64(len(entry.wireFull)) + int64(len(entry.wireStripped))
+	// templates, each with its relocation table. The budget must be charged
+	// for all of them.
+	wantBytes := int64(entry.msg.Len()) + int64(len(entry.wireFull)) + int64(len(entry.wireStripped)) +
+		entry.wireFullReloc.bytes() + entry.wireStrippedReloc.bytes()
 	if len(entry.wireFull) == 0 || len(entry.wireStripped) == 0 ||
 		&entry.wireStripped[0] == &entry.wireFull[0] {
 		t.Fatal("fixture expected distinct full and stripped templates")

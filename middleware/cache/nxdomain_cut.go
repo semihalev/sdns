@@ -52,13 +52,16 @@ type nxDomainCutEntry struct {
 	zoneElem   *list.Element
 
 	// Wire-serving state, packed once at record time: the proof authority
-	// section behind a template question (the denied name), full and
-	// DNSSEC-stripped, plus the canonical hash the wire lookup probes.
-	// wireFull == nil means this cut serves through the Msg path only.
-	wireFull     []byte
-	wireStripped []byte
-	wireDNSSEC   bool
-	hash         uint64
+	// section behind the root as a template question, full and
+	// DNSSEC-stripped, each with where its pointers and TTLs sit, plus the
+	// canonical hash the wire lookup probes. wireFull == nil means this cut
+	// serves through the Msg path only.
+	wireFull          []byte
+	wireFullReloc     cutRelocation
+	wireStripped      []byte
+	wireStrippedReloc cutRelocation
+	wireDNSSEC        bool
+	hash              uint64
 }
 
 type nxDomainCutZoneState struct {
@@ -262,9 +265,9 @@ func (c *nxDomainCutCache) record(msg *dns.Msg, deniedName, zone string, cut lea
 	// cache among the largest resident owners while its accounting said
 	// it was well inside its bound. The stripped body only counts when
 	// it is its own buffer; for unsigned proofs it aliases the full one.
-	entry.wireBytes += int64(len(entry.wireFull))
+	entry.wireBytes += int64(len(entry.wireFull)) + entry.wireFullReloc.bytes()
 	if len(entry.wireStripped) > 0 && &entry.wireStripped[0] != &entry.wireFull[0] {
-		entry.wireBytes += int64(len(entry.wireStripped))
+		entry.wireBytes += int64(len(entry.wireStripped)) + entry.wireStrippedReloc.bytes()
 	}
 
 	// Preserve a current usable cut if its replacement cannot fit even in an

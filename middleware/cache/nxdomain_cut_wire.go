@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"time"
 
@@ -24,22 +25,29 @@ func nxDomainCutHash(deniedName string, qclass uint16) uint64 {
 	return internalcache.Key(q, false) ^ nxDomainCutHashSalt
 }
 
-// prepareWire packs the cut's serve templates: the proof authority section
-// behind a template question, full and DNSSEC-stripped, both validated for
-// recomposition. A shape the composer cannot re-encode leaves wireFull
-// nil, and the cut serves through the Msg path only.
+// prepareWire packs the cut's serve templates: the proof authority section,
+// name-compressed, behind the root as the template question, full and
+// DNSSEC-stripped, each with its relocation table. The root keeps every
+// pointer inside the authority section, so a hit copies the section as it
+// stands and moves its pointers by the length of the client's question. A
+// shape that cannot be served that way leaves wireFull nil, and the cut
+// serves through the Msg path only.
 func (e *nxDomainCutEntry) prepareWire() {
 	e.hash = nxDomainCutHash(e.deniedName, e.qclass)
 
 	tmpl := new(dns.Msg)
-	tmpl.Question = []dns.Question{{Name: e.deniedName, Qtype: dns.TypeSOA, Qclass: e.qclass}}
+	tmpl.Question = []dns.Question{{Name: ".", Qtype: dns.TypeSOA, Qclass: e.qclass}}
 	tmpl.Ns = e.msg.Ns
 	tmpl.Compress = true
 	full, err := wire.PackClone(tmpl)
-	if err != nil || !nxCutWireServable(full) {
+	if err != nil {
 		return
 	}
-	e.wireFull = full
+	fullReloc, ok := cutRelocationOf(full)
+	if !ok {
+		return
+	}
+	e.wireFull, e.wireFullReloc = full, fullReloc
 
 	// The DO=0 body: ClearDNSSEC replaces the section it filters, so the
 	// template's own slice is untouched. When nothing is stripped the full
@@ -47,38 +55,122 @@ func (e *nxDomainCutEntry) prepareWire() {
 	stripped := *tmpl
 	dnsutil.ClearDNSSEC(&stripped)
 	if len(stripped.Ns) == len(tmpl.Ns) {
-		e.wireStripped = full
+		e.wireStripped, e.wireStrippedReloc = full, fullReloc
 		return
 	}
 	e.wireDNSSEC = true
 	strippedBody, err := wire.PackClone(&stripped)
-	if err != nil || !nxCutWireServable(strippedBody) {
+	if err != nil {
 		return
 	}
-	e.wireStripped = strippedBody
+	strippedReloc, ok := cutRelocationOf(strippedBody)
+	if !ok {
+		return
+	}
+	e.wireStripped, e.wireStrippedReloc = strippedBody, strippedReloc
 }
 
-// nxCutWireServable validates a packed template for recomposition:
-// exactly the template question, an authority section made of records the
-// composer can re-encode, nothing else.
-func nxCutWireServable(body []byte) bool {
+// cutRelocation is where a packed cut template holds what a hit rewrites:
+// the offsets of its compression pointers, whose targets move with the
+// authority section, and of each record's TTL.
+type cutRelocation struct {
+	ptrs []uint16
+	ttls []uint16
+}
+
+// bytes is what the table costs the entry.
+func (r cutRelocation) bytes() int64 {
+	return int64(2 * (len(r.ptrs) + len(r.ttls)))
+}
+
+// cutRelocationOf validates a packed template and builds its relocation
+// table: exactly one question, an authority section of records whose names
+// sit only in owners and SOA and CNAME rdata, every pointer into the
+// authority section itself, nothing after it.
+func cutRelocationOf(body []byte) (cutRelocation, bool) {
+	var r cutRelocation
 	header, ok := wire.ParseHeader(body)
 	if !ok || header.QDCount != 1 || header.ANCount != 0 || header.ARCount != 0 {
-		return false
+		return r, false
 	}
 	question, ok := wire.ParseQuestion(body, wire.HeaderLen)
 	if !ok {
-		return false
+		return r, false
 	}
-	off := question.End
+	authStart := question.End
+	off := authStart
 	for range int(header.NSCount) {
-		rr, ok := wire.ParseRR(body, off)
-		if !ok || !wireRecomposable(rr.Type) {
-			return false
+		rr, parsed := wire.ParseRR(body, off)
+		if !parsed || !wireRecomposable(rr.Type) || rr.End > 0xFFFF ||
+			!r.notePointer(body, rr.NameOff, authStart) {
+			return r, false
+		}
+		r.ttls = append(r.ttls, uint16(rr.TTLOff)) //nolint:gosec // bounded by the rr.End check
+		rdataOff := rr.End - rr.RDLen
+		switch rr.Type {
+		case dns.TypeCNAME:
+			if !r.notePointer(body, rdataOff, authStart) {
+				return r, false
+			}
+		case dns.TypeSOA:
+			mnameEnd := wire.SkipName(body, rdataOff)
+			if mnameEnd < 0 || !r.notePointer(body, rdataOff, authStart) ||
+				!r.notePointer(body, mnameEnd, authStart) {
+				return r, false
+			}
 		}
 		off = rr.End
 	}
-	return off == len(body)
+	return r, off == len(body)
+}
+
+// notePointer records the pointer the name at off ends in, if it ends in
+// one. A pointer out of the authority section refuses the template: the
+// question it would point into is the client's at serve time.
+func (r *cutRelocation) notePointer(body []byte, off, authStart int) bool {
+	for off < len(body) {
+		c := int(body[off])
+		switch {
+		case c == 0:
+			return true
+		case c&0xC0 == 0xC0:
+			if off+1 >= len(body) || int(binary.BigEndian.Uint16(body[off:])&0x3FFF) < authStart {
+				return false
+			}
+			r.ptrs = append(r.ptrs, uint16(off)) //nolint:gosec // within a body under 64 KiB
+			return true
+		case c&0xC0 != 0:
+			return false
+		default:
+			off += 1 + c
+		}
+	}
+	return false
+}
+
+// relocateAuthority appends the template's authority section, from
+// authStart, to dst as it stands, moves its pointers with it, and stamps
+// every record's TTL. It refuses, writing nothing that counts, when a moved
+// pointer would leave what a pointer can reach.
+func relocateAuthority(dst, tmpl []byte, authStart int, r cutRelocation, ttl uint32) ([]byte, bool) {
+	newStart := len(dst)
+	dst, ok := appendCapped(dst, tmpl[authStart:])
+	if !ok {
+		return nil, false
+	}
+	shift := newStart - authStart
+	for _, p := range r.ptrs {
+		at := int(p) + shift
+		target := int(binary.BigEndian.Uint16(dst[at:])&0x3FFF) + shift
+		if target < newStart || target > 0x3FFF {
+			return nil, false
+		}
+		binary.BigEndian.PutUint16(dst[at:], 0xC000|uint16(target)) //nolint:gosec // bounded by the check above
+	}
+	for _, p := range r.ttls {
+		binary.BigEndian.PutUint32(dst[int(p)+shift:], ttl)
+	}
+	return dst, true
 }
 
 // lookupWire is lookup for a wire-born question: the same longest-suffix
@@ -128,7 +220,7 @@ func (e *nxDomainCutEntry) serveWireInto(
 	if remaining <= 0 {
 		return nil, false
 	}
-	tmpl := e.wireFull
+	tmpl, reloc := e.wireFull, e.wireFullReloc
 	if !do {
 		// The stripped template was cut behind a SOA question, so it holds
 		// no authenticating record at all. A DO=0 question for RRSIG, NSEC
@@ -138,7 +230,7 @@ func (e *nxDomainCutEntry) serveWireInto(
 		case dns.TypeRRSIG, dns.TypeNSEC, dns.TypeNSEC3:
 			return nil, false
 		}
-		tmpl = e.wireStripped
+		tmpl, reloc = e.wireStripped, e.wireStrippedReloc
 	}
 	if tmpl == nil || cap(dst) < wire.HeaderLen {
 		return nil, false
@@ -164,18 +256,11 @@ func (e *nxDomainCutEntry) serveWireInto(
 		return nil, false
 	}
 
-	ttl := servedSeconds(remaining)
-	off := question.End
-	for range int(header.NSCount) {
-		rr, parsed := wire.ParseRR(tmpl, off)
-		if !parsed {
-			return nil, false
-		}
-		body, ok = appendRecomposedRR(body, tmpl, rr, ttl, nil, nil)
-		if !ok {
-			return nil, false
-		}
-		off = rr.End
+	// The proof, as packed at record time, moved behind the client's
+	// question.
+	body, ok = relocateAuthority(body, tmpl, question.End, reloc, servedSeconds(remaining))
+	if !ok {
+		return nil, false
 	}
 
 	// The Msg path's synthesis shape: NXDOMAIN, recursion available, a
