@@ -38,6 +38,35 @@ func TestRRSIGQuestionCarriesNothingElseUnvalidated(t *testing.T) {
 	}
 }
 
+// The signatures are the question's own only in the question's class: an
+// answer to an IN question made of same-named signatures in another class
+// is not the answer to it, and takes the ordinary path, which refuses it.
+func TestRRSIGQuestionTakesOnlyItsOwnClass(t *testing.T) {
+	net := newHermeticNet(t)
+	zone := net.Delegate("signed.")
+	a := mustRR(t, "www.signed. 300 IN A 192.0.2.45")
+	zone.Serve(a)
+	chaos := zone.key.sign(t, []dns.RR{a})
+	chaos.Header().Class = dns.ClassCHAOS
+	zone.server.serve("www.signed.", dns.TypeRRSIG, chaos)
+	handler := net.Handler()
+
+	warm := new(dns.Msg)
+	warm.SetQuestion("www.signed.", dns.TypeA)
+	warm.SetEdns0(1232, true)
+	if resp := handler.handle(context.Background(), warm); resp.Rcode != dns.RcodeSuccess || !resp.AuthenticatedData {
+		t.Fatalf("warming: %s AD=%v, want the validated A", dns.RcodeToString[resp.Rcode], resp.AuthenticatedData)
+	}
+
+	req := new(dns.Msg)
+	req.SetQuestion("www.signed.", dns.TypeRRSIG)
+	req.SetEdns0(1232, true)
+	if resp := handler.handle(context.Background(), req); resp.Rcode != dns.RcodeServerFailure {
+		t.Fatalf("%s %v, want the CH signatures refused as the answer to an IN question",
+			dns.RcodeToString[resp.Rcode], resp.Answer)
+	}
+}
+
 // A question for the RRSIGs at a name in a signed zone is answered with
 // them. The RRSIG RRset is not itself signed, so it cannot be validated and
 // carries no AD, but it is no failure either: refusing it as bogus answered

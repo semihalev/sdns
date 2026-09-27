@@ -1298,7 +1298,7 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 			// No RRSIGs in the response. Determine whether missing
 			// signatures are acceptable (insecure delegation) or a
 			// real DNSSEC failure (signed zone).
-			if q.Qtype == dns.TypeRRSIG && onlySignaturesAt(resp.Answer, q.Name) {
+			if q.Qtype == dns.TypeRRSIG && onlySignaturesAt(resp.Answer, q) {
 				// The answer to an RRSIG question is the signatures
 				// themselves, and an RRSIG RRset is not signed (RFC 4034
 				// §3): there is nothing to validate it with. It is served
@@ -2627,10 +2627,13 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) delegatio
 }
 
 // onlySignaturesAt reports whether answer is a non-empty set of RRSIGs owned
-// by qname and nothing else: the shape of an answer to an RRSIG question.
-func onlySignaturesAt(answer []dns.RR, qname string) bool {
+// by the question's name, in its class, and nothing else: the shape of an
+// answer to an RRSIG question.
+func onlySignaturesAt(answer []dns.RR, q dns.Question) bool {
 	for _, rr := range answer {
-		if rr.Header().Rrtype != dns.TypeRRSIG || !strings.EqualFold(rr.Header().Name, qname) {
+		hdr := rr.Header()
+		if hdr.Rrtype != dns.TypeRRSIG || hdr.Class != q.Qclass ||
+			!strings.EqualFold(hdr.Name, q.Name) {
 			return false
 		}
 	}
