@@ -37,6 +37,10 @@ var (
 		Code:    dns.ExtendedErrorCodeSignatureExpired,
 		Message: "RRSIG validity period check failed",
 	}
+	ErrSignatureNotYetValid = &dnsutil.EDEError{
+		Code:    dns.ExtendedErrorCodeSignatureNotYetValid,
+		Message: "RRSIG inception is in the future",
+	}
 	ErrMissingSigned = &dnsutil.EDEError{
 		Code:    dns.ExtendedErrorCodeDNSBogus,
 		Message: "RRsets covered by RRSIG are missing",
