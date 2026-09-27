@@ -143,6 +143,44 @@ func TestRestoreRefusesAnotherValidator(t *testing.T) {
 	}
 }
 
+// A snapshot written by a build whose records meant something else is
+// discarded on the upgrade: one from before RRSIG-question answers were
+// validated may hold a forged RRset a restore would serve again without
+// asking the authority.
+func TestRestoreRefusesTheSemanticsBefore(t *testing.T) {
+	dir := t.TempDir()
+	cfg := persistConfig(t, dir)
+
+	current := snapshotSemantics
+	t.Cleanup(func() { snapshotSemantics = current })
+	snapshotSemantics = current - 1
+
+	before := New(cfg)
+	before.SetTrustAnchors(anchorsOf(anchorA))
+	q := snapAnswer("a.test.", 300, "192.0.2.1")
+	q.Question[0].Qtype = dns.TypeRRSIG
+	before.store.SetFromResponse(q, false, time.Time{})
+	before.Persist(context.Background())
+
+	snapshotSemantics = current
+	after := New(cfg)
+	after.SetTrustAnchors(anchorsOf(anchorA))
+	after.Restore()
+	if after.store.PositiveLen() != 0 {
+		t.Fatal("a snapshot from the semantics before was restored")
+	}
+
+	// The same file under the same semantics restores: the refusal above
+	// is the revision's, not the record's.
+	snapshotSemantics = current - 1
+	again := New(cfg)
+	again.SetTrustAnchors(anchorsOf(anchorA))
+	again.Restore()
+	if again.store.PositiveLen() == 0 {
+		t.Fatal("the control restore under the saving semantics restored nothing")
+	}
+}
+
 func TestPersistOffWritesNothing(t *testing.T) {
 	dir := t.TempDir()
 	cfg := persistConfig(t, dir)

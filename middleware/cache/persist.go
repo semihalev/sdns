@@ -153,7 +153,11 @@ var validatorSupport = func() (algorithms, digests []string) {
 //  1. A wall-clock deadline is never written as a remaining duration, which
 //     a restore counts on the monotonic clock; earlier builds saved such
 //     leases that way.
-const snapshotSemantics = 1
+//  2. The RRsets an answer to an RRSIG question carries are validated;
+//     earlier builds admitted them unchecked, a forged one included.
+//
+// A variable only so a test can stand in for the build before.
+var snapshotSemantics = 2
 
 // snapshotFingerprint names the configuration a saved cache is valid
 // under: what decides which answers the cache is handed and whether they
