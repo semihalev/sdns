@@ -487,12 +487,6 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	// Check recursion desired
-	if q.Name != "." && !req.RecursionDesired {
-		ch.CancelWithRcode(dns.RcodeServerFailure, false)
-		return
-	}
-
 	// Derive the client's ECS source prefix once and reuse it for
 	// scoped lookup, dedup, and insert. Zero prefix means ECS-aware
 	// caching doesn't apply (policy off, client not in allow-list,
@@ -572,6 +566,15 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if hit, ok := c.lookupFailure(req, clientScope); ok {
 		c.metrics.Hit()
 		c.handleFailureHit(ctx, ch, clientScope, hit)
+		return
+	}
+	// A question that does not desire recursion is the cache's to answer
+	// or no one's: whatever the cache holds was served above, and a miss
+	// goes no further. The root is the exception, a resolver priming from
+	// this one asks for it that way.
+	if !req.RecursionDesired && q.Name != "." {
+		c.metrics.Miss()
+		c.declineNonRecursive(ch, req)
 		return
 	}
 	failureProbe := false
@@ -1183,7 +1186,7 @@ func (c *Cache) handleFailureHit(
 // and runs the ordinary body.
 func (c *Cache) serveWire(ctx context.Context, ch *middleware.Chain, spent **rate.Limiter) bool {
 	req := ch.Request
-	if !req.RD() || req.HasECS() {
+	if req.HasECS() {
 		return false
 	}
 	if _, ok := dns.TypeToString[req.Qtype()]; !ok {
@@ -2355,7 +2358,10 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	lookup:
 		child := false
 		target := cnameReq.Question[0].Name
-		cnameReq.RecursionDesired = true
+		// The client's own RD, which the answer echoes: a question that did
+		// not desire recursion completes its alias from the cache or not
+		// at all.
+		cnameReq.RecursionDesired = msg.RecursionDesired
 
 		// Check for loops
 		if slices.Contains(targets, target) {
@@ -2462,6 +2468,25 @@ func (c *Cache) additionalAnswer(ctx context.Context, msg *dns.Msg) *dns.Msg {
 	}
 
 	return msg
+}
+
+// nonRecursiveMissText is the EDE text of a miss for a question that did
+// not desire recursion.
+const nonRecursiveMissText = "Not in cache, and recursion was not desired"
+
+// declineNonRecursive answers a question that did not desire recursion and
+// that the cache cannot answer: SERVFAIL, with an EDE saying why and the
+// client's RD echoed.
+func (c *Cache) declineNonRecursive(ch *middleware.Chain, req *dns.Msg) {
+	do := false
+	if opt := req.IsEdns0(); opt != nil {
+		do = opt.Do()
+	}
+	resp := dnsutil.SetRcodeWithEDE(req, dns.RcodeServerFailure, do,
+		dns.ExtendedErrorCodeOther, nonRecursiveMissText)
+	resp.RecursionDesired = req.RecursionDesired
+	_ = ch.Writer.WriteMsg(resp)
+	ch.Cancel()
 }
 
 // carryInsecureReason puts on the composed answer msg the reason the

@@ -46,6 +46,7 @@ var dsVariants = []struct {
 type edeClient struct {
 	t      *testing.T
 	client []middleware.Handler
+	cache  *answercache.Cache
 }
 
 func newEDEClient(t *testing.T, net *hermeticNet) *edeClient {
@@ -59,7 +60,7 @@ func newEDEClient(t *testing.T, net *hermeticNet) *edeClient {
 	var queryer middleware.Queryer = pipelineQueryer{handlers: handlers}
 	handler.resolver.queryer.Store(&queryer)
 	cache.SetQueryer(queryer)
-	return &edeClient{t: t, client: append([]middleware.Handler{edns.New(cfg)}, handlers...)}
+	return &edeClient{t: t, client: append([]middleware.Handler{edns.New(cfg)}, handlers...), cache: cache}
 }
 
 func (c *edeClient) ask(name string, qtype uint16, wireBorn, cd bool) *dns.Msg {
