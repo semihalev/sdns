@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -112,44 +113,75 @@ func TestComposedChainIsNameCompressed(t *testing.T) {
 	}
 }
 
-// A chain composed on the byte path carries the reason a hop's records are
-// insecure when the hop's entry holds one, an unusable DS, and the alias
-// has no EDE of its own; an alias EDE keeps precedence. Nothing allocated.
+// A cached alias chain says the same thing on the byte path and the Msg
+// path: the alias's own EDE, or else the nearest hop's when it is the
+// reason that hop's records are insecure (an unusable DS). A nearer hop's
+// EDE of another kind is that hop's own and hides the ones behind it. The
+// byte path composes the chain without allocating, EDE included.
 func TestComposedChainCarriesTheTargetsInsecureReason(t *testing.T) {
-	const alias, host = "alias.reason.test.", "host.reason.example.net."
-	withEDE := func(m *dns.Msg, code uint16) *dns.Msg {
-		m.SetEdns0(1232, true)
-		m.IsEdns0().Option = []dns.EDNS0{&dns.EDNS0_EDE{InfoCode: code}}
-		return m
-	}
+	const none = -1
+	unsupported := int(dns.ExtendedErrorCodeUnsupportedDSDigestType)
+	algorithm := int(dns.ExtendedErrorCodeUnsupportedDNSKEYAlgorithm)
+	filtered := int(dns.ExtendedErrorCodeFiltered)
+	other := int(dns.ExtendedErrorCodeOther)
 	for _, tc := range []struct {
-		name     string
-		aliasEDE uint16 // 0: none
-		want     uint16
+		name string
+		hops []int // each hop's EDE, alias first, address last; none for no EDE
+		want int
 	}{
-		{"the target's reason", 0, dns.ExtendedErrorCodeUnsupportedDSDigestType},
-		{"the alias's own EDE first", dns.ExtendedErrorCodeFiltered, dns.ExtendedErrorCodeFiltered},
+		{"the target's reason", []int{none, unsupported}, unsupported},
+		{"the alias's own EDE first", []int{filtered, unsupported}, filtered},
+		{"through a middle alias without an EDE", []int{none, none, unsupported}, unsupported},
+		{"a middle alias's own EDE hides the target's", []int{none, filtered, unsupported}, none},
+		{"a middle alias's EDE 0 hides the target's", []int{none, other, unsupported}, none},
+		{"the nearest reason", []int{none, algorithm, unsupported}, algorithm},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := New(&config.Config{CacheSize: 1024, Expire: 600})
 			defer c.Stop()
-			e := edns.New(&config.Config{})
-			aliasResp := seamResponse(alias, &dns.CNAME{
-				Hdr:    dns.RR_Header{Name: alias, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
-				Target: host,
-			})
-			if tc.aliasEDE != 0 {
-				withEDE(aliasResp, tc.aliasEDE)
-			}
-			c.store.SetFromResponseWithCut(aliasResp, false, lease.Lease{})
-			c.store.SetFromResponseWithCut(withEDE(seamResponse(host, seamA(host)),
-				dns.ExtendedErrorCodeUnsupportedDSDigestType), false, lease.Lease{})
-
-			req, _ := wireTestRequest(t, alias, dns.TypeA, false)
-			w := &captureSink{Writer: mock.NewWriter("udp", "192.0.2.9:53000")}
-			ch := middleware.NewChain([]middleware.Handler{e, c, middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+			terminal := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
 				ch.Cancel()
-			})})
+			})
+			c.SetQueryer(&internalQueryer{handlers: []middleware.Handler{c, terminal}})
+			e := edns.New(&config.Config{})
+
+			names := make([]string, len(tc.hops))
+			for i := range names {
+				names[i] = fmt.Sprintf("hop%d.reason.test.", i)
+			}
+			for i, code := range tc.hops {
+				var rr dns.RR = seamA(names[i])
+				if i < len(names)-1 {
+					rr = &dns.CNAME{
+						Hdr:    dns.RR_Header{Name: names[i], Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+						Target: names[i+1],
+					}
+				}
+				resp := seamResponse(names[i], rr)
+				if code != none {
+					resp.SetEdns0(1232, true)
+					resp.IsEdns0().Option = []dns.EDNS0{&dns.EDNS0_EDE{InfoCode: uint16(code)}} //nolint:gosec // test codes
+				}
+				c.store.SetFromResponseWithCut(resp, false, lease.Lease{})
+			}
+			check := func(path string, got *dns.Msg) {
+				t.Helper()
+				if len(got.Answer) != len(tc.hops) {
+					t.Fatalf("%s: answer %v, want the whole chain", path, got.Answer)
+				}
+				ede := dnsutil.GetEDE(got)
+				switch {
+				case tc.want == none && ede != nil:
+					t.Fatalf("%s: EDE %v, want none", path, ede)
+				case tc.want != none && (ede == nil || int(ede.InfoCode) != tc.want):
+					t.Fatalf("%s: EDE %v, want %d", path, ede, tc.want)
+				}
+			}
+
+			// Byte path.
+			req, _ := wireTestRequest(t, names[0], dns.TypeA, false)
+			w := &captureSink{Writer: mock.NewWriter("udp", "192.0.2.9:53000")}
+			ch := middleware.NewChain([]middleware.Handler{e, c, terminal})
 			var meta middleware.ResponseMeta
 			ctx := middleware.WithResponseMeta(context.Background(), &meta)
 			serve := func() {
@@ -166,15 +198,24 @@ func TestComposedChainCarriesTheTargetsInsecureReason(t *testing.T) {
 			if err := got.Unpack(w.last); err != nil {
 				t.Fatalf("composed reply does not unpack: %v", err)
 			}
-			if len(got.Answer) != 2 {
-				t.Fatalf("answer %v, want the alias and the address", got.Answer)
-			}
-			if ede := dnsutil.GetEDE(got); ede == nil || ede.InfoCode != tc.want {
-				t.Fatalf("EDE %v, want %d", ede, tc.want)
-			}
+			check("byte path", got)
 			if allocs := testing.AllocsPerRun(100, serve); allocs != 0 {
-				t.Fatalf("a composed chain with an EDE allocated %.2f objects per serve", allocs)
+				t.Fatalf("a composed chain allocated %.2f objects per serve", allocs)
 			}
+
+			// Msg path: the same question decoded, the hops chased through
+			// the cache.
+			q := new(dns.Msg)
+			q.SetQuestion(names[0], dns.TypeA)
+			q.SetEdns0(1232, false)
+			mw := mock.NewWriter("udp", "192.0.2.9:53000")
+			mch := middleware.NewChain([]middleware.Handler{e, c, terminal})
+			mch.Reset(mw, q)
+			mch.Next(context.Background())
+			if !mw.Written() {
+				t.Fatal("Msg path: no reply")
+			}
+			check("Msg path", mw.Msg())
 		})
 	}
 }

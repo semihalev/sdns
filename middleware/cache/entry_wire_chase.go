@@ -352,16 +352,22 @@ func composeWireChase(
 	return body, info, true
 }
 
-// chaseEDE is the Extended DNS Error a composed chain carries: the alias
-// entry's own, or else the first hop's that says why its records are
-// insecure (carryInsecureReason on the Msg path).
+// chaseEDE is the Extended DNS Error a composed chain carries, by the Msg
+// path's rule (carryInsecureReason, hop by hop): the alias entry's own, or
+// else the nearest hop's EDE when it says why that hop's records are
+// insecure. A nearer hop's EDE of any other kind is its own answer's, which
+// is not carried, and it hides the hops behind it, as it does on the Msg
+// path, where that hop's composed answer already has an EDE.
 func chaseEDE(segs []wireChaseSegment) *dns.EDNS0_EDE {
 	if ede := segs[0].entry.edeOption(); ede != nil {
 		return ede
 	}
 	for i := 1; i < len(segs); i++ {
-		if ede := segs[i].entry.edeOption(); ede != nil && dnsutil.IsUnsupportedDSEDE(ede.InfoCode) {
-			return ede
+		if ede := segs[i].entry.edeOption(); ede != nil {
+			if dnsutil.IsUnsupportedDSEDE(ede.InfoCode) {
+				return ede
+			}
+			return nil
 		}
 	}
 	return nil
