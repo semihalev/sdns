@@ -482,12 +482,6 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 	requestTreeBypassesSharedDenial := sharedDenialBypass(ctx)
 
-	// Validate query class and type
-	if !c.isValidQuery(q) {
-		ch.Cancel()
-		return
-	}
-
 	// Handle special queries
 	if c.handleSpecialQuery(ctx, ch, q) {
 		return
@@ -1709,17 +1703,6 @@ func boundRequestToLease(ctx context.Context, l lease.Lease) {
 	if meta := middleware.ResponseMetaFrom(ctx); meta != nil {
 		meta.BoundLease(l)
 	}
-}
-
-// isValidQuery checks if the query is valid.
-func (c *Cache) isValidQuery(q dns.Question) bool {
-	if v := dns.ClassToString[q.Qclass]; v == "" {
-		return false
-	}
-	if v := dns.TypeToString[q.Qtype]; v == "" {
-		return false
-	}
-	return true
 }
 
 // handleSpecialQuery handles CHAOS and other special queries.
