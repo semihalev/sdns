@@ -1281,6 +1281,10 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 		return nil, err
 	}
 
+	// insecureEDE says why an answer is insecure when the reason is its
+	// zone's unusable DS; it goes on the reply once it is final.
+	var insecureEDE uint16
+
 	if !req.CheckingDisabled {
 		// Fail closed when trust anchors are unavailable. AutoTA
 		// clears r.rootKeys on unrecoverable errors (e.g. corrupt
@@ -1380,6 +1384,8 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 						return nil, asBogus(werr)
 					}
 					ok = wildcardSecure
+				} else if code, unsupported := unsupportedDSEDE(candidateDSRR); unsupported {
+					insecureEDE = code
 				}
 				resp.AuthenticatedData = ok
 				settled = true
@@ -1424,6 +1430,9 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 			targetAuthority := append([]dns.RR(nil), targetMsg.Ns...)
 			resp = r.clearAdditional(req, resp, extra...)
 			resp.Ns = targetAuthority
+			if insecureEDE != 0 {
+				withEDE(resp, insecureEDE)
+			}
 			return resp, nil
 		}
 		negative, markedNegative := middleware.ValidatedNegativeProofForResponse(ctx, targetMsg)
@@ -1443,6 +1452,9 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 			if targetVerdict {
 				middleware.MarkValidationFailureResponse(ctx, resp)
 			}
+			if insecureEDE != 0 {
+				withEDE(resp, insecureEDE)
+			}
 			return resp, nil
 		}
 	}
@@ -1450,6 +1462,9 @@ func (r *Resolver) answer(ctx context.Context, req, resp *dns.Msg, parentDS []dn
 	resp = r.clearAdditional(req, resp, extra...)
 	if targetVerdict {
 		middleware.MarkValidationFailureResponse(ctx, resp)
+	}
+	if insecureEDE != 0 {
+		withEDE(resp, insecureEDE)
 	}
 
 	return resp, nil
@@ -1468,6 +1483,9 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 		// another.
 		return nil, ErrQuestion
 	}
+
+	// insecureEDE, as in answer().
+	var insecureEDE uint16
 
 	if !req.CheckingDisabled {
 		if r.dnssec && !r.hasTrustAnchors() {
@@ -1525,6 +1543,11 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 					}
 					lastErr = verr
 					continue
+				}
+				if !ok {
+					if code, unsupported := unsupportedDSEDE(candidateDSRR); unsupported {
+						insecureEDE = code
+					}
 				}
 				verified = ok
 				chosenSigner = signer
@@ -1652,6 +1675,9 @@ func (r *Resolver) authority(ctx context.Context, req, resp *dns.Msg, parentDS [
 				}
 			}
 		}
+	}
+	if insecureEDE != 0 {
+		withEDE(resp, insecureEDE)
 	}
 
 	return resp, nil
@@ -2956,6 +2982,48 @@ func hasSupportedDS(dsset []dns.RR) bool {
 		}
 	}
 	return false
+}
+
+// unsupportedDSEDE is the Extended DNS Error for an answer left insecure
+// because every DS its zone has names something this validator does not
+// verify (RFC 6840 §5.2): Unsupported DNSKEY Algorithm when one of them
+// names such an algorithm, Unsupported DS Digest Type otherwise (RFC 8914
+// §4.2, §4.3). It reports false for a set with a usable DS, or none.
+func unsupportedDSEDE(dsset []dns.RR) (uint16, bool) {
+	if len(dsset) == 0 || hasSupportedDS(dsset) {
+		return 0, false
+	}
+	for _, rr := range dsset {
+		if ds, ok := rr.(*dns.DS); ok && !dnssec.IsSupportedDNSKEYAlgorithm(ds.Algorithm) {
+			return dns.ExtendedErrorCodeUnsupportedDNSKEYAlgorithm, true
+		}
+	}
+	return dns.ExtendedErrorCodeUnsupportedDSDigestType, true
+}
+
+// withEDE puts an Extended DNS Error on resp's OPT, on a copy of it: the
+// OPT a reply carries is often the request's own, which is still in use.
+// A reply from an authority that sent no OPT gets one of its own; the
+// client-facing EDNS layer sets its size and flags, or drops it for a
+// client without EDNS.
+func withEDE(resp *dns.Msg, code uint16) {
+	ede := &dns.EDNS0_EDE{InfoCode: code}
+	for i, rr := range resp.Extra {
+		opt, ok := rr.(*dns.OPT)
+		if !ok {
+			continue
+		}
+		own := &dns.OPT{Hdr: opt.Hdr}
+		own.Option = append(slices.Clip(opt.Option), ede)
+		extra := slices.Clone(resp.Extra)
+		extra[i] = own
+		resp.Extra = extra
+		return
+	}
+	own := &dns.OPT{Hdr: dns.RR_Header{Name: rootzone, Rrtype: dns.TypeOPT}}
+	own.SetUDPSize(dnsutil.DefaultMsgSize)
+	own.Option = []dns.EDNS0{ede}
+	resp.Extra = append(slices.Clip(resp.Extra), own)
 }
 
 func (r *Resolver) lookupDS(ctx context.Context, qname string, cd bool) (msg *dns.Msg, err error) {
