@@ -378,5 +378,9 @@ func anyNotImplemented(req *dns.Msg) *dns.Msg {
 	if opt := req.IsEdns0(); opt != nil {
 		do = opt.Do()
 	}
-	return dnsutil.SetRcode(req, dns.RcodeNotImplemented, do)
+	resp := dnsutil.SetRcode(req, dns.RcodeNotImplemented, do)
+	// The client's RD, echoed: ServeDNS answers ANY before the resolution
+	// touches the request, and SetRcode asserts RD for internal replies.
+	resp.RecursionDesired = req.RecursionDesired
+	return resp
 }
