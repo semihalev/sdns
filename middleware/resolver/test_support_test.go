@@ -1,9 +1,26 @@
 package resolver
 
 import (
+	"net"
+	"testing"
+
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/middleware"
 )
+
+// silentRoot is a loopback address that takes queries and never answers,
+// the root for a test that never resolves from it. A resolver requires
+// roots and primes against them in the background; a real root there sends
+// the test out to the network.
+func silentRoot(tb testing.TB) string {
+	tb.Helper()
+	packet, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		tb.Fatal(err)
+	}
+	tb.Cleanup(func() { _ = packet.Close() })
+	return packet.LocalAddr().String()
+}
 
 // newWiredTestResolver constructs a fresh Resolver and inherits the
 // queryer / store from the DNSHandler that middleware.Setup already

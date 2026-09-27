@@ -97,7 +97,7 @@ func TestSlowerAuthoritiesAreMeasuredNotJustExplored(t *testing.T) {
 	}
 
 	cfg := &config.Config{
-		RootServers:          []string{"198.41.0.4:53"},
+		RootServers:          []string{silentRoot(t)},
 		Timeout:              config.Duration{Duration: 2 * time.Second},
 		MaxConcurrentQueries: 100,
 	}
@@ -178,7 +178,7 @@ func TestUnknownsAreExploredOnceTheDelegationHasSettled(t *testing.T) {
 	}
 
 	cfg := &config.Config{
-		RootServers:          []string{"198.41.0.4:53"},
+		RootServers:          []string{silentRoot(t)},
 		Timeout:              config.Duration{Duration: 2 * time.Second},
 		MaxConcurrentQueries: 100,
 	}
@@ -267,7 +267,7 @@ func TestEveryUnmeasuredAuthorityIsEventuallyQueried(t *testing.T) {
 		// Roots this test never reaches, but a resolver built without any
 		// treats an empty list as a fatal misconfiguration and takes the
 		// process down with it.
-		RootServers:          []string{"198.41.0.4:53"},
+		RootServers:          []string{silentRoot(t)},
 		Timeout:              config.Duration{Duration: 2 * time.Second},
 		MaxConcurrentQueries: 100,
 	}

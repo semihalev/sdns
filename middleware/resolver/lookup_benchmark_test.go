@@ -13,10 +13,9 @@ import (
 func BenchmarkLookupPerformance(b *testing.B) {
 	// Create a test resolver
 	cfg := &config.Config{
-		RootServers:  []string{"198.41.0.4:53", "170.247.170.2:53", "192.33.4.12:53"},
-		Root6Servers: []string{"[2001:503:ba3e::2:30]:53", "[2801:1b8:10::b]:53"},
-		RootKeys:     []string{". 172800 IN DNSKEY 257 3 8 AwEAAa..."},
-		Timeout:      config.Duration{Duration: 2 * time.Second},
+		RootServers: []string{silentRoot(b)},
+		RootKeys:    []string{". 172800 IN DNSKEY 257 3 8 AwEAAa..."},
+		Timeout:     config.Duration{Duration: 2 * time.Second},
 	}
 
 	r := newWiredTestResolver(cfg)
@@ -56,7 +55,7 @@ func BenchmarkLookupPerformance(b *testing.B) {
 
 func TestAdaptiveTimeout(t *testing.T) {
 	cfg := &config.Config{
-		RootServers: []string{"198.41.0.4:53"},
+		RootServers: []string{silentRoot(t)},
 		Timeout:     config.Duration{Duration: 2 * time.Second},
 	}
 
