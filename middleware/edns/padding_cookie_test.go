@@ -162,6 +162,34 @@ func TestMalformedOPTIsFormErr(t *testing.T) {
 	}
 }
 
+// The server's own OPT that replaces a malformed pair keeps the client's
+// UDP limit, the smallest either advertised: a FORMERR that would exceed
+// it is truncated, not sent whole.
+func TestMalformedOPTFormErrKeepsTheUDPLimit(t *testing.T) {
+	e := truncateHarness(t)
+	handlers := []middleware.Handler{e, &bulkResponder{answer: 1}}
+	for _, wireBorn := range []bool{true, false} {
+		req := withOptions()
+		second := new(dns.OPT)
+		second.Hdr.Name = "."
+		second.Hdr.Rrtype = dns.TypeOPT
+		second.SetUDPSize(dns.MinMsgSize)
+		txt := &dns.TXT{
+			Hdr: dns.RR_Header{Name: "pad.example.com.", Rrtype: dns.TypeTXT, Class: dns.ClassINET},
+			Txt: []string{strings.Repeat("x", 200), strings.Repeat("y", 200), strings.Repeat("z", 200)},
+		}
+		req.Extra = append(req.Extra, second, txt)
+		resp, n := serveOver(t, "udp", handlers, req, wireBorn)
+		if resp.Rcode != dns.RcodeFormatError {
+			t.Fatalf("wire-born=%v: %s, want FORMERR", wireBorn, dns.RcodeToString[resp.Rcode])
+		}
+		if n > dns.MinMsgSize || !resp.Truncated {
+			t.Fatalf("wire-born=%v: %d-byte FORMERR, TC=%v; want at most %d bytes with TC set",
+				wireBorn, n, resp.Truncated, dns.MinMsgSize)
+		}
+	}
+}
+
 // Only the first COOKIE option counts (RFC 7873 §5.2): a malformed one
 // after a valid first is ignored, and a malformed first is FORMERR
 // whatever follows.

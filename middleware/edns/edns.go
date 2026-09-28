@@ -188,14 +188,18 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if badOPT {
 		ednsErrorMalformedOPT.Inc()
 		// IsEdns0 reads one OPT only, and from the end: a client that
-		// padded in any of its OPTs asked for a padded reply.
+		// padded in any of its OPTs asked for a padded reply, and the
+		// smallest UDP size any of them advertised is the one the reply
+		// can count on.
+		udpSize := uint16(dnsutil.DefaultMsgSize)
 		for _, rr := range req.Extra {
 			if o, ok := rr.(*dns.OPT); ok {
 				padded = padded || hasClientPadding(&dns.Msg{Extra: []dns.RR{o}})
+				udpSize = min(udpSize, o.UDPSize())
 			}
 		}
 		dnsutil.ClearOPT(req)
-		req.SetEdns0(dnsutil.DefaultMsgSize, false)
+		req.SetEdns0(udpSize, false)
 	}
 	if hasClientECS(req) {
 		// Preserve the ingress fact before SetEdns0 applies the forwarding
