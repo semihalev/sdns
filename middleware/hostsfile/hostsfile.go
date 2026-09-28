@@ -492,14 +492,29 @@ func (h *Hostsfile) load() error {
 			alias := strings.ToLower(hostnames[i])
 			entry.Aliases = append(entry.Aliases, alias)
 
+			// CNAME: alias → primary
+			cname := &dns.CNAME{
+				Hdr: dns.RR_Header{
+					Name:   alias + ".",
+					Rrtype: dns.TypeCNAME,
+					Class:  dns.ClassINET,
+					Ttl:    h.ttl,
+				},
+				Target: primaryName + ".",
+			}
+
 			// A name listed on more than one line collects the address
 			// of each, as a primary name does; replacing its entry would
 			// lose the other family's addresses and answer it NODATA.
+			// Its first alias line still gives it its CNAME.
 			if existing, ok := db.hosts[alias]; ok {
 				if ip.To4() != nil {
 					existing.IPv4 = append(existing.IPv4, ip)
 				} else {
 					existing.IPv6 = append(existing.IPv6, ip)
+				}
+				if existing.cnameRR == nil {
+					existing.cnameRR = cname
 				}
 				continue
 			}
@@ -508,21 +523,12 @@ func (h *Hostsfile) load() error {
 				Name:      alias,
 				LineNo:    lineNo,
 				Timestamp: now,
+				cnameRR:   cname,
 			}
 			if ip.To4() != nil {
 				aliasEntry.IPv4 = []net.IP{ip}
 			} else {
 				aliasEntry.IPv6 = []net.IP{ip}
-			}
-			// CNAME: alias → primary
-			aliasEntry.cnameRR = &dns.CNAME{
-				Hdr: dns.RR_Header{
-					Name:   alias + ".",
-					Rrtype: dns.TypeCNAME,
-					Class:  dns.ClassINET,
-					Ttl:    h.ttl,
-				},
-				Target: primaryName + ".",
 			}
 			db.hosts[alias] = aliasEntry
 			atomic.AddInt64(&db.stats.entries, 1)

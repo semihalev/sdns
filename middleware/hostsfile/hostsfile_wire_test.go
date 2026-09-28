@@ -207,6 +207,7 @@ func TestHostsfileMissingFamilyIsNODATA(t *testing.T) {
 		{"v4only.test.", dns.TypeA, "127.0.0.1"},
 		{"localhost.", dns.TypeA, "127.0.0.1"},
 		{"localhost.", dns.TypeAAAA, "::1"},
+		{"localhost.", dns.TypeCNAME, "ip6-localhost."},
 		{"exact.wild.test.", dns.TypeAAAA, "NODATA"},
 		{"x.wild.test.", dns.TypeA, "10.0.0.2"},
 		{"x.wild.test.", dns.TypeAAAA, "fd00::2"},
@@ -246,6 +247,8 @@ func TestHostsfileMissingFamilyIsNODATA(t *testing.T) {
 						got = rr.A.String()
 					case *dns.AAAA:
 						got = rr.AAAA.String()
+					case *dns.CNAME:
+						got = rr.Target
 					default:
 						got = rr.String()
 					}
