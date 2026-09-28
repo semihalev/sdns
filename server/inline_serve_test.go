@@ -2,12 +2,15 @@ package server
 
 import (
 	"context"
+	"encoding/hex"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/cookie"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/defaults"
 )
@@ -146,5 +149,59 @@ func TestInlineReadyRequiresBarrier(t *testing.T) {
 	s := newRawTestServer(t)
 	if s.InlineReady() {
 		t.Fatal("pipeline without an inline barrier reported inline-ready")
+	}
+}
+
+// A replay finishes its query with the COOKIE classification the inline
+// pass made, not a second one. A server cookie young enough to echo on the
+// inline pass is echoed by the replay two seconds later, when a fresh
+// classification would find it past the age at which a new one is made.
+func TestReplayKeepsTheInlineCookieClassification(t *testing.T) {
+	witness := &replayWitness{respond: stubAnswer}
+	s := newInlineTestServer(t, witness)
+
+	job := &strictTestJob{remote: net.UDPAddr{IP: net.IPv4(203, 0, 113, 41), Port: 4242}}
+	addr := netip.MustParseAddr("203.0.113.41")
+	secret := cookie.NewSecret("6c6f6f6b61686172646c6f6f6b6168617264")
+	// Made 1798 seconds ago: echoed until 1800, replaced from then on.
+	made := uint32(time.Now().Unix()) - 1798 //nolint:gosec // epoch second modulo 2^32
+	client, _ := hex.DecodeString("0102030405060708")
+	st := secret.Classify(client, addr, made)
+	sent, ok := secret.Reply(&st)
+	if !ok {
+		t.Fatal("no server cookie to send")
+	}
+
+	m := new(dns.Msg)
+	m.SetQuestion("carry.zero.test.", dns.TypeA)
+	m.SetEdns0(1232, false)
+	m.IsEdns0().Option = []dns.EDNS0{&dns.EDNS0_COOKIE{Code: dns.EDNS0COOKIE, Cookie: hex.EncodeToString(sent[:])}}
+	raw, err := m.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if s.ServeRawInline(job, raw, time.Now()) {
+		t.Fatal("cold query claimed handled on the inline pass")
+	}
+	time.Sleep(2100 * time.Millisecond)
+	if !s.ServeRawReplay(job, raw, time.Now()) {
+		t.Fatal("replay did not handle the handed-off query")
+	}
+
+	reply := new(dns.Msg)
+	if err := reply.Unpack(job.wrote); err != nil {
+		t.Fatalf("replay reply unpack: %v", err)
+	}
+	var got string
+	if opt := reply.IsEdns0(); opt != nil {
+		for _, o := range opt.Option {
+			if c, ok := o.(*dns.EDNS0_COOKIE); ok {
+				got = c.Cookie
+			}
+		}
+	}
+	if got != hex.EncodeToString(sent[:]) {
+		t.Fatalf("replay answered cookie %q, want the inline pass's echo of %x", got, sent)
 	}
 }

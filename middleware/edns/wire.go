@@ -1,19 +1,13 @@
 package edns
 
 import (
-	"crypto/sha256"
 	"encoding/binary"
-	"net/netip"
 	"time"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/wire"
 	"github.com/semihalev/sdns/middleware"
 )
-
-// maxTextualAddrLen bounds an address's text form: an IPv6 address with an
-// embedded IPv4 suffix is the longest shape.
-const maxTextualAddrLen = len("ffff:ffff:ffff:ffff:ffff:ffff:255.255.255.255")
 
 // TCPKeepaliveTimeout is the idle timeout this server advertises to
 // stream clients that sent the RFC 7828 edns-tcp-keepalive option. It
@@ -25,19 +19,6 @@ const TCPKeepaliveTimeout = 8 * time.Second
 // tcpKeepaliveUnits is the same timeout in the option's wire unit of
 // 100 milliseconds.
 const tcpKeepaliveUnits = uint16(TCPKeepaliveTimeout / (100 * time.Millisecond))
-
-const (
-	// serverCookieLen is the width of the cookie this server emits: the
-	// client's 8-byte half echoed back, followed by a SHA-256 digest.
-	serverCookieLen = 8 + sha256.Size
-	// clientCookieHexLen is the client half's text length, the only shape
-	// SetEdns0 admits.
-	clientCookieHexLen = 16
-	// cookiePreimageMax bounds the stack buffer the digest is taken over,
-	// a textual address, the client cookie, and the configured secret. A
-	// longer secret simply keeps the response on the Msg path.
-	cookiePreimageMax = 256
-)
 
 // Size forwards the response's wire length from the writer beneath. The
 // wrapper embeds the narrow ResponseWriter interface, which deliberately
@@ -114,14 +95,10 @@ func (w *ResponseWriter) wireOPTLen() (int, bool) {
 			return 0, false
 		}
 	}
-	if w.cookie != "" || w.hasCookieRaw {
-		if !w.hasCookieRaw && len(w.cookie) != clientCookieHexLen {
-			return 0, false
+	if w.cookie != nil {
+		if cookie, ok := w.serverCookie(); ok {
+			length += wire.OPTOptionHdrLen + len(cookie)
 		}
-		if maxTextualAddrLen+clientCookieHexLen+len(w.cookiesecret) > cookiePreimageMax {
-			return 0, false
-		}
-		length += wire.OPTOptionHdrLen + serverCookieLen
 	}
 	if w.nsidstr != "" && w.nsid {
 		length += wire.OPTOptionHdrLen + len(w.nsidstr)
@@ -170,12 +147,10 @@ func (w *ResponseWriter) AbortWire() {
 func (w *ResponseWriter) appendWireOPT(body []byte, info middleware.WireInfo) ([]byte, bool) {
 	body, rdlenOff := wire.AppendOPTHeader(body, w.respUDPSize, w.do)
 
-	if w.cookie != "" || w.hasCookieRaw {
-		var cookie [serverCookieLen]byte
-		if !w.serverCookie(cookie[:]) {
-			return nil, false
+	if w.cookie != nil {
+		if cookie, ok := w.serverCookie(); ok {
+			body = wire.AppendOption(body, dns.EDNS0COOKIE, cookie)
 		}
-		body = wire.AppendOption(body, dns.EDNS0COOKIE, cookie[:])
 	}
 	if w.nsidstr != "" && w.nsid {
 		body = wire.AppendOptionString(body, dns.EDNS0NSID, w.nsidstr)
@@ -195,70 +170,6 @@ func (w *ResponseWriter) appendWireOPT(body []byte, info middleware.WireInfo) ([
 	}
 
 	return wire.FinishOPT(body, rdlenOff), true
-}
-
-// serverCookie writes the RFC 7873 server cookie into dst. It reproduces
-// exactly what dnsutil.GenerateServerCookie derives, the same digest over
-// the same preimage, without materializing that value's hex form.
-func (w *ResponseWriter) serverCookie(dst []byte) bool {
-	if len(dst) < serverCookieLen {
-		return false
-	}
-	// The client half and its canonical hex text, from whichever form the
-	// writer carries: the strict path holds raw wire bytes, the Msg path a
-	// hex string. The digest preimage always uses the text form,
-	// GenerateServerCookie's exact contract.
-	var cookieText [clientCookieHexLen]byte
-	switch {
-	case w.hasCookieRaw:
-		copy(dst[:8], w.cookieRaw[:])
-		const hexDigits = "0123456789abcdef"
-		for i, b := range w.cookieRaw {
-			cookieText[i*2] = hexDigits[b>>4]
-			cookieText[i*2+1] = hexDigits[b&0x0F]
-		}
-	case len(w.cookie) == clientCookieHexLen:
-		for i := range serverCookieLen - sha256.Size {
-			hi, hiOK := hexNibble(w.cookie[i*2])
-			lo, loOK := hexNibble(w.cookie[i*2+1])
-			if !hiOK || !loOK {
-				return false
-			}
-			dst[i] = hi<<4 | lo
-		}
-		copy(cookieText[:], w.cookie)
-	default:
-		return false
-	}
-
-	addr, ok := netip.AddrFromSlice(w.RemoteIP())
-	if !ok {
-		return false
-	}
-	var preimage [cookiePreimageMax]byte
-	buf := addr.Unmap().AppendTo(preimage[:0])
-	if len(buf)+len(cookieText)+len(w.cookiesecret) > len(preimage) {
-		return false
-	}
-	buf = append(buf, cookieText[:]...)
-	buf = append(buf, w.cookiesecret...)
-
-	digest := sha256.Sum256(buf)
-	copy(dst[serverCookieLen-sha256.Size:], digest[:])
-	return true
-}
-
-func hexNibble(c byte) (byte, bool) {
-	switch {
-	case c >= '0' && c <= '9':
-		return c - '0', true
-	case c >= 'a' && c <= 'f':
-		return c - 'a' + 10, true
-	case c >= 'A' && c <= 'F':
-		return c - 'A' + 10, true
-	default:
-		return 0, false
-	}
 }
 
 // WriteWire appends the per-client OPT and forwards the bytes. The guards

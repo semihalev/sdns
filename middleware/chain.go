@@ -9,6 +9,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/contextutil"
+	"github.com/semihalev/sdns/internal/cookie"
 	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/internal/wire"
 )
@@ -857,6 +858,16 @@ type Chain struct {
 	// DoQ. It is the chain's rather than a writer's, so no response-writer
 	// wrapper a middleware installs can hide it.
 	encrypted bool
+	// verified records, at binding, whether the transport itself proved
+	// the source address; see SourceVerified.
+	verified bool
+
+	// cookie is the request's COOKIE classification, made once (see
+	// Cookie) and carried to a replay; challenge marks a query the rate
+	// limiter answers with BADCOOKIE rather than an answer.
+	cookie    cookie.State
+	cookieSet bool
+	challenge bool
 }
 
 // Encrypted reports whether the request arrived over an encrypted
@@ -1078,6 +1089,8 @@ func (ch *Chain) Reset(w Transport, r *dns.Msg) {
 	ch.inlineOnly = false
 	ch.handoff = false
 	ch.replay = false
+	ch.cookieSet = false
+	ch.challenge = false
 }
 
 // rebindWriter points the chain's pooled base writer at the next
@@ -1095,6 +1108,7 @@ func (ch *Chain) rebindWriter(w Transport) {
 	}
 	base.Reset(w)
 	ch.encrypted = base.encrypted
+	ch.verified = base.verified
 }
 
 // ResetWire rebinds the chain to a wire-born request living in transport
@@ -1109,6 +1123,8 @@ func (ch *Chain) ResetWire(w Transport, r *Request) {
 	ch.inlineOnly = false
 	ch.handoff = false
 	ch.replay = false
+	ch.cookieSet = false
+	ch.challenge = false
 }
 
 // SetInlineOnly declares that this serve runs on a transport reader that

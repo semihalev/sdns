@@ -298,9 +298,13 @@ func (s *Server) ServeRawReplay(w middleware.Transport, raw []byte, readTime tim
 			}
 			s.pipeline.BindChain(chain)
 			defer chain.Finish()
+			// The chain is the job's own, still holding what the inline
+			// pass decided once for this query.
+			carry := chain.Carry()
 			chain.ResetWire(w, req)
 			chain.AllowDirectPack()
 			chain.SetReplay()
+			chain.Restore(carry)
 			chain.Next(carrier)
 			return true
 		}

@@ -15,7 +15,14 @@ type LimiterStore struct {
 	limiters map[uint64]*timestampedLimiter
 	maxSize  int
 	rate     int
+	// challenges gives each limiter a BADCOOKIE budget.
+	challenges bool
 }
+
+// challengeRate is the BADCOOKIE budget of a client over its quota: one a
+// second. A client needs one to learn a server cookie, and a spoofed
+// flood gets no more than that reflected at its target.
+const challengeRate = rate.Limit(1)
 
 type timestampedLimiter struct {
 	limiter *limiter
@@ -74,7 +81,9 @@ func (s *LimiterStore) Get(key uint64) *limiter {
 
 	rl := rate.NewLimiter(limit, s.rate)
 	l := &limiter{rl: rl}
-	l.cookie.Store("")
+	if s.challenges {
+		l.challenge = rate.NewLimiter(challengeRate, 1)
+	}
 
 	tl := &timestampedLimiter{limiter: l}
 	tl.touch()

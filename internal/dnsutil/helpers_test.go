@@ -16,7 +16,6 @@ func TestSetEdns0(t *testing.T) {
 		name           string
 		req            *dns.Msg
 		expectedSize   int
-		expectedCookie string
 		expectedNsid   bool
 		expectedOrigDo bool // Original DO bit from request
 	}{
@@ -28,7 +27,6 @@ func TestSetEdns0(t *testing.T) {
 				return m
 			}(),
 			expectedSize:   DefaultMsgSize,
-			expectedCookie: "",
 			expectedNsid:   false,
 			expectedOrigDo: false, // No EDNS0 = no DO bit
 		},
@@ -41,7 +39,6 @@ func TestSetEdns0(t *testing.T) {
 				return m
 			}(),
 			expectedSize:   DefaultMsgSize,
-			expectedCookie: "",
 			expectedNsid:   false,
 			expectedOrigDo: true, // DO bit was set
 		},
@@ -54,7 +51,6 @@ func TestSetEdns0(t *testing.T) {
 				return m
 			}(),
 			expectedSize:   dns.MinMsgSize,
-			expectedCookie: "",
 			expectedNsid:   false,
 			expectedOrigDo: false, // DO bit not set
 		},
@@ -67,7 +63,6 @@ func TestSetEdns0(t *testing.T) {
 				return m
 			}(),
 			expectedSize:   DefaultMsgSize,
-			expectedCookie: "",
 			expectedNsid:   false,
 			expectedOrigDo: false, // DO bit not set
 		},
@@ -86,7 +81,6 @@ func TestSetEdns0(t *testing.T) {
 				return m
 			}(),
 			expectedSize:   DefaultMsgSize,
-			expectedCookie: "1234567890abcdef",
 			expectedNsid:   false,
 			expectedOrigDo: false,
 		},
@@ -105,7 +99,6 @@ func TestSetEdns0(t *testing.T) {
 				return m
 			}(),
 			expectedSize:   DefaultMsgSize,
-			expectedCookie: "",
 			expectedNsid:   true,
 			expectedOrigDo: false,
 		},
@@ -124,7 +117,6 @@ func TestSetEdns0(t *testing.T) {
 				return m
 			}(),
 			expectedSize:   DefaultMsgSize,
-			expectedCookie: "",
 			expectedNsid:   false,
 			expectedOrigDo: false,
 		},
@@ -142,7 +134,6 @@ func TestSetEdns0(t *testing.T) {
 				return m
 			}(),
 			expectedSize:   DefaultMsgSize,
-			expectedCookie: "",
 			expectedNsid:   false,
 			expectedOrigDo: false, // Returns false for bad version
 		},
@@ -152,16 +143,13 @@ func TestSetEdns0(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			// Nil policy + zero addr exercises the default-strip path,
 			// matching the pre-7871 contract this test was written for.
-			opt, size, cookie, nsid, origDo := SetEdns0(tt.req, nil, netip.Addr{})
+			opt, size, nsid, origDo := SetEdns0(tt.req, nil, netip.Addr{})
 
 			if opt == nil {
 				t.Fatalf("opt is nil")
 			}
 			if !reflect.DeepEqual(tt.expectedSize, size) {
 				t.Errorf("size = %v, want %v", size, tt.expectedSize)
-			}
-			if !reflect.DeepEqual(tt.expectedCookie, cookie) {
-				t.Errorf("cookie = %v, want %v", cookie, tt.expectedCookie)
 			}
 			if !reflect.DeepEqual(tt.expectedNsid, nsid) {
 				t.Errorf("nsid = %v, want %v", nsid, tt.expectedNsid)
@@ -214,7 +202,7 @@ func TestSetEdns0_StripsECSByDefault(t *testing.T) {
 	// Regression: the historical contract (RFC 7871 §11) is to strip
 	// every option. Nil policy must keep that behaviour.
 	req := reqWithECS(1, 32, "203.0.113.5")
-	opt, _, _, _, _ := SetEdns0(req, nil, netip.Addr{})
+	opt, _, _, _ := SetEdns0(req, nil, netip.Addr{})
 	if got := findECS(opt); got != nil {
 		t.Errorf("nil policy should strip ECS, got %+v", got)
 	}
@@ -224,7 +212,7 @@ func TestSetEdns0_StripsECSWhenPolicyDisabled(t *testing.T) {
 	req := reqWithECS(1, 24, "203.0.113.0")
 	policy := &ecs.Policy{Enabled: false, ForwardV4Max: 24}
 	client := netip.MustParseAddr("203.0.113.5")
-	opt, _, _, _, _ := SetEdns0(req, policy, client)
+	opt, _, _, _ := SetEdns0(req, policy, client)
 	if got := findECS(opt); got != nil {
 		t.Errorf("disabled policy should strip ECS, got %+v", got)
 	}
@@ -236,7 +224,7 @@ func TestSetEdns0_ForwardsECSClampedToCeiling(t *testing.T) {
 	req := reqWithECS(1, 28, "203.0.113.42")
 	policy := &ecs.Policy{Enabled: true, ForwardV4Max: 24}
 	client := netip.MustParseAddr("203.0.113.42")
-	opt, _, _, _, _ := SetEdns0(req, policy, client)
+	opt, _, _, _ := SetEdns0(req, policy, client)
 	got := findECS(opt)
 	if got == nil {
 		t.Fatal("expected ECS to be forwarded")
@@ -260,7 +248,7 @@ func TestSetEdns0_DropsECSWhenClientNotInAllowList(t *testing.T) {
 		ClientNetworks: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
 	}
 	client := netip.MustParseAddr("203.0.113.5") // outside the allow-list
-	opt, _, _, _, _ := SetEdns0(req, policy, client)
+	opt, _, _, _ := SetEdns0(req, policy, client)
 	if got := findECS(opt); got != nil {
 		t.Errorf("client outside allow-list should not get ECS forwarded, got %+v", got)
 	}
@@ -279,63 +267,9 @@ func TestSetEdns0_NoECSInRequestNoForwarding(t *testing.T) {
 
 	policy := &ecs.Policy{Enabled: true, ForwardV4Max: 24}
 	client := netip.MustParseAddr("203.0.113.5")
-	out, _, _, _, _ := SetEdns0(req, policy, client)
+	out, _, _, _ := SetEdns0(req, policy, client)
 	if got := findECS(out); got != nil {
 		t.Errorf("no client ECS should mean no forwarded ECS, got %+v", got)
-	}
-}
-
-func TestGenerateServerCookie(t *testing.T) {
-	tests := []struct {
-		name     string
-		secret   string
-		remoteip string
-		cookie   string
-	}{
-		{
-			name:     "Basic cookie generation",
-			secret:   "mysecret",
-			remoteip: "192.168.1.1",
-			cookie:   "1234567890abcdef",
-		},
-		{
-			name:     "Different remote IP",
-			secret:   "mysecret",
-			remoteip: "10.0.0.1",
-			cookie:   "1234567890abcdef",
-		},
-		{
-			name:     "Different secret",
-			secret:   "anothersecret",
-			remoteip: "192.168.1.1",
-			cookie:   "1234567890abcdef",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := GenerateServerCookie(tt.secret, tt.remoteip, tt.cookie)
-
-			// Cookie should start with the original cookie
-			if len(result) <= len(tt.cookie) {
-				t.Errorf("len(result) = %d, want > %d", len(result), len(tt.cookie))
-			}
-			if !reflect.DeepEqual(tt.cookie, result[:len(tt.cookie)]) {
-				t.Errorf("result[:len(tt.cookie)] = %v, want %v", result[:len(tt.cookie)], tt.cookie)
-			}
-
-			// Generate same cookie with same parameters should be identical
-			result2 := GenerateServerCookie(tt.secret, tt.remoteip, tt.cookie)
-			if !reflect.DeepEqual(result, result2) {
-				t.Errorf("result2 = %v, want %v", result2, result)
-			}
-
-			// Different parameters should produce different results
-			result3 := GenerateServerCookie(tt.secret+"x", tt.remoteip, tt.cookie)
-			if reflect.DeepEqual(result, result3) {
-				t.Errorf("result3 = %v, want a different value", result3)
-			}
-		})
 	}
 }
 

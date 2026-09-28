@@ -352,7 +352,7 @@ func (r *Request) materialize() *dns.Msg {
 		// exact upstream shape SetEdns0 produces (options stripped, clamped
 		// ECS re-attached, DO forced, size normalized). The edns writer
 		// wrapper already holds the client's original facts.
-		_, _, _, _, _ = dnsutil.SetEdns0(m, r.ecsPolicy, r.clientAddr)
+		_, _, _, _ = dnsutil.SetEdns0(m, r.ecsPolicy, r.clientAddr)
 	}
 	r.msg = m
 	return m

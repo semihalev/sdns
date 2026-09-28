@@ -10,6 +10,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/cookie"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/ecs"
 	"github.com/semihalev/sdns/internal/metric"
@@ -49,24 +50,6 @@ func malformedOPT(req *dns.Msg) bool {
 	return false
 }
 
-// malformedCookie reports whether req's first COOKIE option has a length
-// RFC 7873 §5.2.2 calls malformed: valid lengths are 8, a client cookie
-// alone, and 16 to 40, with a server cookie. Only the first counts, any
-// later one is ignored (RFC 7873 §5.2).
-func malformedCookie(req *dns.Msg) bool {
-	opt := req.IsEdns0()
-	if opt == nil {
-		return false
-	}
-	for _, o := range opt.Option {
-		if c, ok := o.(*dns.EDNS0_COOKIE); ok {
-			n := len(c.Cookie) / 2 // hex
-			return n != 8 && (n < 16 || n > 40)
-		}
-	}
-	return false
-}
-
 // responseWriterPool reuses per-query ResponseWriter wrappers. A wrapper
 // is alive exactly for the duration of ch.Next in ServeDNS, so the pool
 // bounds to the in-flight query count.
@@ -76,8 +59,8 @@ var responseWriterPool = sync.Pool{
 
 // EDNS type.
 type EDNS struct {
-	cookiesecret string
-	nsidstr      string
+	secret  cookie.Secret
+	nsidstr string
 
 	// ecsPolicy is built once from cfg.ECS and read every request.
 	// nil is a valid value: it means the historical strip-everything
@@ -89,9 +72,9 @@ type EDNS struct {
 // New return edns.
 func New(cfg *config.Config) *EDNS {
 	return &EDNS{
-		cookiesecret: cfg.CookieSecret,
-		nsidstr:      cfg.NSID,
-		ecsPolicy:    buildECSPolicy(cfg),
+		secret:    cookie.NewSecret(cfg.CookieSecret),
+		nsidstr:   cfg.NSID,
+		ecsPolicy: buildECSPolicy(cfg),
 	}
 }
 
@@ -124,20 +107,25 @@ type ResponseWriter struct {
 	*EDNS
 
 	// opt is the request's (mutated) OPT on the Msg path. On the strict
-	// path there is no request message and opt stays nil; respUDPSize and
-	// the raw cookie carry the facts instead.
+	// path there is no request message and opt stays nil; respUDPSize
+	// carries the facts instead.
 	opt    *dns.OPT
 	size   int
 	do     bool
-	cookie string
 	nsid   bool
 	noedns bool
 	noad   bool
 
+	// cookie is the chain's classification of the query's COOKIE, nil
+	// when the reply carries none; reply caches the COOKIE option built
+	// from it, replyState recording whether it is built (1) and whether
+	// there is one (2).
+	cookie     *cookie.State
+	reply      [cookie.Len]byte
+	replyState uint8
+
 	// Strict-path facts, valid whether or not opt exists.
-	respUDPSize  uint16
-	cookieRaw    [8]byte
-	hasCookieRaw bool
+	respUDPSize uint16
 	// keepalive marks a stream-transport client that sent the RFC 7828
 	// edns-tcp-keepalive option; the response advertises the server's
 	// idle timeout back. Never set for datagram transports. The option
@@ -156,7 +144,9 @@ type ResponseWriter struct {
 // protocol errors (foreign opcode, BADVERS) and message-born requests take
 // the decoded body.
 func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	if r := ch.Request; r.Undecoded() &&
+	// A BADCOOKIE challenge is a cold reply like the protocol errors, and
+	// takes the decoded body with them.
+	if r := ch.Request; r.Undecoded() && !ch.CookieChallenged() &&
 		r.Opcode() == 0 && (!r.HasOPT() || r.EDNSVersion() == 0) {
 		e.serveWire(ctx, ch)
 		return
@@ -217,9 +207,9 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if clientAddr.Is4In6() {
 		clientAddr = clientAddr.Unmap()
 	}
-	// Read before SetEdns0, which strips the client's options.
-	malformed := malformedCookie(req)
-	opt, size, cookie, nsid, do := dnsutil.SetEdns0(req, e.ecsPolicy, clientAddr)
+	// Classified before SetEdns0, which strips the client's options.
+	st := ch.Cookie(e.secret)
+	opt, size, nsid, do := dnsutil.SetEdns0(req, e.ecsPolicy, clientAddr)
 	if opt.Version() != 0 {
 		ednsErrorBadVersion.Inc()
 		opt.SetVersion(0)
@@ -245,7 +235,7 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	rw.opt = opt
 	rw.size = size
 	rw.do = do
-	rw.cookie = cookie
+	rw.cookie = st
 	rw.noedns = noedns
 	rw.nsid = nsid
 	rw.keepalive = keepalive && w.Proto() == "tcp"
@@ -268,15 +258,22 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		*rw = ResponseWriter{}
 		responseWriterPool.Put(rw)
 	}()
-	if badOPT || malformed {
-		if malformed {
+	if badOPT || st.Verdict == cookie.Malformed {
+		if st.Verdict == cookie.Malformed {
 			ednsErrorMalformedCookie.Inc()
 		}
 		// Through this layer's writer, so the error is padded like any
 		// other reply; a malformed cookie is not one to answer with a
 		// server cookie.
-		rw.cookie = ""
+		rw.cookie = nil
 		ch.CancelWithRcode(dns.RcodeFormatError, do)
+		return
+	}
+	if ch.CookieChallenged() {
+		// After the checks above, so a malformed query draws its own
+		// error; through this layer's writer, so the challenge carries
+		// the server cookie that answers it (RFC 7873 §5.2.3).
+		ch.CancelWithRcode(dns.RcodeBadCookie, do)
 		return
 	}
 	ch.Next(ctx)
@@ -326,9 +323,8 @@ func (e *EDNS) serveWire(ctx context.Context, ch *middleware.Chain) {
 	rw.keepalive = req.HasTCPKeepalive() && w.Proto() == "tcp"
 	rw.pad = req.HasPadding() && ch.Encrypted()
 	rw.respUDPSize = dnsutil.DefaultMsgSize
-	if cookie := req.ClientCookie(); len(cookie) >= 8 {
-		copy(rw.cookieRaw[:], cookie[:8])
-		rw.hasCookieRaw = true
+	if req.ClientCookie() != nil {
+		rw.cookie = ch.Cookie(e.secret)
 	}
 	// AD discipline from the raw flags: CD=1 clients never receive AD,
 	// and a client that asserted neither DO nor AD gets it cleared.
@@ -596,21 +592,36 @@ func (w *ResponseWriter) setCookie() {
 	}
 }
 
-// cookieOption builds the per-client server cookie without mutating any
-// writer state, so the wire path can compose an OPT and still fall back to
-// the Msg path without double-appending. A strict-path writer carries the
-// client half as raw bytes; the Msg path derives the text form on demand.
+// cookieOption builds the per-client COOKIE option without touching the
+// OPT, so the wire path can compose an OPT and still fall back to the Msg
+// path without double-appending.
 func (w *ResponseWriter) cookieOption() (dns.EDNS0, bool) {
-	if w.cookie == "" && w.hasCookieRaw {
-		w.cookie = hex.EncodeToString(w.cookieRaw[:])
-	}
-	if w.cookie == "" {
+	b, ok := w.serverCookie()
+	if !ok {
 		return nil, false
 	}
 	return &dns.EDNS0_COOKIE{
 		Code:   dns.EDNS0COOKIE,
-		Cookie: dnsutil.GenerateServerCookie(w.cookiesecret, w.RemoteIP().String(), w.cookie),
+		Cookie: hex.EncodeToString(b),
 	}, true
+}
+
+// serverCookie returns the reply's COOKIE option bytes, built once however
+// many times a write path asks: the client cookie and a server cookie,
+// either the query's own, valid and young, or a new one (RFC 9018 §4.3).
+func (w *ResponseWriter) serverCookie() ([]byte, bool) {
+	if w.cookie == nil {
+		return nil, false
+	}
+	if w.replyState == 0 {
+		var ok bool
+		w.reply, ok = w.secret.Reply(w.cookie)
+		w.replyState = 1
+		if ok {
+			w.replyState = 2
+		}
+	}
+	return w.reply[:], w.replyState == 2
 }
 
 func (w *ResponseWriter) setNSID() {
