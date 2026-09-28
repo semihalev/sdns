@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +21,10 @@ type PrefetchRequest struct {
 	Cache         *Cache      // Reference to the cache to store prefetched results
 	Entry         *CacheEntry // Entry that claimed the prefetch; used to release the claim on failure/drop
 	RequestHadECS bool        // Original client ECS, retained after EDNS policy stripping
+	// Stale marks the refresh of an expired entry already answered from
+	// (immediate serve-stale). Its failure is recorded like a client's,
+	// so the RFC 9520 backoff spaces the next attempt.
+	Stale bool
 }
 
 // PrefetchQueue manages prefetch requests with worker pool.
@@ -172,6 +177,24 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	if resp == nil {
 		return
 	}
+	// A failed refresh leaves the expired entry in place (the write-back
+	// below keeps it). For an entry being served stale, the failure is
+	// what spaces the next attempt: recorded under RFC 9520, later queries
+	// meet the failure rung, which serves the entry stale without starting
+	// another refresh until the failure expires (RFC 8767 §5, the failure
+	// recheck timer).
+	// A validation failure keeps its provenance, as on the client path:
+	// a bogus answer must not become a failure an alias or failover may
+	// route around.
+	if req.Stale && resp.Rcode == dns.RcodeServerFailure && cacheableResolutionFailure(ctx, resp) {
+		provenance := FailureProvenance("response")
+		if middleware.IsValidationFailureResponse(ctx, resp) {
+			provenance = FailureProvenanceValidation
+		}
+		q := req.Request.Question[0]
+		req.Cache.store.recordFailureQuestion(q, req.Request.CheckingDisabled, netip.Prefix{},
+			provenance, nil, failureCauseOf(resp))
+	}
 
 	// Key off the client request's CD bit, the same keying rule
 	// as the external chain writeback. prefetchReq may have been
@@ -186,9 +209,22 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	// the parent's decision. Only the exact entry that claimed the
 	// prefetch may be replaced.
 	cut := meta.Cut()
+	refreshed := resp.Rcode == dns.RcodeSuccess || resp.Rcode == dns.RcodeNameError
 	if !req.Cache.store.ReplaceIfCurrent(req.Key, req.Entry, resp, cut) {
+		// An expired entry being served stale is refreshed by any
+		// NOERROR or NXDOMAIN, cacheable or not (RFC 8767 §4). One that
+		// cannot be stored, a zero TTL, still retires the old
+		// generation, or every later client would be served it again
+		// and start another refresh; the pointer CAS leaves a newer
+		// entry alone.
+		if req.Stale && refreshed && req.Cache.store.retireIfCurrent(req.Key, req.Entry) {
+			resetRefreshedFailures(req)
+		}
 		zlog.Debug("Prefetch dropped, entry superseded", "query", dnsutil.FormatQuestion(req.Request.Question[0]))
 		return
+	}
+	if req.Stale && refreshed {
+		resetRefreshedFailures(req)
 	}
 	// The cache-less prefetch pipeline bypasses ResponseWriter.WriteMsg, so a
 	// successful CAS must publish its resolver-authenticated NXDOMAIN cut
@@ -234,6 +270,21 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	} else {
 		zlog.Debug("Prefetch completed", "query", dnsutil.FormatQuestion(req.Request.Question[0]), "rcode", dns.RcodeToString[resp.Rcode])
 	}
+}
+
+// resetRefreshedFailures clears the failure history a stale refresh's
+// answer ends, as a useful answer on the client path does, so a later,
+// unrelated failure starts its backoff at the initial interval. A
+// forwarded answer clears only its own question: it says nothing about the
+// public authorities above it.
+func resetRefreshedFailures(req PrefetchRequest) {
+	q := req.Request.Question[0]
+	cd := req.Request.CheckingDisabled
+	if req.Cache.forwardedZoneQuestion(q.Name) {
+		req.Cache.store.resetQuestionFailure(q, cd, netip.Prefix{})
+		return
+	}
+	req.Cache.store.resetMatchingFailures(q, cd, netip.Prefix{})
 }
 
 // releasePrefetchClaim clears the prefetch flag so future

@@ -684,6 +684,9 @@ type CacheConfig struct {
 	// ServeStaleMaxTTL is measured from the admitted answer TTL's expiry.
 	// Zero leaves cutUntil as the only stale lifetime bound.
 	ServeStaleMaxTTL time.Duration
+	// ServeStaleImmediate answers from an expired entry as soon as it has
+	// expired, with a refresh under way, rather than after a failure.
+	ServeStaleImmediate bool
 
 	// ECSMaxTTL caps the lifetime of cache entries keyed under an
 	// ECS scope. Geo-routed answers tend to go stale faster than

@@ -874,6 +874,36 @@ rootservers = ["192.5.5.241:53"]
 	}
 }
 
+// serve_stale_mode takes "failure" or "immediate", and "immediate" only with
+// serve-stale on.
+func TestLoadServeStaleMode(t *testing.T) {
+	for _, tc := range []struct {
+		lines string
+		want  string // "" for a config that loads
+	}{
+		{"serve_stale = true\nserve_stale_mode = \"immediate\"\n", ""},
+		{"serve_stale = true\nserve_stale_mode = \"failure\"\n", ""},
+		{"serve_stale = false\n", ""},
+		{"serve_stale = false\nserve_stale_mode = \"immediate\"\n", `serve_stale_mode = "immediate" needs serve_stale = true`},
+		{"serve_stale = true\nserve_stale_mode = \"eager\"\n", `serve_stale_mode must be "failure" or "immediate"`},
+	} {
+		tmpDir := t.TempDir()
+		cfgFile := filepath.Join(tmpDir, "sdns.conf")
+		content := fmt.Sprintf("version = %q\ndirectory = %q\nipv6access = true\ndnssec = \"off\"\nrootservers = [\"192.5.5.241:53\"]\n%s",
+			configver, filepath.Join(tmpDir, "db"), tc.lines)
+		if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil { //nolint:gosec // G306 - test file
+			t.Fatal(err)
+		}
+		_, err := Load(cfgFile, "test")
+		switch {
+		case tc.want == "" && err != nil:
+			t.Fatalf("%q: Load() error = %v, want it loaded", tc.lines, err)
+		case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+			t.Fatalf("%q: Load() error = %v, want %q", tc.lines, err, tc.want)
+		}
+	}
+}
+
 func TestLoadRejectsNegativeServeStaleTTL(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfgFile := filepath.Join(tmpDir, "sdns.conf")

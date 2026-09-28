@@ -9,6 +9,7 @@ import (
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/middleware"
+	"golang.org/x/time/rate"
 )
 
 const staleAnswerTTL = 30 * time.Second
@@ -142,6 +143,75 @@ func (c *Cache) writeStaleResponse(
 	boundRequestToStaleLifetime(ctx, entry, time.Now())
 	staleAnswers.Inc()
 	return true, w.WriteMsg(resp)
+}
+
+// serveStaleImmediately answers an external, recursive question from its
+// expired shared entry at once, the opt-in serve_stale_mode "immediate":
+// the answer the failure path would serve after a failed resolution, served
+// instead of waiting for one. It declines, leaving the question to ordinary
+// resolution, unless every bound the failure path applies holds and a
+// refresh of the entry is under way, already running or queued here, so no
+// stale answer goes out without a fresh one being sought (RFC 8767 §7). An
+// answer the entry alone cannot complete, or whose signatures have lapsed,
+// is also left to resolution: here no outage excuses either.
+func (c *Cache) serveStaleImmediately(
+	ctx context.Context,
+	ch *middleware.Chain,
+	req *dns.Msg,
+	cacheKey uint64,
+	spent **rate.Limiter,
+) bool {
+	if !c.config.ServeStaleImmediate || c.prefetchQueue == nil {
+		return false
+	}
+	requestCD := req.CheckingDisabled
+	want := CacheKey{Question: req.Question[0], CD: requestCD}
+	entry, ok := c.store.lookupRetainedPositiveVerified(cacheKey, want)
+	if !ok || !entry.PrefetchEligible() {
+		return false
+	}
+	now := time.Now()
+	candidate := c.staleResponseFromEntry(entry, req, requestCD, now)
+	if candidate.msg == nil || staleAliasNeedsCompletion(candidate.msg) || signaturesLapsed(candidate.msg, now) {
+		return false
+	}
+
+	if entry.prefetch.CompareAndSwap(false, true) {
+		if !c.prefetchQueue.Add(PrefetchRequest{
+			Request:       req.Copy(),
+			Key:           cacheKey,
+			Cache:         c,
+			Entry:         entry,
+			RequestHadECS: middleware.HasClientECS(ctx) || hasEDNSClientSubnet(req),
+			Stale:         true,
+		}) {
+			entry.prefetch.Store(false)
+			return false
+		}
+	}
+
+	if !c.chargeEntryLimiter(ch, entry, spent) {
+		return true
+	}
+	boundRequestToStaleLifetime(ctx, entry, now)
+	c.metrics.Hit()
+	staleImmediateAnswers.Inc()
+	_ = ch.Writer.WriteMsg(candidate.msg)
+	ch.Cancel()
+	return true
+}
+
+// signaturesLapsed reports whether any signature msg carries is outside its
+// validity period.
+func signaturesLapsed(msg *dns.Msg, now time.Time) bool {
+	for _, section := range [][]dns.RR{msg.Answer, msg.Ns, msg.Extra} {
+		for _, rr := range section {
+			if sig, ok := rr.(*dns.RRSIG); ok && !sig.ValidityPeriod(now) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (c *Cache) staleResponseFromEntry(

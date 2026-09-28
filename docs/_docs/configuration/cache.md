@@ -119,6 +119,7 @@ keeps exactly that type and loses the others.
 ```toml
 serve_stale         = false
 serve_stale_max_ttl = "24h"
+serve_stale_mode    = "failure"
 ```
 
 When resolution ends in SERVFAIL, sdns may answer from an expired positive entry
@@ -131,7 +132,9 @@ upper bound; in whole-server forwarder mode, which learns no delegation cut,
 
 The delegation lease is a hard ceiling here too, so this cannot revive data past
 a known parent-granted cut. It is failure-triggered and positive-only: a stale
-NXDOMAIN is never served. The full design is on the
+NXDOMAIN is never served. `serve_stale_mode = "immediate"` instead answers from
+an expired entry at once and refreshes it in the background, under the same
+bounds; it trades freshness for latency and is opt-in. The full design is on the
 [Serve stale]({{ '/docs/features/serve-stale/' | relative_url }}) page.
 
 ## Negative caching

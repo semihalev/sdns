@@ -160,16 +160,17 @@ func New(cfg *config.Config) *Cache {
 
 	// Build cache configuration
 	cacheConfig := CacheConfig{
-		Size:             cfg.CacheSize,
-		Prefetch:         int(cfg.Prefetch),
-		PositiveTTL:      maxTTL,
-		NegativeTTL:      time.Duration(cfg.Expire) * time.Second,
-		MinTTL:           minTTL,
-		MaxTTL:           maxTTL,
-		RateLimit:        cfg.RateLimit,
-		ECSMaxTTL:        cfg.ECS.CacheLimitTTL.Duration,
-		ServeStale:       cfg.ServeStale,
-		ServeStaleMaxTTL: cfg.ServeStaleMaxTTL.Duration,
+		Size:                cfg.CacheSize,
+		Prefetch:            int(cfg.Prefetch),
+		PositiveTTL:         maxTTL,
+		NegativeTTL:         time.Duration(cfg.Expire) * time.Second,
+		MinTTL:              minTTL,
+		MaxTTL:              maxTTL,
+		RateLimit:           cfg.RateLimit,
+		ECSMaxTTL:           cfg.ECS.CacheLimitTTL.Duration,
+		ServeStale:          cfg.ServeStale,
+		ServeStaleMaxTTL:    cfg.ServeStaleMaxTTL.Duration,
+		ServeStaleImmediate: cfg.ServeStale && cfg.ServeStaleMode == "immediate",
 	}
 
 	// Validate configuration and actually apply defaults when
@@ -255,8 +256,9 @@ func New(cfg *config.Config) *Cache {
 		cfg.DNSSEC == "off" || len(cfg.ForwarderServers) != 0
 	c.store.rfc8198Disabled = !cfg.RFC8198Enabled()
 
-	// Initialize prefetch queue if enabled
-	if cacheConfig.Prefetch > 0 {
+	// Initialize prefetch queue if enabled. Immediate serve-stale refreshes
+	// through it too, prefetch or not.
+	if cacheConfig.Prefetch > 0 || cacheConfig.ServeStaleImmediate {
 		workers := 4
 		queueSize := 1000
 		c.prefetchQueue = NewPrefetchQueue(workers, queueSize, metrics)
@@ -579,6 +581,15 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if !req.RecursionDesired && (q.Name != "." || isNonRecursiveChase(ctx)) {
 		c.metrics.Miss()
 		c.declineNonRecursive(ch, req)
+		return
+	}
+	// serve_stale_mode "immediate": an expired shared entry answers now
+	// and is refreshed behind the answer. Only here, once every fresher
+	// source above has declined, and only for a client's own recursive
+	// question: an internal lookup resolves, and a scoped audience has no
+	// refresh to wait on.
+	if c.config.ServeStaleImmediate && req.RecursionDesired && !clientScope.IsValid() &&
+		!w.Internal() && c.serveStaleImmediately(ctx, ch, req, cacheKey, &spent) {
 		return
 	}
 	failureProbe := false

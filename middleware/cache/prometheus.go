@@ -45,6 +45,11 @@ var (
 		Help: "Total number of expired positive answers served after a resolution failure",
 	})
 
+	staleImmediateAnswers = metric.NewCounter(nil, prometheus.CounterOpts{
+		Name: "dns_cache_stale_immediate_answers_total",
+		Help: "Total number of expired positive answers served at once while refreshed in the background",
+	})
+
 	wireFastPath = metric.NewCounterVec(nil, prometheus.CounterOpts{
 		Name: "dns_cache_wire_fastpath_total",
 		Help: "Cache hits attempted on the byte serving path, by outcome",
