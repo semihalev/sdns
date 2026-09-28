@@ -187,7 +187,9 @@ func TestHostsfileMissingFamilyIsNODATA(t *testing.T) {
 		"10.0.0.1 exact.wild.test\n" +
 		"10.0.0.2 *.wild.test\n" +
 		"fd00::2 *.wild.test\n" +
-		"10.0.0.3 *.v4wild.test\n"
+		"10.0.0.3 *.v4wild.test\n" +
+		"192.0.2.1 first.test alias.test\n" +
+		"2001:db8::1 last.test alias.test\n"
 	if err := os.WriteFile(path, []byte(hosts), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -208,6 +210,9 @@ func TestHostsfileMissingFamilyIsNODATA(t *testing.T) {
 		{"localhost.", dns.TypeA, "127.0.0.1"},
 		{"localhost.", dns.TypeAAAA, "::1"},
 		{"localhost.", dns.TypeCNAME, "ip6-localhost."},
+		{"alias.test.", dns.TypeCNAME, "last.test."},
+		{"alias.test.", dns.TypeA, "192.0.2.1"},
+		{"alias.test.", dns.TypeAAAA, "2001:db8::1"},
 		{"exact.wild.test.", dns.TypeAAAA, "NODATA"},
 		{"x.wild.test.", dns.TypeA, "10.0.0.2"},
 		{"x.wild.test.", dns.TypeAAAA, "fd00::2"},

@@ -506,16 +506,15 @@ func (h *Hostsfile) load() error {
 			// A name listed on more than one line collects the address
 			// of each, as a primary name does; replacing its entry would
 			// lose the other family's addresses and answer it NODATA.
-			// Its first alias line still gives it its CNAME.
+			// Its CNAME follows its last alias line, as when each line
+			// replaced the entry.
 			if existing, ok := db.hosts[alias]; ok {
 				if ip.To4() != nil {
 					existing.IPv4 = append(existing.IPv4, ip)
 				} else {
 					existing.IPv6 = append(existing.IPv6, ip)
 				}
-				if existing.cnameRR == nil {
-					existing.cnameRR = cname
-				}
+				existing.cnameRR = cname
 				continue
 			}
 
