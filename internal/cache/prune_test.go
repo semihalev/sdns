@@ -30,7 +30,8 @@ func TestPruneRemovesOnlyTheDead(t *testing.T) {
 		passes  int
 	)
 	for passes == 0 {
-		n, done := c.Prune(&cur, func(v *pruneValue) bool { return v.dead })
+		isDead := func(v *pruneValue) bool { return v.dead }
+		n, done := c.Prune(&cur, isDead, isDead)
 		removed += n
 		if done {
 			passes++
@@ -47,6 +48,24 @@ func TestPruneRemovesOnlyTheDead(t *testing.T) {
 		if ok == (k%3 == 0) || (ok && v.dead) {
 			t.Fatalf("key %d: present %v after the pass", k, ok)
 		}
+	}
+}
+
+// take has the last word, under the write lock: a value dead selected but
+// take refuses stays.
+func TestPruneTakeDecides(t *testing.T) {
+	c := New[*pruneValue](1024)
+	v := &pruneValue{dead: true}
+	c.Add(9, v)
+	var cur PruneCursor
+	for {
+		_, done := c.Prune(&cur, func(*pruneValue) bool { return true }, func(*pruneValue) bool { return false })
+		if done {
+			break
+		}
+	}
+	if got, ok := c.Get(9); !ok || got != v {
+		t.Fatal("a value take refused was removed")
 	}
 }
 
@@ -67,7 +86,7 @@ func TestPruneLeavesAReplacement(t *testing.T) {
 				return true
 			}
 			return false
-		})
+		}, func(*pruneValue) bool { return true })
 		if done {
 			break
 		}
@@ -120,7 +139,8 @@ func getLatency(t *testing.T, pruning bool, rest time.Duration) (p99, p999, wors
 		wg.Go(func() {
 			var cur PruneCursor
 			for !stop.Load() {
-				c.Prune(&cur, func(v *pruneValue) bool { return v.dead })
+				isDead := func(v *pruneValue) bool { return v.dead }
+				c.Prune(&cur, isDead, isDead)
 				if rest > 0 {
 					time.Sleep(rest)
 				}

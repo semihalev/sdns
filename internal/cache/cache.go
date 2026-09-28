@@ -150,18 +150,22 @@ type PruneCursor struct {
 
 // Prune takes one step of a background sweep: it examines up to
 // PruneChunk slots of one segment from the cursor, under that segment's
-// read lock, and removes the values dead reports, under its write lock,
-// each only while it is still the value stored (a newer one is left
-// alone). No lock is held longer than those slots take, and none is held
-// between steps, so a sweep paced by its caller never keeps a reader or a
-// writer waiting for more than one step's work.
+// read lock, for the values dead reports, then, under its write lock,
+// removes each one still stored that take accepts (a newer value is left
+// alone). No lock is held between steps, so a sweep paced by its caller
+// keeps a reader or a writer waiting for one step's work at most: the
+// read-locked scan of the slots, and under the write lock up to
+// PruneChunk removals, each with the probe-chain shift a removal makes.
 //
-// dead runs under the read lock: it must be quick and must not touch
-// this cache. The sweep is best effort. Removals and growth move values
-// between slots while it runs, so a pass can miss a value or see one
-// twice, and the next pass takes what this one missed. passDone reports
-// that this step finished the last segment and the cursor starts over.
-func (c *Cache[V]) Prune(cur *PruneCursor, dead func(V) bool) (removed int, passDone bool) {
+// dead and take run under the segment lock: they must be quick and must
+// not touch this cache. dead only selects, under the read lock; take is
+// the decision, under the write lock, and may claim the value, so that
+// something racing to use it either wins before the removal or sees the
+// claim. The sweep is best effort. Removals and growth move values between
+// slots while it runs, so a pass can miss a value or see one twice, and
+// the next pass takes what this one missed. passDone reports that this
+// step finished the last segment and the cursor starts over.
+func (c *Cache[V]) Prune(cur *PruneCursor, dead, take func(V) bool) (removed int, passDone bool) {
 	m := c.data.data
 	if cur.seg >= len(m.segments) {
 		cur.seg, cur.slot = 0, 0
@@ -188,7 +192,7 @@ func (c *Cache[V]) Prune(cur *PruneCursor, dead func(V) bool) (removed int, pass
 	if n > 0 {
 		seg.rwlock.Lock()
 		for i := range n {
-			if v, ok := seg.data.Get(keys[i]); ok && v == vals[i] && seg.data.Del(keys[i]) {
+			if v, ok := seg.data.Get(keys[i]); ok && v == vals[i] && take(v) && seg.data.Del(keys[i]) {
 				removed++
 			}
 		}

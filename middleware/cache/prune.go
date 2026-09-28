@@ -5,9 +5,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/metric"
+	wirepack "github.com/semihalev/sdns/internal/wire"
 )
 
 // An expired answer leaves the positive cache when a lookup meets it or
@@ -71,7 +73,9 @@ func (s *Store) prunePass(stopped *atomic.Bool, rest time.Duration) int {
 	)
 	for !stopped.Load() {
 		now := time.Now()
-		n, done := s.positive.cache.Prune(&cur, func(e *CacheEntry) bool { return s.unservable(e, now) })
+		dead := func(e *CacheEntry) bool { return s.unservable(e, now) }
+		take := func(e *CacheEntry) bool { return s.takeForPrune(e, now) }
+		n, done := s.positive.cache.Prune(&cur, dead, take)
 		removed += n
 		if done {
 			break
@@ -83,10 +87,19 @@ func (s *Store) prunePass(stopped *atomic.Bool, rest time.Duration) int {
 	return removed
 }
 
+// takeForPrune is the removal's decision, under the segment's write lock:
+// e is still unservable, and the removal takes its refresh claim. A
+// refresh that claimed it first keeps it; one that tries after finds it
+// claimed and starts nothing, so no refresh is left writing back to an
+// entry already gone.
+func (s *Store) takeForPrune(e *CacheEntry, now time.Time) bool {
+	return s.unservable(e, now) && e.prefetch.CompareAndSwap(false, true)
+}
+
 // unservable reports that nothing can answer from e again: it has expired,
-// and serve-stale, if on, may not serve it either, its delegation lease or
-// serve_stale_max_ttl having run out (the bounds staleResponseFromEntry
-// applies). An entry whose refresh is under way is left to the refresh,
+// and serve-stale, if on, may not serve it either, being a denial or its
+// delegation lease or serve_stale_max_ttl having run out (the bounds
+// staleResponseFromEntry applies). An entry whose refresh is under way is left to the refresh,
 // which replaces it by pointer; removing it first would drop the result.
 func (s *Store) unservable(e *CacheEntry, now time.Time) bool {
 	if e == nil || e.prefetch.Load() {
@@ -97,7 +110,7 @@ func (s *Store) unservable(e *CacheEntry, now time.Time) bool {
 	if ttlRemaining > 0 && (!leased || leaseRemaining > 0) {
 		return false
 	}
-	if !s.cfg.ServeStale {
+	if !s.cfg.ServeStale || !staleEligible(e) {
 		return true
 	}
 	if leased && leaseRemaining <= 0 {
@@ -105,4 +118,13 @@ func (s *Store) unservable(e *CacheEntry, now time.Time) bool {
 	}
 	maxStale := s.cfg.ServeStaleMaxTTL
 	return maxStale > 0 && -ttlRemaining > maxStale
+}
+
+// staleEligible reports whether serve-stale could ever answer from e: a
+// NOERROR with answer records (staleResponseFromEntry). A denial, NXDOMAIN
+// or NODATA, never is, and has nothing to wait for once it expires. Read
+// from the stored header, no decode.
+func staleEligible(e *CacheEntry) bool {
+	h, ok := wirepack.ParseHeader(e.wire)
+	return ok && h.Rcode() == dns.RcodeSuccess && h.ANCount > 0
 }
