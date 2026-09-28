@@ -269,20 +269,16 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		ch.CancelWithRcode(dns.RcodeFormatError, do)
 		return
 	}
-	if ch.CookieChallenged() {
-		// After the checks above, so a malformed query draws its own
-		// error; through this layer's writer, so the challenge carries
-		// the server cookie that answers it (RFC 7873 §5.2.3).
-		ch.CancelWithRcode(dns.RcodeBadCookie, do)
-		return
-	}
 	if len(req.Question) == 0 {
 		// A query for a server cookie (RFC 7873 §5.4), let through by the
 		// server for its COOKIE option: answered here, with no question
 		// and the cookie this layer attaches. A server cookie that does
 		// not verify is BADCOOKIE, with none of the leniency an ordinary
 		// query gets; a client cookie alone, or a valid server cookie, is
-		// NOERROR.
+		// NOERROR. Ahead of the rate limiter's challenge, which this
+		// answer already is: the limiter spent its challenge budget
+		// admitting it, and a client cookie alone is NOERROR here even
+		// over quota.
 		rcode := dns.RcodeFormatError
 		switch st.Verdict {
 		case cookie.ClientOnly, cookie.Valid:
@@ -291,6 +287,13 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			rcode = dns.RcodeBadCookie
 		}
 		ch.CancelWithRcode(rcode, do)
+		return
+	}
+	if ch.CookieChallenged() {
+		// After the checks above, so a malformed query draws its own
+		// error; through this layer's writer, so the challenge carries
+		// the server cookie that answers it (RFC 7873 §5.2.3).
+		ch.CancelWithRcode(dns.RcodeBadCookie, do)
 		return
 	}
 	ch.Next(ctx)

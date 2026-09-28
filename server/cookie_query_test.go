@@ -133,8 +133,11 @@ func TestQueryForAServerCookieKeepsTheControls(t *testing.T) {
 	if got := serveCookieQuery(t, limited, job, raw); got == nil || got.Rcode != dns.RcodeSuccess {
 		t.Fatalf("within quota: %v, want NOERROR", got)
 	}
-	if got := serveCookieQuery(t, limited, job, raw); got == nil || got.Rcode != dns.RcodeBadCookie {
-		t.Fatalf("over quota, challenged: %v, want BADCOOKIE", got)
+	// Over quota the challenge budget still admits one, and RFC 7873
+	// §5.4 answers a client cookie alone with NOERROR, not BADCOOKIE.
+	if got := serveCookieQuery(t, limited, job, raw); got == nil || got.Rcode != dns.RcodeSuccess ||
+		len(replyCookie(got)) != 48 {
+		t.Fatalf("over quota, within the challenge budget: %v, want NOERROR with a server cookie", got)
 	}
 	if got := serveCookieQuery(t, limited, job, raw); got != nil {
 		t.Fatalf("over quota past the challenge budget: %v, want dropped", got)
