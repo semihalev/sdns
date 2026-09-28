@@ -255,6 +255,7 @@ func New(cfg *config.Config) *Cache {
 	c.store.sharedDenialDisabled =
 		cfg.DNSSEC == "off" || len(cfg.ForwarderServers) != 0
 	c.store.rfc8198Disabled = !cfg.RFC8198Enabled()
+	c.store.startPruning()
 
 	// Initialize prefetch queue if enabled. Immediate serve-stale refreshes
 	// through it too, prefetch or not.
