@@ -8,8 +8,10 @@
 //
 // The zone is always answered here, never sent upstream: RFC 9462 §6.1 has a
 // resolver keep resolver.arpa to itself, since an upstream's answer would
-// designate the upstream's listeners, not this server's. With discovery off,
-// or for any other name or type in the zone, the answer is NODATA.
+// designate the upstream's listeners, not this server's. It is a locally
+// served zone (RFC 6303): its apex answers the SOA and the NS, and with
+// discovery off, or for any other name or type in the zone, the answer is
+// NODATA.
 package ddr
 
 import (
@@ -376,8 +378,8 @@ func (d *DDR) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 }
 
 // answer is the SVCB set for the discovery question, with the target's
-// addresses in the Additional section, and NODATA for every other name or
-// type in the zone (RFC 9462 §6.4).
+// addresses in the Additional section, the SOA and NS at the zone's apex,
+// and NODATA for every other name or type in the zone (RFC 9462 §6.4).
 func (d *DDR) answer(ctx context.Context, w middleware.ResponseWriter, req *dns.Msg) *dns.Msg {
 	q := req.Question[0]
 	msg := new(dns.Msg)
@@ -391,7 +393,7 @@ func (d *DDR) answer(ctx context.Context, w middleware.ResponseWriter, req *dns.
 		}
 	}
 
-	msg.Ns = []dns.RR{&dns.SOA{
+	soa := &dns.SOA{
 		Hdr:     dns.RR_Header{Name: zone, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: ttl},
 		Ns:      d.soaNS,
 		Mbox:    ".",
@@ -400,7 +402,24 @@ func (d *DDR) answer(ctx context.Context, w middleware.ResponseWriter, req *dns.
 		Retry:   600,
 		Expire:  86400,
 		Minttl:  ttl,
-	}}
+	}
+	// The zone is a locally served one (RFC 9462 §6.4, RFC 6303 §3): its
+	// apex holds the SOA and the NS, answered as data, not denied.
+	if strings.EqualFold(q.Name, zone) {
+		switch q.Qtype {
+		case dns.TypeSOA:
+			msg.Answer = []dns.RR{soa}
+			return msg
+		case dns.TypeNS:
+			msg.Answer = []dns.RR{&dns.NS{
+				Hdr: dns.RR_Header{Name: zone, Rrtype: dns.TypeNS, Class: dns.ClassINET, Ttl: ttl},
+				Ns:  d.soaNS,
+			}}
+			return msg
+		}
+	}
+
+	msg.Ns = []dns.RR{soa}
 	return msg
 }
 

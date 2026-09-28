@@ -30,7 +30,24 @@ var (
 	ednsErrorOpcodeUnsupp    = ednsErrors.Register("opcode_unsupported")
 	ednsErrorBadVersion      = ednsErrors.Register("bad_version")
 	ednsErrorMalformedCookie = ednsErrors.Register("malformed_cookie")
+	ednsErrorMalformedOPT    = ednsErrors.Register("malformed_opt")
 )
+
+// malformedOPT reports whether req carries more than one OPT, or one whose
+// owner is not the root (RFC 6891 §6.1.1, §6.1.2).
+func malformedOPT(req *dns.Msg) bool {
+	seen := false
+	for _, rr := range req.Extra {
+		if rr.Header().Rrtype != dns.TypeOPT {
+			continue
+		}
+		if seen || rr.Header().Name != "." {
+			return true
+		}
+		seen = true
+	}
+	return false
+}
 
 // malformedCookie reports whether req's first COOKIE option has a length
 // RFC 7873 §5.2.2 calls malformed: valid lengths are 8, a client cookie
@@ -162,6 +179,28 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	noedns := req.IsEdns0() == nil
 	keepalive := hasClientKeepalive(req)
 	padded := hasClientPadding(req)
+
+	// RFC 6891 §6.1.1: a query carries one OPT at most, owned by the root,
+	// and anything else is FORMERR. The client's OPTs are replaced by one
+	// of the server's own, so the reply still carries a single OPT (§7) and
+	// is padded like any other.
+	badOPT := malformedOPT(req)
+	if badOPT {
+		ednsErrorMalformedOPT.Inc()
+		// IsEdns0 reads one OPT only, and from the end: a client that
+		// padded in any of its OPTs asked for a padded reply, and the
+		// smallest UDP size any of them advertised is the one the reply
+		// can count on.
+		udpSize := uint16(dnsutil.DefaultMsgSize)
+		for _, rr := range req.Extra {
+			if o, ok := rr.(*dns.OPT); ok {
+				padded = padded || hasClientPadding(&dns.Msg{Extra: []dns.RR{o}})
+				udpSize = min(udpSize, o.UDPSize())
+			}
+		}
+		dnsutil.ClearOPT(req)
+		req.SetEdns0(udpSize, false)
+	}
 	if hasClientECS(req) {
 		// Preserve the ingress fact before SetEdns0 applies the forwarding
 		// policy. A disabled policy or an allow-list miss strips ECS from the
@@ -229,8 +268,10 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		*rw = ResponseWriter{}
 		responseWriterPool.Put(rw)
 	}()
-	if malformed {
-		ednsErrorMalformedCookie.Inc()
+	if badOPT || malformed {
+		if malformed {
+			ednsErrorMalformedCookie.Inc()
+		}
 		// Through this layer's writer, so the error is padded like any
 		// other reply; a malformed cookie is not one to answer with a
 		// server cookie.

@@ -297,6 +297,11 @@ func TestZoneIsAlwaysLocal(t *testing.T) {
 		{"HTTPS at the discovery name", on, "_dns.resolver.arpa.", dns.TypeHTTPS, false},
 		{"the apex", on, "resolver.arpa.", dns.TypeSVCB, false},
 		{"another name in the zone", on, "x.resolver.arpa.", dns.TypeA, false},
+		// A locally served zone (RFC 6303 §3) answers its apex SOA and NS.
+		{"the apex SOA", on, "resolver.arpa.", dns.TypeSOA, true},
+		{"the apex NS", on, "resolver.arpa.", dns.TypeNS, true},
+		{"the apex SOA with DDR off", off, "resolver.arpa.", dns.TypeSOA, true},
+		{"SOA below the apex", on, "x.resolver.arpa.", dns.TypeSOA, false},
 	} {
 		for _, wire := range []bool{false, true} {
 			resp, passed, _ := serve(t, tc.d, tc.qname, tc.qtype, dns.ClassINET, wire)
@@ -307,8 +312,10 @@ func TestZoneIsAlwaysLocal(t *testing.T) {
 				t.Fatalf("%s wire=%v: rcode %s, want NOERROR", tc.name, wire, dns.RcodeToString[resp.Rcode])
 			}
 			if tc.answer {
-				if len(resp.Answer) == 0 || resp.Answer[0].Header().Name != tc.qname {
-					t.Fatalf("%s wire=%v: answer %v, owner must echo %s", tc.name, wire, resp.Answer, tc.qname)
+				if len(resp.Answer) == 0 || resp.Answer[0].Header().Name != tc.qname ||
+					resp.Answer[0].Header().Rrtype != tc.qtype {
+					t.Fatalf("%s wire=%v: answer %v, want %s at %s", tc.name, wire, resp.Answer,
+						dns.TypeToString[tc.qtype], tc.qname)
 				}
 				continue
 			}

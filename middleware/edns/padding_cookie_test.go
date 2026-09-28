@@ -103,6 +103,93 @@ func TestPaddingSurvivesAWriterWrapper(t *testing.T) {
 	}
 }
 
+// A query carries one OPT at most, owned by the root (RFC 6891 §6.1.1):
+// two, or one owned by another name, is FORMERR. The reply carries a
+// single root OPT of the server's own (§7), with no server cookie, and is
+// padded over an encrypted transport. Wire-born and decoded; the strict
+// parser hands these packets to the decoded entry.
+func TestMalformedOPTIsFormErr(t *testing.T) {
+	e := truncateHarness(t)
+	handlers := []middleware.Handler{e, &bulkResponder{answer: 1}}
+	pad := &dns.EDNS0_PADDING{Padding: make([]byte, 16)}
+	for _, tc := range []struct {
+		name  string
+		shape func(*dns.Msg)
+		rcode int
+	}{
+		{"one root OPT", func(*dns.Msg) {}, dns.RcodeSuccess},
+		{"two OPTs", func(m *dns.Msg) {
+			o := new(dns.OPT)
+			o.Hdr.Name = "."
+			o.Hdr.Rrtype = dns.TypeOPT
+			o.SetUDPSize(1232)
+			o.SetVersion(1)
+			m.Extra = append(m.Extra, o)
+		}, dns.RcodeFormatError},
+		{"an OPT owned by another name", func(m *dns.Msg) { m.IsEdns0().Hdr.Name = "example.com." }, dns.RcodeFormatError},
+	} {
+		for _, proto := range []string{"udp", "doq"} {
+			for _, wireBorn := range []bool{true, false} {
+				req := withOptions(cookieOf(8), pad)
+				tc.shape(req)
+				resp, n := serveOver(t, proto, handlers, req, wireBorn)
+				where := tc.name + ", " + proto
+				if resp.Rcode != tc.rcode {
+					t.Fatalf("%s, wire-born=%v: %s, want %s", where, wireBorn,
+						dns.RcodeToString[resp.Rcode], dns.RcodeToString[tc.rcode])
+				}
+				var opts []*dns.OPT
+				for _, rr := range resp.Extra {
+					if o, ok := rr.(*dns.OPT); ok {
+						opts = append(opts, o)
+					}
+				}
+				if len(opts) != 1 || opts[0].Hdr.Name != "." || opts[0].Version() != 0 {
+					t.Fatalf("%s, wire-born=%v: reply OPTs %v, want one root OPT of version 0", where, wireBorn, opts)
+				}
+				if tc.rcode != dns.RcodeFormatError {
+					continue
+				}
+				if hasOption(resp, dns.EDNS0COOKIE) {
+					t.Fatalf("%s, wire-born=%v: FORMERR carries a server cookie", where, wireBorn)
+				}
+				if proto == "doq" && (!hasOption(resp, dns.EDNS0PADDING) || n%paddingBlock != 0) {
+					t.Fatalf("%s, wire-born=%v: %d-byte FORMERR, padded=%v; want a multiple of %d",
+						where, wireBorn, n, hasOption(resp, dns.EDNS0PADDING), paddingBlock)
+				}
+			}
+		}
+	}
+}
+
+// The server's own OPT that replaces a malformed pair keeps the client's
+// UDP limit, the smallest either advertised: a FORMERR that would exceed
+// it is truncated, not sent whole.
+func TestMalformedOPTFormErrKeepsTheUDPLimit(t *testing.T) {
+	e := truncateHarness(t)
+	handlers := []middleware.Handler{e, &bulkResponder{answer: 1}}
+	for _, wireBorn := range []bool{true, false} {
+		req := withOptions()
+		second := new(dns.OPT)
+		second.Hdr.Name = "."
+		second.Hdr.Rrtype = dns.TypeOPT
+		second.SetUDPSize(dns.MinMsgSize)
+		txt := &dns.TXT{
+			Hdr: dns.RR_Header{Name: "pad.example.com.", Rrtype: dns.TypeTXT, Class: dns.ClassINET},
+			Txt: []string{strings.Repeat("x", 200), strings.Repeat("y", 200), strings.Repeat("z", 200)},
+		}
+		req.Extra = append(req.Extra, second, txt)
+		resp, n := serveOver(t, "udp", handlers, req, wireBorn)
+		if resp.Rcode != dns.RcodeFormatError {
+			t.Fatalf("wire-born=%v: %s, want FORMERR", wireBorn, dns.RcodeToString[resp.Rcode])
+		}
+		if n > dns.MinMsgSize || !resp.Truncated {
+			t.Fatalf("wire-born=%v: %d-byte FORMERR, TC=%v; want at most %d bytes with TC set",
+				wireBorn, n, resp.Truncated, dns.MinMsgSize)
+		}
+	}
+}
+
 // Only the first COOKIE option counts (RFC 7873 §5.2): a malformed one
 // after a valid first is ignored, and a malformed first is FORMERR
 // whatever follows.
