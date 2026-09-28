@@ -276,6 +276,23 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		ch.CancelWithRcode(dns.RcodeBadCookie, do)
 		return
 	}
+	if len(req.Question) == 0 {
+		// A query for a server cookie (RFC 7873 §5.4), let through by the
+		// server for its COOKIE option: answered here, with no question
+		// and the cookie this layer attaches. A server cookie that does
+		// not verify is BADCOOKIE, with none of the leniency an ordinary
+		// query gets; a client cookie alone, or a valid server cookie, is
+		// NOERROR.
+		rcode := dns.RcodeFormatError
+		switch st.Verdict {
+		case cookie.ClientOnly, cookie.Valid:
+			rcode = dns.RcodeSuccess
+		case cookie.Invalid:
+			rcode = dns.RcodeBadCookie
+		}
+		ch.CancelWithRcode(rcode, do)
+		return
+	}
 	ch.Next(ctx)
 }
 

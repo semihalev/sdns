@@ -155,6 +155,18 @@ func (s *Server) serveMsg(parent context.Context, w middleware.Transport, r *dns
 	s.serveMsgBy(parent, w, r, directPack, time.Now().Add(s.queryTimeout()))
 }
 
+// hasCookieOption reports whether r's OPT carries a COOKIE option.
+func hasCookieOption(r *dns.Msg) bool {
+	if opt := r.IsEdns0(); opt != nil {
+		for _, o := range opt.Option {
+			if o.Option() == dns.EDNS0COOKIE {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // serveMsgBy is serveMsg with the deadline stated rather than started
 // here. The raw ingress passes one anchored at the packet's arrival, so
 // a query that has already spent part of its budget waiting for a slab
@@ -178,12 +190,15 @@ func (s *Server) serveMsgBy(
 
 	// A standard query carries exactly one question. Reject a malformed
 	// QDCOUNT here, at the single entry shared by every transport, with
-	// FORMERR, so downstream middlewares can index req.Question[0] without
-	// guarding. A 0-question packet would otherwise hit an unguarded
-	// req.Question[0] in several handlers and force a panic/recover/log
-	// cycle per packet (a cheap amplification vector that also pollutes
-	// the panic metric).
-	if len(r.Question) != 1 {
+	// FORMERR, so the middlewares past the edns layer can index
+	// req.Question[0] without guarding. A 0-question packet would otherwise
+	// hit an unguarded req.Question[0] in several handlers and force a
+	// panic/recover/log cycle per packet (a cheap amplification vector that
+	// also pollutes the panic metric). The one exception is a query for a
+	// server cookie (RFC 7873 §5.4): no question, a COOKIE option. It takes
+	// the access and rate controls like any query, and the edns layer
+	// answers it; nothing past that layer sees it.
+	if len(r.Question) > 1 || (len(r.Question) == 0 && !hasCookieOption(r)) {
 		formerr := new(dns.Msg)
 		formerr.SetRcode(r, dns.RcodeFormatError)
 		_ = w.WriteMsg(formerr)

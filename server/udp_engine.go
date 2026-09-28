@@ -753,7 +753,8 @@ func (e *udpEngine) serveInline(j *udpJob, burst *udpTXBurst) (done bool) {
 }
 
 // Header-level accept verdicts, mirroring the library's default accept
-// function byte for byte.
+// function byte for byte, except that a query with no question may carry
+// its OPT on to the decoded entry (RFC 7873 §5.4).
 type acceptVerdict uint8
 
 const (
@@ -770,7 +771,10 @@ func acceptHeader(h wire.Header) acceptVerdict {
 	if op := h.Opcode(); op != dns.OpcodeQuery && op != dns.OpcodeNotify {
 		return acceptNotImplemented
 	}
-	if h.QDCount != 1 || h.ANCount > 1 || h.NSCount > 1 || h.ARCount > 2 {
+	// No question is a query for a server cookie (RFC 7873 §5.4) when its
+	// additional section holds an OPT with a COOKIE option; the decoded
+	// entry sees the record and decides.
+	if h.QDCount > 1 || (h.QDCount == 0 && h.ARCount == 0) || h.ANCount > 1 || h.NSCount > 1 || h.ARCount > 2 {
 		return acceptFormatError
 	}
 	return acceptOK
