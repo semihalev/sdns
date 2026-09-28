@@ -307,3 +307,58 @@ func TestServeStaleImmediateUncacheableRefreshRetiresTheEntry(t *testing.T) {
 		t.Fatalf("%d refreshes, want 1", n)
 	}
 }
+
+// servfailFor is a SERVFAIL answering req, as a failed resolution records.
+func servfailFor(req *dns.Msg) *dns.Msg {
+	resp := new(dns.Msg)
+	resp.SetRcode(req, dns.RcodeServerFailure)
+	return resp
+}
+
+// A refresh that answers ends the failure history its failures built: a
+// later, unrelated failure backs off from the initial interval, as it does
+// after a client's own resolution succeeds. A refresh whose entry was
+// superseded while it ran wrote nothing, and leaves the history alone.
+func TestServeStaleImmediateRefreshEndsTheFailureHistory(t *testing.T) {
+	for _, superseded := range []bool{false, true} {
+		t.Run(map[bool]string{false: "the refresh wins", true: "the entry is superseded"}[superseded], func(t *testing.T) {
+			release := make(chan struct{}, 1)
+			c, _, done := immediateCache(t, nil, func(req *dns.Msg) *dns.Msg {
+				<-release
+				return staleTestAnswer(req, "192.0.2.2")
+			})
+			clock := newFailureFakeClock()
+			c.failure.now = clock.Now
+			req := immediateQuery("history.example.")
+			key := CacheKey{Question: req.Question[0]}.Hash()
+			old := seedStaleEntry(t, c, staleTestAnswer(req, "192.0.2.1"), netip.Prefix{}, time.Second, time.Hour)
+
+			// A failure, whose backoff then runs out.
+			c.store.RecordFailure(servfailFor(req), netip.Prefix{}, FailureProvenance("response"), nil)
+			clock.Advance(DefaultFailureInitialTTL + time.Second)
+
+			// Stale at once, and a refresh that answers.
+			calls := 0
+			runStaleQuery(t, c, req.Copy(), resolveHandler(&calls, "192.0.2.3"), context.Background())
+			if superseded {
+				newer := NewCacheEntryWithKey(staleTestAnswer(req, "192.0.2.4"), time.Hour, 0, key)
+				if !c.store.positive.cache.CompareAndSwap(key, old, newer) {
+					t.Fatal("could not supersede the entry under refresh")
+				}
+			}
+			release <- struct{}{}
+			waitRefresh(t, done)
+
+			c.store.RecordFailure(servfailFor(req), netip.Prefix{}, FailureProvenance("response"), nil)
+			hit, ok := c.lookupFailure(req, netip.Prefix{})
+			switch {
+			case !ok:
+				t.Fatal("the new failure was not recorded")
+			case !superseded && hit.Streak != 1:
+				t.Fatalf("a failure after a refresh that answered: streak %d, want 1", hit.Streak)
+			case superseded && hit.Streak != 2:
+				t.Fatalf("a failure after a superseded refresh: streak %d, want the history kept at 2", hit.Streak)
+			}
+		})
+	}
+}

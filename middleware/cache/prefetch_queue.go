@@ -209,6 +209,7 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	// the parent's decision. Only the exact entry that claimed the
 	// prefetch may be replaced.
 	cut := meta.Cut()
+	refreshed := resp.Rcode == dns.RcodeSuccess || resp.Rcode == dns.RcodeNameError
 	if !req.Cache.store.ReplaceIfCurrent(req.Key, req.Entry, resp, cut) {
 		// An expired entry being served stale is refreshed by any
 		// NOERROR or NXDOMAIN, cacheable or not (RFC 8767 §4). One that
@@ -216,11 +217,14 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 		// generation, or every later client would be served it again
 		// and start another refresh; the pointer CAS leaves a newer
 		// entry alone.
-		if req.Stale && (resp.Rcode == dns.RcodeSuccess || resp.Rcode == dns.RcodeNameError) {
-			req.Cache.store.retireIfCurrent(req.Key, req.Entry)
+		if req.Stale && refreshed && req.Cache.store.retireIfCurrent(req.Key, req.Entry) {
+			resetRefreshedFailures(req)
 		}
 		zlog.Debug("Prefetch dropped, entry superseded", "query", dnsutil.FormatQuestion(req.Request.Question[0]))
 		return
+	}
+	if req.Stale && refreshed {
+		resetRefreshedFailures(req)
 	}
 	// The cache-less prefetch pipeline bypasses ResponseWriter.WriteMsg, so a
 	// successful CAS must publish its resolver-authenticated NXDOMAIN cut
@@ -266,6 +270,21 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	} else {
 		zlog.Debug("Prefetch completed", "query", dnsutil.FormatQuestion(req.Request.Question[0]), "rcode", dns.RcodeToString[resp.Rcode])
 	}
+}
+
+// resetRefreshedFailures clears the failure history a stale refresh's
+// answer ends, as a useful answer on the client path does, so a later,
+// unrelated failure starts its backoff at the initial interval. A
+// forwarded answer clears only its own question: it says nothing about the
+// public authorities above it.
+func resetRefreshedFailures(req PrefetchRequest) {
+	q := req.Request.Question[0]
+	cd := req.Request.CheckingDisabled
+	if req.Cache.forwardedZoneQuestion(q.Name) {
+		req.Cache.store.resetQuestionFailure(q, cd, netip.Prefix{})
+		return
+	}
+	req.Cache.store.resetMatchingFailures(q, cd, netip.Prefix{})
 }
 
 // releasePrefetchClaim clears the prefetch flag so future
