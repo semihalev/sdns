@@ -207,6 +207,15 @@ func (s *Server) serveMsgBy(
 	ch.Next(ctx)
 }
 
+// dohWriter is a DoH request's transport, which says whether its
+// connection proved the client's address.
+type dohWriter struct {
+	*mock.Writer
+	verified bool
+}
+
+func (w dohWriter) SourceVerified() bool { return w.verified }
+
 // ServeHTTP implements http.Handler (DoH + DoH3).
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Server", "sdns")
@@ -217,9 +226,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Alt-Svc", `h3=":`+port+`"; ma=2592000`)
 	}
 
+	// HTTP/1 and HTTP/2 ride a TCP connection. HTTP/3 accepts early data,
+	// a request that arrives before the QUIC handshake completes, whose
+	// source nothing has proved yet.
+	verified := r.ProtoMajor < 3 || (r.TLS != nil && r.TLS.HandshakeComplete)
 	handle := func(req *dns.Msg) *dns.Msg {
 		mw := mock.NewWriter("doh", r.RemoteAddr)
-		s.ServeMsg(r.Context(), mw, req)
+		s.ServeMsg(r.Context(), dohWriter{mw, verified}, req)
 		if !mw.Written() {
 			return nil
 		}

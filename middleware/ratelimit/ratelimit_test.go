@@ -28,71 +28,39 @@ func Test_RateLimit(t *testing.T) {
 		t.Errorf("r.Name() = %v, want %v", r.Name(), "ratelimit")
 	}
 
-	ch := middleware.NewChain([]middleware.Handler{})
-
 	req := new(dns.Msg)
 	req.SetQuestion("example.com.", dns.TypeA)
 	req.SetEdns0(4096, true)
 
-	opt := req.IsEdns0()
-	opt.Option = append(opt.Option, &dns.EDNS0_COOKIE{
-		Code:   dns.EDNS0COOKIE,
-		Cookie: "testtesttesttest",
+	passes := 0
+	next := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		passes++
+		ch.Cancel()
 	})
-
-	mw := mock.NewWriter("udp", "")
-	ch.Reset(mw, req)
-	r.ServeDNS(context.Background(), ch)
-
-	mw = mock.NewWriter("udp", "10.0.0.1:0")
-	ch.Reset(mw, req)
-	r.ServeDNS(context.Background(), ch)
-	r.ServeDNS(context.Background(), ch)
-	if !(mw.Written()) {
-		t.Errorf("mw.Written() is false")
-	} else if !reflect.DeepEqual(dns.RcodeBadCookie, mw.Rcode()) {
-		t.Errorf("mw.Rcode() = %v, want %v", mw.Rcode(), dns.RcodeBadCookie)
+	serve := func(proto, addr string) {
+		ch := middleware.NewChain([]middleware.Handler{r, next})
+		ch.Reset(mock.NewWriter(proto, addr), req)
+		ch.Next(context.Background())
 	}
 
-	opt.Option = nil
-	opt.Option = append(opt.Option, &dns.EDNS0_COOKIE{
-		Code:   dns.EDNS0COOKIE,
-		Cookie: "testtesttesttest",
-	})
-
-	mw = mock.NewWriter("udp", "10.0.0.1:0")
-	ch.Reset(mw, req)
-	r.ServeDNS(context.Background(), ch)
-	if mw.Written() {
-		t.Errorf("mw.Written() is true")
+	// No address and loopback are never limited.
+	for range 3 {
+		serve("udp", "")
+		serve("udp", "127.0.0.1:0")
+	}
+	if passes != 6 {
+		t.Fatalf("passes = %d, want 6: no address and loopback bypass the limiter", passes)
 	}
 
-	mw = mock.NewWriter("tcp", "10.0.0.2:0")
-	ch.Reset(mw, req)
-	r.ServeDNS(context.Background(), ch)
-	r.ServeDNS(context.Background(), ch)
-	if mw.Written() {
-		t.Errorf("mw.Written() is true")
+	serve("udp", "10.0.0.1:0")
+	serve("udp", "10.0.0.1:0")
+	if passes != 7 {
+		t.Fatalf("passes = %d, want 7: the second query over a rate of 1 is dropped", passes)
 	}
-
-	opt.Option = nil
-	mw = mock.NewWriter("udp", "10.0.0.1:0")
-	ch.Reset(mw, req)
-	r.ServeDNS(context.Background(), ch)
-	r.ServeDNS(context.Background(), ch)
-	if mw.Written() {
-		t.Errorf("mw.Written() is true")
-	}
-
-	mw = mock.NewWriter("udp", "0.0.0.0:0")
-	ch.Reset(mw, req)
-	r.ServeDNS(context.Background(), ch)
-
-	mw = mock.NewWriter("udp", "127.0.0.1:0")
-	ch.Reset(mw, req)
-	r.ServeDNS(context.Background(), ch)
 
 	r.rate = 0
-
-	r.ServeDNS(context.Background(), ch)
+	serve("udp", "10.0.0.1:0")
+	if passes != 8 {
+		t.Fatalf("passes = %d, want 8: a rate of 0 limits nothing", passes)
+	}
 }

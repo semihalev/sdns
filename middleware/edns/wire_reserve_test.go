@@ -1,14 +1,36 @@
 package edns
 
 import (
+	"encoding/hex"
 	"net"
+	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/cookie"
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/wire"
 	"github.com/semihalev/sdns/middleware"
 )
+
+var testSecret = cookie.NewSecret("abcdef0123456789")
+
+// clientCookie classifies a query's client cookie, given in hex, as the
+// chain would for a query from remoteIP; nil for none.
+func clientCookie(t *testing.T, client string) *cookie.State {
+	t.Helper()
+	if client == "" {
+		return nil
+	}
+	b, err := hex.DecodeString(client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr, _ := netip.AddrFromSlice(remoteIP)
+	st := testSecret.Classify(b, addr, uint32(time.Now().Unix())) //nolint:gosec // epoch second modulo 2^32
+	return &st
+}
 
 // TestWireOPTLenMatchesPackedOPT pins the arithmetic reservation against the
 // record it predicts. Under-reserving would force a second body allocation
@@ -33,10 +55,10 @@ func TestWireOPTLenMatchesPackedOPT(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			w := &ResponseWriter{
 				ResponseWriter: &wireCountingWriter{},
-				EDNS:           &EDNS{cookiesecret: "abcdef0123456789", nsidstr: tc.nsidStr},
+				EDNS:           &EDNS{secret: testSecret, nsidstr: tc.nsidStr},
 				opt:            new(dns.OPT),
 				do:             true,
-				cookie:         tc.cookie,
+				cookie:         clientCookie(t, tc.cookie),
 				nsid:           tc.nsid,
 				keepalive:      tc.keepalive,
 			}
@@ -67,11 +89,11 @@ func TestWireReadyAllocatesNothing(t *testing.T) {
 	base := &wireCountingWriter{}
 	w := &ResponseWriter{
 		ResponseWriter: base,
-		EDNS:           &EDNS{cookiesecret: "abcdef0123456789", nsidstr: "sdns-node-1"},
+		EDNS:           &EDNS{secret: testSecret, nsidstr: "sdns-node-1"},
 		opt:            new(dns.OPT),
 		size:           dnsutil.DefaultMsgSize,
 		do:             true,
-		cookie:         "0123456789abcdef",
+		cookie:         clientCookie(t, "0123456789abcdef"),
 		nsid:           true,
 	}
 	w.opt.Hdr.Name = "."
@@ -150,10 +172,10 @@ func TestAppendWireOPTMatchesLibraryPacking(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			w := &ResponseWriter{
 				ResponseWriter: &wireCountingWriter{},
-				EDNS:           &EDNS{cookiesecret: "abcdef0123456789", nsidstr: tc.nsidStr},
+				EDNS:           &EDNS{secret: testSecret, nsidstr: tc.nsidStr},
 				opt:            new(dns.OPT),
 				do:             tc.do,
-				cookie:         tc.cookie,
+				cookie:         clientCookie(t, tc.cookie),
 				nsid:           tc.nsid,
 				keepalive:      tc.keepalive,
 			}
@@ -221,10 +243,10 @@ func TestAppendWireOPTMatchesLibraryPacking(t *testing.T) {
 func TestServeWireOPTAllocatesNothing(t *testing.T) {
 	w := &ResponseWriter{
 		ResponseWriter: &wireCountingWriter{},
-		EDNS:           &EDNS{cookiesecret: "abcdef0123456789", nsidstr: "sdns-node-1"},
+		EDNS:           &EDNS{secret: testSecret, nsidstr: "sdns-node-1"},
 		opt:            new(dns.OPT),
 		do:             true,
-		cookie:         "0123456789abcdef",
+		cookie:         clientCookie(t, "0123456789abcdef"),
 		nsid:           true,
 	}
 	w.opt.Hdr.Name = "."

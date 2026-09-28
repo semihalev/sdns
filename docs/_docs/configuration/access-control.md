@@ -34,6 +34,16 @@ Both are off by default. `clientratelimit` is the more useful of the two on a
 resolver serving known clients, it contains one misbehaving host without
 capping the server. `ratelimit` is a blunt ceiling on everything.
 
+`clientratelimit` keeps two buckets per client address. Queries whose source is
+proved, by a TCP or QUIC handshake or by a valid DNS server cookie (RFC 7873),
+draw from one; plain UDP queries without a valid cookie draw from the other. A
+flood sent in a client's name from spoofed addresses therefore cannot spend
+the quota of that client's real traffic. Clients behind one NAT address share
+its quota. A UDP client over its quota that sent a cookie gets a BADCOOKIE
+reply carrying a server cookie, at most one a second; its retry with that
+cookie is served from the proved bucket. Anything else over the quota is
+dropped.
+
 Refusals increment `dns_ratelimit_exceeded_total`.
 
 ## Reflection and amplification defence

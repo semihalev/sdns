@@ -2,8 +2,6 @@
 package dnsutil
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"net/netip"
 
 	"github.com/miekg/dns"
@@ -27,7 +25,7 @@ func SetRcode(req *dns.Msg, rcode int, do bool) *dns.Msg {
 
 // SetEdns0 returns replaced or new opt rr and if request has do.
 //
-// The function inspects the client's OPT record to harvest NSID / COOKIE
+// The function inspects the client's OPT record to harvest NSID
 // signalling, strips every option before forwarding (RFC 7871 §11 privacy
 // guidance is the default), and normalises the UDP size. Inspection uses
 // typed pointer assertions so we avoid the allocating option.String()
@@ -40,11 +38,10 @@ func SetRcode(req *dns.Msg, rcode int, do bool) *dns.Msg {
 // prefix ceiling. Every other client-supplied option is still dropped.
 // A nil policy or an empty client address means strip everything, which
 // matches SDNS's historical behaviour and the privacy-first default.
-func SetEdns0(req *dns.Msg, policy *ecs.Policy, client netip.Addr) (*dns.OPT, int, string, bool, bool) {
+func SetEdns0(req *dns.Msg, policy *ecs.Policy, client netip.Addr) (*dns.OPT, int, bool, bool) {
 	do, nsid := false, false
 	opt := req.IsEdns0()
 	size := DefaultMsgSize
-	cookie := ""
 
 	if opt != nil {
 		size = int(opt.UDPSize())
@@ -59,12 +56,6 @@ func SetEdns0(req *dns.Msg, policy *ecs.Policy, client netip.Addr) (*dns.OPT, in
 		var clientSubnet *dns.EDNS0_SUBNET
 		for _, option := range opt.Option {
 			switch v := option.(type) {
-			case *dns.EDNS0_COOKIE:
-				// Client cookie is the first 8 bytes (16 hex chars). Only
-				// the first COOKIE option counts (RFC 7873 §5.2).
-				if len(v.Cookie) >= 16 && cookie == "" {
-					cookie = v.Cookie[:16]
-				}
 			case *dns.EDNS0_NSID:
 				nsid = true
 			case *dns.EDNS0_SUBNET:
@@ -92,7 +83,7 @@ func SetEdns0(req *dns.Msg, policy *ecs.Policy, client netip.Addr) (*dns.OPT, in
 		}
 
 		if opt.Version() != 0 {
-			return opt, size, cookie, nsid, false
+			return opt, size, nsid, false
 		}
 
 		do = opt.Do()
@@ -108,18 +99,7 @@ func SetEdns0(req *dns.Msg, policy *ecs.Policy, client netip.Addr) (*dns.OPT, in
 		req.Extra = append(req.Extra, opt)
 	}
 
-	return opt, size, cookie, nsid, do
-}
-
-// GenerateServerCookie return generated edns server cookie.
-func GenerateServerCookie(secret, remoteip, cookie string) string {
-	scookie := sha256.New()
-
-	_, _ = scookie.Write([]byte(remoteip))
-	_, _ = scookie.Write([]byte(cookie))
-	_, _ = scookie.Write([]byte(secret))
-
-	return cookie + hex.EncodeToString(scookie.Sum(nil))
+	return opt, size, nsid, do
 }
 
 // ClearOPT removes every OPT record from msg.Extra in place. No copy is

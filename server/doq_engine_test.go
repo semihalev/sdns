@@ -411,7 +411,7 @@ func TestDoQCacheHitTakesTheBytePath(t *testing.T) {
 			cookie = c.Cookie
 		}
 	}
-	if len(cookie) != 80 || cookie[:16] != "0102030405060708" {
+	if len(cookie) != 48 || cookie[:16] != "0102030405060708" {
 		t.Fatalf("cookie %q, want the client half echoed with a server cookie", cookie)
 	}
 }

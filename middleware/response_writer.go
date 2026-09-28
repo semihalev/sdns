@@ -44,6 +44,9 @@ type responseWriter struct {
 	// encrypted marks a transport whose bytes travel encrypted: DoT, DoH,
 	// DoQ. It is what lets a reply be padded (RFC 7830).
 	encrypted bool
+	// verified marks a transport whose handshake proved the source
+	// address (Chain.SourceVerified).
+	verified bool
 
 	// directPack records that the transport beneath this writer is an
 	// SDNS-owned UDP, TCP or DoT sink whose Write sends raw wire bytes
@@ -77,6 +80,7 @@ func (w *responseWriter) Reset(rw Transport) {
 	w.remoteip = nil
 	w.internal = false
 	w.encrypted = false
+	w.verified = false
 	w.directPack = false
 
 	switch a := rw.RemoteAddr().(type) {
@@ -97,15 +101,26 @@ func (w *responseWriter) Reset(rw Transport) {
 			w.proto = proto
 		}
 	}
+	// A TCP handshake proves the source, and DoQ takes a connection only
+	// once its QUIC handshake is complete. DoH says for itself: over
+	// HTTP/3 a request can arrive as early data, before the handshake has
+	// proved anything. A datagram is never encrypted and proves nothing.
 	switch w.proto {
-	case "doh", "doh3", "doq":
+	case "doh", "doh3":
 		w.encrypted = true
+		if v, ok := rw.(interface{ SourceVerified() bool }); ok {
+			w.verified = v.SourceVerified()
+		}
+	case "doq":
+		w.encrypted = true
+		w.verified = true
 	case "tcp":
 		// A stream job cannot tell DoT from TCP by its address; the job
-		// says. Datagrams are never encrypted and skip the question.
+		// says.
 		if e, ok := rw.(interface{ Encrypted() bool }); ok {
 			w.encrypted = e.Encrypted()
 		}
+		w.verified = true
 	}
 
 	// Propagate an Internal() signal from any writer that exposes it.

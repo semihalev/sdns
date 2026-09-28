@@ -2,50 +2,57 @@ package ratelimit
 
 import (
 	"context"
-	"encoding/hex"
 	"net"
-	"sync/atomic"
 	"time"
 
 	"github.com/cespare/xxhash/v2"
-	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/cookie"
 	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware"
 	"golang.org/x/time/rate"
 )
 
 // rateLimitExceeded counts queries rejected by the per-client
-// rate-limiter. Both the UDP-cookie-mismatch path and the plain-
-// limiter-Allow path contribute. Operators alert on a sustained
-// non-zero rate.
+// rate-limiter, dropped or answered with a BADCOOKIE challenge. Operators
+// alert on a sustained non-zero rate.
 var rateLimitExceeded = metric.NewCounter(nil, prometheus.CounterOpts{
 	Name: "dns_ratelimit_exceeded_total",
 	Help: "Total DNS queries rejected by the ratelimit middleware",
 })
 
 type limiter struct {
-	rl     *rate.Limiter
-	cookie atomic.Value
+	rl *rate.Limiter
+	// challenge bounds the BADCOOKIE replies a client over its quota
+	// draws; nil for a source already proved.
+	challenge *rate.Limiter
 }
 
-// RateLimit type.
+// RateLimit charges each client address a token per query. A query whose
+// source is proved, by its transport's handshake or by a valid server
+// cookie, draws from one bucket per address; any other from a second. The
+// two are separate stores, so a flood from spoofed addresses can neither
+// spend a proved client's quota nor evict its entry. Clients behind one
+// address share its quota.
 type RateLimit struct {
-	cookiesecret string
+	secret cookie.Secret
 
-	store *LimiterStore
-	rate  int
+	// store holds the unproved buckets, verified the proved ones.
+	store    *LimiterStore
+	verified *LimiterStore
+	rate     int
 }
 
 // New return accesslist.
 func New(cfg *config.Config) *RateLimit {
 	r := &RateLimit{
-		store:        NewLimiterStore(cacheSize, cfg.ClientRateLimit),
-		cookiesecret: cfg.CookieSecret,
-		rate:         cfg.ClientRateLimit,
+		secret:   cookie.NewSecret(cfg.CookieSecret),
+		store:    NewLimiterStore(cacheSize, cfg.ClientRateLimit),
+		verified: NewLimiterStore(cacheSize, cfg.ClientRateLimit),
+		rate:     cfg.ClientRateLimit,
 	}
+	r.store.challenges = true
 
 	// Periodic cleanup of old limiters (every 5 minutes)
 	go func() {
@@ -53,6 +60,7 @@ func New(cfg *config.Config) *RateLimit {
 		defer ticker.Stop()
 		for range ticker.C {
 			r.store.Cleanup(10 * time.Minute)
+			r.verified.Cleanup(10 * time.Minute)
 		}
 	}()
 
@@ -68,7 +76,8 @@ func (r *RateLimit) Name() string { return name }
 // limiter bucket attributed to its outer client.
 func (r *RateLimit) ClientOnly() bool { return true }
 
-// (*RateLimit).ServeDNS serveDNS implements the Handle interface.
+// (*RateLimit).ServeDNS serveDNS implements the Handle interface. It reads
+// the request's parsed facts only, so a wire-born request stays undecoded.
 func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// The replay pass finishes a query the inline pass admitted: its
 	// token was consumed and its cookie checked there, and a second
@@ -100,177 +109,49 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	// A wire-born request carries its cookie as parsed offsets, so the
-	// limiter runs without decoding; only the BADCOOKIE reply needs the
-	// message. Everything else takes the decoded body below.
-	if ch.Request.Undecoded() {
-		r.serveWire(ctx, ch)
-		return
-	}
-
-	// An active limit needs the request's cookie options.
-	ctx, req := ch.Materialize(ctx)
-	if req == nil {
-		return
-	}
-
-	var cachedcookie, clientcookie, servercookie string
-
-	l := r.getLimiter(w.RemoteIP())
-	cachedcookie = l.cookie.Load().(string)
-
-	if opt := req.IsEdns0(); opt != nil {
-		for _, option := range opt.Option {
-			if option.Option() == dns.EDNS0COOKIE {
-				if len(option.String()) >= cookieSize {
-					clientcookie = option.String()[:cookieSize]
-					servercookie = dnsutil.GenerateServerCookie(r.cookiesecret, w.RemoteIP().String(), clientcookie)
-
-					if cachedcookie == "" || cachedcookie == option.String() {
-						ch.Next(ctx)
-
-						l.cookie.Store(servercookie)
-						return
-					}
-
-					if w.Proto() == "udp" {
-						if !l.rl.Allow() {
-							rateLimitExceeded.Inc()
-							ch.Cancel()
-							return
-						}
-
-						l.cookie.Store(servercookie)
-						option.(*dns.EDNS0_COOKIE).Cookie = servercookie
-
-						ch.CancelWithRcode(dns.RcodeBadCookie, false)
-
-						return
-					}
-				}
-			}
-		}
-	}
-
-	if !l.rl.Allow() {
-		rateLimitExceeded.Inc()
-		// no reply to client
-		ch.Cancel()
-		return
-	}
-
-	ch.Next(ctx)
-
-	if servercookie != "" {
-		l.cookie.Store(servercookie)
-	}
-}
-
-// serveWire mirrors the decoded body over parsed wire facts. The cookie
-// comparison works on the hex form option.String() produces, so a request
-// whose cookie verifies, or that has no cookie and passes the limiter,
-// continues down the chain undecoded. The one branch that must write a
-// cookie back to the client, UDP BADCOOKIE, materializes; it is the
-// stale-cookie retry path, not the steady state.
-func (r *RateLimit) serveWire(ctx context.Context, ch *middleware.Chain) {
-	w := ch.Writer
-
-	l := r.getLimiter(w.RemoteIP())
-	cachedcookie := l.cookie.Load().(string)
-
-	if echo := ch.Request.CookieEcho(); echo != nil {
-		fullcookie := hex.EncodeToString(echo)
-		clientcookie := fullcookie[:cookieSize]
-		servercookie := dnsutil.GenerateServerCookie(r.cookiesecret, w.RemoteIP().String(), clientcookie)
-
-		if cachedcookie == "" || cachedcookie == fullcookie {
+	st := ch.Cookie(r.secret)
+	if ch.SourceVerified() || st.Verdict == cookie.Valid {
+		if r.verified.Get(ipKey(w.RemoteIP())).rl.Allow() {
 			ch.Next(ctx)
-
-			l.cookie.Store(servercookie)
 			return
 		}
-
-		if w.Proto() == "udp" {
-			// Mirror the decoded body's ordering: the request and its
-			// cookie option are in hand before any token is consumed or
-			// state stored, so a refused decode mutates nothing.
-			mctx, req := ch.Materialize(ctx)
-			if req == nil {
-				return
-			}
-			var cookieOpt *dns.EDNS0_COOKIE
-			if opt := req.IsEdns0(); opt != nil {
-				for _, option := range opt.Option {
-					if option.Option() == dns.EDNS0COOKIE {
-						cookieOpt = option.(*dns.EDNS0_COOKIE)
-						break
-					}
-				}
-			}
-			if cookieOpt != nil {
-				if !l.rl.Allow() {
-					rateLimitExceeded.Inc()
-					ch.Cancel()
-					return
-				}
-
-				l.cookie.Store(servercookie)
-				cookieOpt.Cookie = servercookie
-
-				ch.CancelWithRcode(dns.RcodeBadCookie, false)
-				return
-			}
-
-			// No cookie option in the decoded form, unreachable while
-			// ratelimit precedes edns in the chain, but the decoded body
-			// would take the plain limiter, so take it here too, on the
-			// materialized context.
-			if !l.rl.Allow() {
-				rateLimitExceeded.Inc()
-				ch.Cancel()
-				return
-			}
-
-			ch.Next(mctx)
-
-			l.cookie.Store(servercookie)
-			return
-		}
-
-		// A mismatched cookie over a spoof-proof transport: like the
-		// decoded body, fall through to the plain limiter.
-		if !l.rl.Allow() {
-			rateLimitExceeded.Inc()
-			ch.Cancel()
-			return
-		}
-
-		ch.Next(ctx)
-
-		l.cookie.Store(servercookie)
-		return
-	}
-
-	if !l.rl.Allow() {
 		rateLimitExceeded.Inc()
 		ch.Cancel()
 		return
 	}
 
-	ch.Next(ctx)
+	l := r.getLimiter(w.RemoteIP())
+	if l.rl.Allow() {
+		ch.Next(ctx)
+		return
+	}
+	rateLimitExceeded.Inc()
+
+	// Over its quota, a client that sent a cookie is told, within a
+	// budget of its own, how to prove itself: BADCOOKIE with a server
+	// cookie (RFC 7873 §5.2.3), which its retry carries into the proved
+	// bucket. The edns layer writes the reply after its own checks. With
+	// no cookie there is nothing to offer, and past the budget a reply
+	// would only reflect traffic at a spoofed address.
+	if (st.Verdict == cookie.ClientOnly || st.Verdict == cookie.Invalid) && l.challenge.Allow() {
+		ch.ChallengeCookie()
+		ch.Next(ctx)
+		return
+	}
+	ch.Cancel()
 }
 
+// getLimiter returns the unproved bucket of remoteip.
 func (r *RateLimit) getLimiter(remoteip net.IP) *limiter {
-	xxhash := xxhash.New()
-	_, _ = xxhash.Write(remoteip)
-	key := xxhash.Sum64()
+	return r.store.Get(ipKey(remoteip))
+}
 
-	return r.store.Get(key)
+func ipKey(ip net.IP) uint64 {
+	return xxhash.Sum64(ip)
 }
 
 const (
-	cacheSize  = 256 * 100
-	cookieSize = 16
+	cacheSize = 256 * 100
 
 	name = "ratelimit"
 )
