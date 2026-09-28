@@ -137,3 +137,73 @@ func (c *Cache[V]) Stop() {
 func (c *Cache[V]) ForEach(f func(key uint64, value V) bool) {
 	c.data.ForEach(f)
 }
+
+// PruneChunk is the most slots one Prune step examines, and the most it
+// removes, under one hold of a segment lock.
+const PruneChunk = 64
+
+// PruneCursor is where the next Prune step resumes. The zero value starts
+// a pass at the first segment.
+type PruneCursor struct {
+	seg, slot int
+}
+
+// Prune takes one step of a background sweep: it examines up to
+// PruneChunk slots of one segment from the cursor, under that segment's
+// read lock, and removes the values dead reports, under its write lock,
+// each only while it is still the value stored (a newer one is left
+// alone). No lock is held longer than those slots take, and none is held
+// between steps, so a sweep paced by its caller never keeps a reader or a
+// writer waiting for more than one step's work.
+//
+// dead runs under the read lock: it must be quick and must not touch
+// this cache. The sweep is best effort. Removals and growth move values
+// between slots while it runs, so a pass can miss a value or see one
+// twice, and the next pass takes what this one missed. passDone reports
+// that this step finished the last segment and the cursor starts over.
+func (c *Cache[V]) Prune(cur *PruneCursor, dead func(V) bool) (removed int, passDone bool) {
+	m := c.data.data
+	if cur.seg >= len(m.segments) {
+		cur.seg, cur.slot = 0, 0
+	}
+	seg := m.segments[cur.seg]
+
+	var (
+		keys [PruneChunk]uint64
+		vals [PruneChunk]V
+		n    int
+	)
+	seg.rwlock.RLock()
+	data := seg.data.data
+	end := min(cur.slot+PruneChunk, len(data))
+	for i := cur.slot; i < end; i++ {
+		if p := data[i]; p.Key != 0 && dead(p.Value) {
+			keys[n], vals[n] = p.Key, p.Value
+			n++
+		}
+	}
+	segDone := end >= len(data)
+	seg.rwlock.RUnlock()
+
+	if n > 0 {
+		seg.rwlock.Lock()
+		for i := range n {
+			if v, ok := seg.data.Get(keys[i]); ok && v == vals[i] && seg.data.Del(keys[i]) {
+				removed++
+			}
+		}
+		seg.rwlock.Unlock()
+		m.count.Add(int64(-removed))
+	}
+
+	if !segDone {
+		cur.slot = end
+		return removed, false
+	}
+	cur.seg, cur.slot = cur.seg+1, 0
+	if cur.seg >= len(m.segments) {
+		cur.seg = 0
+		return removed, true
+	}
+	return removed, false
+}

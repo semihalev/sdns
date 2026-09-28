@@ -58,6 +58,10 @@ type Store struct {
 	// positive cache unevaluated while an evaluator is wired. Written once
 	// at Setup, before the pipeline publishes; nil costs one field check.
 	sidecarEvaluator middleware.SidecarEvaluator
+
+	// pruner is the background pass removing answers nothing can serve
+	// again (prune.go); nil for a Store the owning Cache did not start.
+	pruner *pruner
 }
 
 // SetSidecarEvaluator wires the admission half of the sidecar seam. Call
@@ -898,6 +902,7 @@ func (s *Store) DenialProofBytes() int64 { return s.denialProofs.bytes() }
 // Stop releases background resources owned by Store-only sub-caches.
 func (s *Store) Stop() {
 	if s != nil {
+		s.stopPruning()
 		s.nxDomainCuts.stop()
 		s.denialProofs.stop()
 	}
