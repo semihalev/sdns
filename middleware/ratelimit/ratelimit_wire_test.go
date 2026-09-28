@@ -180,6 +180,8 @@ func (p *pipeline) ask(w middleware.Transport, cookie string, shape func(*dns.Ms
 		mw = v
 	case provedWriter:
 		mw = v.Writer
+	case addrWriter:
+		mw = v.provedWriter.Writer
 	}
 	if !mw.Written() {
 		return reply{dropped: true}
@@ -383,4 +385,41 @@ func TestProvedEntriesSurviveAnAddressFlood(t *testing.T) {
 	if got := p.ask(tcp(), "", nil); !got.dropped {
 		t.Fatal("the proved bucket was evicted by unproved addresses and refilled")
 	}
+}
+
+// addrWriter hands the chain the client address in a form of its own
+// choosing, as transports do: 4 bytes from one, 16 from another.
+type addrWriter struct {
+	provedWriter
+	addr net.Addr
+}
+
+func (w addrWriter) RemoteAddr() net.Addr { return w.addr }
+
+// One IPv4 client is one client however its transport spells the address:
+// its proved bucket, spent by a cookie over UDP where the address arrived
+// as 4 bytes, is the one a DoH query draws from where it arrived as 16.
+func TestAnAddressIsOneClientInEitherForm(t *testing.T) {
+	bothBirths(t, func(t *testing.T, wireBorn bool) {
+		p := newPipeline(t, 2, wireBorn)
+		v4 := net.IPv4(198, 51, 100, 17).To4()
+		v16 := net.IPv4(198, 51, 100, 17).To16()
+		overUDP := func() addrWriter {
+			return addrWriter{provedWriter{mock.NewWriter("udp", "198.51.100.17:5353"), false}, &net.UDPAddr{IP: v4, Port: 5353}}
+		}
+		overDoH := addrWriter{provedWriter{mock.NewWriter("doh", "198.51.100.17:443"), true}, &net.TCPAddr{IP: v16, Port: 443}}
+
+		first := p.ask(overUDP(), "8888888888888888", nil)
+		if first.dropped || len(first.cookie) != 48 {
+			t.Fatalf("first query: dropped=%v cookie=%q", first.dropped, first.cookie)
+		}
+		for range 2 {
+			if got := p.ask(overUDP(), first.cookie, nil); got.dropped {
+				t.Fatal("a valid cookie within the proved quota was dropped")
+			}
+		}
+		if got := p.ask(overDoH, "", nil); !got.dropped {
+			t.Fatal("the same address in its 16-byte form drew from a second proved bucket")
+		}
+	})
 }

@@ -55,7 +55,7 @@ feature is off until you uncomment it.
 | `maxdepth` | `30` | Recursion depth ceiling |
 | `maxconcurrentqueries` | `10000` | Upstream fan-out semaphore; separate from the ingress bounds |
 | `ipv6access` | probed | Forced on when the startup IPv6-transit probe succeeds; set `true` to override a probe that misjudges the network |
-| `cookiesecret` | generated | DNS cookie secret (RFC 7873, RFC 9018); 32 hex digits are the SipHash key itself, so servers of one anycast set can share it; any other text is hashed to a key; 16 random bytes when empty |
+| `cookiesecret` | generated | DNS cookie secret (RFC 7873, RFC 9018); 32 hex digits are the SipHash key itself, required to share cookies with other servers of an anycast set, other DNS software included; any other text is hashed to a key sdns alone understands; 16 random bytes when empty |
 | `ingressworkers` | *(commented)* | Handler workers per listener; derived at startup |
 | `ingressqueue` | *(commented)* | Ready-queue depth; derived at startup |
 | `ingresstcpconns` | *(commented)* | TCP/DoT connection cap; derived at startup |

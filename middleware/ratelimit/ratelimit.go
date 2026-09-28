@@ -146,7 +146,12 @@ func (r *RateLimit) getLimiter(remoteip net.IP) *limiter {
 	return r.store.Get(ipKey(remoteip))
 }
 
+// ipKey hashes the address in one form: transports hand an IPv4 address
+// over as 4 bytes or as 16, IPv4-mapped, and the two must be one client.
 func ipKey(ip net.IP) uint64 {
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
 	return xxhash.Sum64(ip)
 }
 
