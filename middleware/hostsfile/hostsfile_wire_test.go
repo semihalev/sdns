@@ -2,6 +2,7 @@ package hostsfile
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -168,5 +169,91 @@ func TestHostsfileWireNODATA(t *testing.T) {
 	}
 	if !req.Undecoded() {
 		t.Fatal("NODATA serve materialized the request")
+	}
+}
+
+// A name the hosts file holds is answered from it alone: an address
+// family it lists nothing for is NODATA, where it used to be asked
+// upstream. An exact name is not completed from a wildcard, a wildcard
+// name takes each family from whichever matching line lists one, and a
+// name listed on two lines, once as an alias, keeps both families.
+// Wire-born and decoded.
+func TestHostsfileMissingFamilyIsNODATA(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hosts")
+	hosts := "127.0.0.1 localhost\n" +
+		"::1 ip6-localhost localhost\n" +
+		"127.0.0.1 v4only.test\n" +
+		"::1 v6only.test\n" +
+		"10.0.0.1 exact.wild.test\n" +
+		"10.0.0.2 *.wild.test\n" +
+		"fd00::2 *.wild.test\n" +
+		"10.0.0.3 *.v4wild.test\n"
+	if err := os.WriteFile(path, []byte(hosts), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := New(&config.Config{HostsFile: path})
+	if h == nil {
+		t.Fatal("hostsfile failed to load")
+	}
+
+	const upstream = "upstream"
+	for _, tc := range []struct {
+		qname string
+		qtype uint16
+		want  string // an address, "NODATA", or upstream
+	}{
+		{"v4only.test.", dns.TypeAAAA, "NODATA"},
+		{"v6only.test.", dns.TypeA, "NODATA"},
+		{"v4only.test.", dns.TypeA, "127.0.0.1"},
+		{"localhost.", dns.TypeA, "127.0.0.1"},
+		{"localhost.", dns.TypeAAAA, "::1"},
+		{"exact.wild.test.", dns.TypeAAAA, "NODATA"},
+		{"x.wild.test.", dns.TypeA, "10.0.0.2"},
+		{"x.wild.test.", dns.TypeAAAA, "fd00::2"},
+		{"x.v4wild.test.", dns.TypeAAAA, "NODATA"},
+		{"other.test.", dns.TypeAAAA, upstream},
+	} {
+		for _, wireBorn := range []bool{true, false} {
+			passed := false
+			next := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+				passed = true
+				ch.Cancel()
+			})
+			w := mock.NewWriter("udp", "192.0.2.1:40000")
+			ch := middleware.NewChain([]middleware.Handler{h, next})
+			if wireBorn {
+				ch.ResetWire(w, wireHostsRequest(t, tc.qname, tc.qtype))
+			} else {
+				q := new(dns.Msg)
+				q.SetQuestion(tc.qname, tc.qtype)
+				ch.Reset(w, q)
+			}
+			ch.Next(context.Background())
+
+			got := upstream
+			if !passed {
+				if !w.Written() || w.Rcode() != dns.RcodeSuccess {
+					t.Fatalf("%s %s, wire-born=%v: no NOERROR reply", tc.qname, dns.TypeToString[tc.qtype], wireBorn)
+				}
+				switch ans := w.Msg().Answer; {
+				case len(ans) == 0:
+					got = "NODATA"
+				case len(ans) > 1:
+					got = fmt.Sprint(ans)
+				default:
+					switch rr := ans[0].(type) {
+					case *dns.A:
+						got = rr.A.String()
+					case *dns.AAAA:
+						got = rr.AAAA.String()
+					default:
+						got = rr.String()
+					}
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("%s %s, wire-born=%v: %s, want %s", tc.qname, dns.TypeToString[tc.qtype], wireBorn, got, tc.want)
+			}
+		}
 	}
 }

@@ -309,33 +309,45 @@ func lookupKeyed[K interface{ ~string | ~[]byte }](h *Hostsfile, db *HostsDB, ke
 	db.mu.RLock()
 	defer db.mu.RUnlock()
 
+	// A name the hosts file holds is answered from it alone: a family it
+	// lists no address for is NODATA, not a question for upstream. An
+	// exact entry is not completed from a wildcard, and a wildcard name
+	// takes each family from whichever matching line lists one.
 	switch qtype {
 	case dns.TypeA:
-		if entry, ok := db.hosts[string(key)]; ok && len(entry.aRRs) > 0 {
+		if entry, ok := db.hosts[string(key)]; ok {
 			return entry.aRRs, true
 		}
+		matched := false
 		if len(db.wildcards) > 0 {
 			k := string(key)
 			for _, wc := range db.wildcards {
-				if matchWildcard(wc.Pattern, k) && len(wc.IPv4) > 0 {
-					return buildARRs(k, wc.IPv4, h.ttl), true
+				if matchWildcard(wc.Pattern, k) {
+					if len(wc.IPv4) > 0 {
+						return buildARRs(k, wc.IPv4, h.ttl), true
+					}
+					matched = true
 				}
 			}
 		}
-		return nil, false
+		return nil, matched
 	case dns.TypeAAAA:
-		if entry, ok := db.hosts[string(key)]; ok && len(entry.aaaaRRs) > 0 {
+		if entry, ok := db.hosts[string(key)]; ok {
 			return entry.aaaaRRs, true
 		}
+		matched := false
 		if len(db.wildcards) > 0 {
 			k := string(key)
 			for _, wc := range db.wildcards {
-				if matchWildcard(wc.Pattern, k) && len(wc.IPv6) > 0 {
-					return buildAAAARRs(k, wc.IPv6, h.ttl), true
+				if matchWildcard(wc.Pattern, k) {
+					if len(wc.IPv6) > 0 {
+						return buildAAAARRs(k, wc.IPv6, h.ttl), true
+					}
+					matched = true
 				}
 			}
 		}
-		return nil, false
+		return nil, matched
 	case dns.TypeCNAME:
 		if entry, ok := db.hosts[string(key)]; ok && entry.cnameRR != nil {
 			return []dns.RR{entry.cnameRR}, true
@@ -479,6 +491,18 @@ func (h *Hostsfile) load() error {
 		for i := 1; i < len(hostnames); i++ {
 			alias := strings.ToLower(hostnames[i])
 			entry.Aliases = append(entry.Aliases, alias)
+
+			// A name listed on more than one line collects the address
+			// of each, as a primary name does; replacing its entry would
+			// lose the other family's addresses and answer it NODATA.
+			if existing, ok := db.hosts[alias]; ok {
+				if ip.To4() != nil {
+					existing.IPv4 = append(existing.IPv4, ip)
+				} else {
+					existing.IPv6 = append(existing.IPv6, ip)
+				}
+				continue
+			}
 
 			aliasEntry := &HostEntry{
 				Name:      alias,
