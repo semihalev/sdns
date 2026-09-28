@@ -99,8 +99,9 @@ func (m *Metrics) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if m.domainMetricsEnabled {
 		if req.Undecoded() {
 			m.recordWireDomain(req.WireName())
-		} else {
-			m.recordDomainQuery(req.Msg().Question[0].Name)
+		} else if msg := req.Msg(); len(msg.Question) > 0 {
+			// A query for a server cookie has no question, and no domain.
+			m.recordDomainQuery(msg.Question[0].Name)
 		}
 	}
 }

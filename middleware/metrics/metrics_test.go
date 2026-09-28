@@ -49,6 +49,21 @@ func Test_Metrics(t *testing.T) {
 	}
 }
 
+// A query for a server cookie (RFC 7873 §5.4) reaches this layer with no
+// question, and is counted without a domain.
+func TestDomainMetricsWithoutAQuestion(t *testing.T) {
+	m := New(&config.Config{DomainMetrics: true})
+	ch := middleware.NewChain([]middleware.Handler{})
+	req := new(dns.Msg)
+	req.SetEdns0(1232, false)
+	ch.Reset(mock.NewWriter("udp", "127.0.0.1:0"), req)
+	_ = ch.Writer.WriteMsg(new(dns.Msg).SetReply(req))
+	m.ServeDNS(context.Background(), ch)
+	if n := atomic.LoadInt32(&m.domainCount); n != 0 {
+		t.Fatalf("%d domains tracked for a query with no question", n)
+	}
+}
+
 func Test_DomainMetrics(t *testing.T) {
 	// Test with domain metrics enabled
 	cfg := &config.Config{
