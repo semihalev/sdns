@@ -176,22 +176,27 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	// RFC 6891 §6.1.1: a query carries one OPT at most, owned by the root,
-	// and anything else is FORMERR. The reply carries no OPT, there being no
-	// single one to answer by.
-	if malformedOPT(req) {
-		ednsErrorMalformedOPT.Inc()
-		m := new(dns.Msg)
-		m.SetRcode(req, dns.RcodeFormatError)
-		m.RecursionAvailable = true
-		_ = w.WriteMsg(m)
-		ch.Cancel()
-		return
-	}
-
 	noedns := req.IsEdns0() == nil
 	keepalive := hasClientKeepalive(req)
 	padded := hasClientPadding(req)
+
+	// RFC 6891 §6.1.1: a query carries one OPT at most, owned by the root,
+	// and anything else is FORMERR. The client's OPTs are replaced by one
+	// of the server's own, so the reply still carries a single OPT (§7) and
+	// is padded like any other.
+	badOPT := malformedOPT(req)
+	if badOPT {
+		ednsErrorMalformedOPT.Inc()
+		// IsEdns0 reads one OPT only, and from the end: a client that
+		// padded in any of its OPTs asked for a padded reply.
+		for _, rr := range req.Extra {
+			if o, ok := rr.(*dns.OPT); ok {
+				padded = padded || hasClientPadding(&dns.Msg{Extra: []dns.RR{o}})
+			}
+		}
+		dnsutil.ClearOPT(req)
+		req.SetEdns0(dnsutil.DefaultMsgSize, false)
+	}
 	if hasClientECS(req) {
 		// Preserve the ingress fact before SetEdns0 applies the forwarding
 		// policy. A disabled policy or an allow-list miss strips ECS from the
@@ -259,8 +264,10 @@ func (e *EDNS) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		*rw = ResponseWriter{}
 		responseWriterPool.Put(rw)
 	}()
-	if malformed {
-		ednsErrorMalformedCookie.Inc()
+	if badOPT || malformed {
+		if malformed {
+			ednsErrorMalformedCookie.Inc()
+		}
 		// Through this layer's writer, so the error is padded like any
 		// other reply; a malformed cookie is not one to answer with a
 		// server cookie.
