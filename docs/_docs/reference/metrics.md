@@ -6,7 +6,7 @@ order: 3
 description: Every metric sdns exports, what it means, and the queries worth building a dashboard from.
 ---
 
-sdns exports 68 metrics in Prometheus format on the API listener, alongside the
+sdns exports 69 metrics in Prometheus format on the API listener, alongside the
 Go runtime and process collectors.
 
 ```toml

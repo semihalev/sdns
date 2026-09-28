@@ -237,3 +237,73 @@ func TestServeStaleImmediateBacksOffAfterAFailedRefresh(t *testing.T) {
 		t.Fatalf("%d refreshes and %d resolutions after a failed refresh, want 1 and 0", n, calls)
 	}
 }
+
+// A refresh the validator rejected is recorded as a validation failure, as
+// on the client path, so nothing may route around it; an ordinary failure
+// stays an ordinary one.
+func TestServeStaleImmediateFailedRefreshKeepsItsProvenance(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		bogus bool
+		want  FailureProvenance
+	}{
+		{"a bogus answer", true, FailureProvenanceValidation},
+		{"an unreachable authority", false, FailureProvenance("response")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := New(&config.Config{CacheSize: 1024, ServeStale: true, ServeStaleMode: "immediate"})
+			t.Cleanup(c.Stop)
+			done := make(chan struct{}, 1)
+			c.SetPrefetchQueryer(queryerFunc(func(ctx context.Context, req *dns.Msg) (*dns.Msg, error) {
+				defer func() { done <- struct{}{} }()
+				resp := new(dns.Msg)
+				resp.SetRcode(req, dns.RcodeServerFailure)
+				if tc.bogus {
+					middleware.MarkValidationFailureResponse(ctx, resp)
+				}
+				return resp, nil
+			}))
+			req := immediateQuery("provenance.example.")
+			seedStaleEntry(t, c, staleTestAnswer(req, "192.0.2.1"), netip.Prefix{}, time.Second, time.Hour)
+
+			calls := 0
+			runStaleQuery(t, c, req.Copy(), resolveHandler(&calls, "192.0.2.3"), context.Background())
+			waitRefresh(t, done)
+			hit, ok := c.lookupFailure(req, netip.Prefix{})
+			if !ok || hit.Provenance != tc.want {
+				t.Fatalf("recorded failure %+v (found %v), want provenance %q", hit, ok, tc.want)
+			}
+		})
+	}
+}
+
+// A refresh that answers NOERROR or NXDOMAIN refreshes the data even when it
+// cannot be stored (RFC 8767 §4): an NXDOMAIN with a zero negative TTL
+// retires the expired entry, and the next query is resolved rather than
+// served the withdrawn address again.
+func TestServeStaleImmediateUncacheableRefreshRetiresTheEntry(t *testing.T) {
+	c, refreshes, done := immediateCache(t, nil, func(req *dns.Msg) *dns.Msg {
+		resp := new(dns.Msg)
+		resp.SetRcode(req, dns.RcodeNameError)
+		resp.Ns = []dns.RR{&dns.SOA{
+			Hdr: dns.RR_Header{Name: "example.", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 0},
+			Ns:  "ns.example.", Mbox: "host.example.", Serial: 1, Refresh: 3600, Retry: 600, Expire: 86400, Minttl: 0,
+		}}
+		return resp
+	})
+	req := immediateQuery("withdrawn.example.")
+	seedStaleEntry(t, c, staleTestAnswer(req, "192.0.2.1"), netip.Prefix{}, time.Second, time.Hour)
+
+	calls := 0
+	if got := answerAddress(t, runStaleQuery(t, c, req.Copy(), resolveHandler(&calls, "192.0.2.3"), context.Background())); got != "192.0.2.1" {
+		t.Fatalf("first answer %s, want the stale 192.0.2.1", got)
+	}
+	waitRefresh(t, done)
+	resp := runStaleQuery(t, c, req.Copy(), resolveHandler(&calls, "192.0.2.3"), context.Background())
+	if calls != 1 || answerAddress(t, resp) != "192.0.2.3" {
+		t.Fatalf("after the withdrawal: %d resolutions, answer %v; want the question resolved", calls, resp.Answer)
+	}
+	if n := refreshes.Load(); n != 1 {
+		t.Fatalf("%d refreshes, want 1", n)
+	}
+}

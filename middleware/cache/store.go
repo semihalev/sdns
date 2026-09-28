@@ -782,6 +782,12 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 	return false
 }
 
+// retireIfCurrent removes expected from the positive cache while it is
+// still the entry under key; a newer entry there is left alone.
+func (s *Store) retireIfCurrent(key uint64, expected *CacheEntry) bool {
+	return s.positive.cache.CompareAndDelete(key, expected)
+}
+
 // SetEntryWithKey replaces a stored entry directly. Used by
 // Cache.Set's compatibility path where a caller already constructed
 // the CacheEntry (e.g. prefetch worker writing back a response with

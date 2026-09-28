@@ -183,10 +183,17 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	// meet the failure rung, which serves the entry stale without starting
 	// another refresh until the failure expires (RFC 8767 §5, the failure
 	// recheck timer).
+	// A validation failure keeps its provenance, as on the client path:
+	// a bogus answer must not become a failure an alias or failover may
+	// route around.
 	if req.Stale && resp.Rcode == dns.RcodeServerFailure && cacheableResolutionFailure(ctx, resp) {
+		provenance := FailureProvenance("response")
+		if middleware.IsValidationFailureResponse(ctx, resp) {
+			provenance = FailureProvenanceValidation
+		}
 		q := req.Request.Question[0]
 		req.Cache.store.recordFailureQuestion(q, req.Request.CheckingDisabled, netip.Prefix{},
-			FailureProvenance("response"), nil, failureCauseOf(resp))
+			provenance, nil, failureCauseOf(resp))
 	}
 
 	// Key off the client request's CD bit, the same keying rule
@@ -203,6 +210,15 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	// prefetch may be replaced.
 	cut := meta.Cut()
 	if !req.Cache.store.ReplaceIfCurrent(req.Key, req.Entry, resp, cut) {
+		// An expired entry being served stale is refreshed by any
+		// NOERROR or NXDOMAIN, cacheable or not (RFC 8767 §4). One that
+		// cannot be stored, a zero TTL, still retires the old
+		// generation, or every later client would be served it again
+		// and start another refresh; the pointer CAS leaves a newer
+		// entry alone.
+		if req.Stale && (resp.Rcode == dns.RcodeSuccess || resp.Rcode == dns.RcodeNameError) {
+			req.Cache.store.retireIfCurrent(req.Key, req.Entry)
+		}
 		zlog.Debug("Prefetch dropped, entry superseded", "query", dnsutil.FormatQuestion(req.Request.Question[0]))
 		return
 	}
