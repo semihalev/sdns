@@ -286,6 +286,15 @@ func (c *Config) Validate() error {
 	if c.ServeStaleMaxTTL.Duration < 0 {
 		add("serve_stale_max_ttl must not be negative (got %q)", c.ServeStaleMaxTTL.Duration)
 	}
+	switch c.ServeStaleMode {
+	case "", "failure":
+	case "immediate":
+		if !c.ServeStale {
+			add(`serve_stale_mode = "immediate" needs serve_stale = true`)
+		}
+	default:
+		add(`serve_stale_mode must be "failure" or "immediate" (got %q)`, c.ServeStaleMode)
+	}
 	c.validateForwardZones(add)
 	c.validateTrustAndIdentity(add)
 	c.validateNameLists(add)

@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"net/netip"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -20,6 +21,10 @@ type PrefetchRequest struct {
 	Cache         *Cache      // Reference to the cache to store prefetched results
 	Entry         *CacheEntry // Entry that claimed the prefetch; used to release the claim on failure/drop
 	RequestHadECS bool        // Original client ECS, retained after EDNS policy stripping
+	// Stale marks the refresh of an expired entry already answered from
+	// (immediate serve-stale). Its failure is recorded like a client's,
+	// so the RFC 9520 backoff spaces the next attempt.
+	Stale bool
 }
 
 // PrefetchQueue manages prefetch requests with worker pool.
@@ -171,6 +176,17 @@ func (pq *PrefetchQueue) processPrefetch(req PrefetchRequest) {
 	}
 	if resp == nil {
 		return
+	}
+	// A failed refresh leaves the expired entry in place (the write-back
+	// below keeps it). For an entry being served stale, the failure is
+	// what spaces the next attempt: recorded under RFC 9520, later queries
+	// meet the failure rung, which serves the entry stale without starting
+	// another refresh until the failure expires (RFC 8767 §5, the failure
+	// recheck timer).
+	if req.Stale && resp.Rcode == dns.RcodeServerFailure && cacheableResolutionFailure(ctx, resp) {
+		q := req.Request.Question[0]
+		req.Cache.store.recordFailureQuestion(q, req.Request.CheckingDisabled, netip.Prefix{},
+			FailureProvenance("response"), nil, failureCauseOf(resp))
 	}
 
 	// Key off the client request's CD bit, the same keying rule

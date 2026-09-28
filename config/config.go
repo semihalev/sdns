@@ -41,6 +41,10 @@ type Config struct {
 	// where no delegation cut is learned, that means retention until eviction.
 	// Serve-stale itself remains opt-in through ServeStale.
 	ServeStaleMaxTTL Duration `toml:"serve_stale_max_ttl"`
+	// ServeStaleMode is when serve-stale answers: "failure", the default,
+	// only after resolution fails (RFC 8767); "immediate" as soon as the
+	// answer has expired, refreshing it in the background.
+	ServeStaleMode   string `toml:"serve_stale_mode"`
 	RootKeys         []string
 	FallbackServers  []string
 	ForwarderServers []string
@@ -788,6 +792,15 @@ rfc9520 = true
 # retention until cache eviction.
 serve_stale = false
 serve_stale_max_ttl = "24h"
+
+# When an expired answer is served. "failure" answers from it only after
+# resolution fails, as RFC 8767 intends. "immediate" answers from it as soon
+# as it has expired and refreshes it in the background: lower latency on the
+# first query after expiry, at the cost of an answer past its TTL even when a
+# fresh one was reachable. The same bounds apply in both modes. Do not use
+# "immediate" on a resolver that validates domain control, such as for
+# certificate issuance.
+serve_stale_mode = "failure"
 
 # DNSSEC root trust anchors
 # These are the public keys used to verify the DNS root zone

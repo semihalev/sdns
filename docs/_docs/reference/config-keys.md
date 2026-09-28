@@ -32,6 +32,7 @@ feature is off until you uncomment it.
 | `rfc9520` | `true` | Cache resolution failures; kill switch only |
 | `serve_stale` | `false` | Serve expired answers when resolution fails |
 | `serve_stale_max_ttl` | `"24h"` | Measured from TTL expiry; `"0"` removes this bound |
+| `serve_stale_mode` | `"failure"` | `"failure"` serves stale only after resolution fails; `"immediate"` serves it at once and refreshes in the background |
 | `fallbackservers` | `[]` | Tried after a SERVFAIL from normal resolution |
 | `forwarderservers` | `[]` | Set to make sdns a forwarder instead of a recursor |
 | `api` | `"127.0.0.1:8080"` | HTTP API and metrics; `""` disables |
