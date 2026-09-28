@@ -181,7 +181,7 @@ func (p *pipeline) ask(w middleware.Transport, cookie string, shape func(*dns.Ms
 	case provedWriter:
 		mw = v.Writer
 	case addrWriter:
-		mw = v.provedWriter.Writer
+		mw = v.Writer
 	}
 	if !mw.Written() {
 		return reply{dropped: true}
