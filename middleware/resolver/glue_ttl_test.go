@@ -99,30 +99,49 @@ func TestGlueCacheHitDoesNotRenewHorizon(t *testing.T) {
 // families' writers, and keeps what is still fresh; a read alone would
 // never find glue nobody asks for again.
 func TestPruneCachesRemovesExpiredGlue(t *testing.T) {
-	r := &Resolver{
-		delegations: authority.NewCache(),
-		glueV4:      cache.NewWithExpiry[*glueEntry](16, glueTTLCap),
-		glueV6:      cache.NewWithExpiry[*glueEntry](16, glueTTLCap),
-	}
-	later := time.Now().Add(10 * time.Minute)
-	r.glueV4.SetExpiryClock(func() time.Time { return later })
-	r.glueV6.SetExpiryClock(func() time.Time { return later })
-	addr := netip.MustParseAddr("192.0.2.10")
+	for _, staleJudge := range []bool{false, true} {
+		name := map[bool]string{false: "judged on time", true: "judged by a stale clock first"}[staleJudge]
+		t.Run(name, func(t *testing.T) {
+			r := &Resolver{
+				delegations: authority.NewCache(),
+				glueV4:      cache.NewWithExpiry(16, glueTTLCap, glueMark),
+				glueV6:      cache.NewWithExpiry(16, glueTTLCap, glueMark),
+			}
+			start := time.Now()
+			index, judge := start.Add(10*time.Minute), start.Add(10*time.Minute)
+			r.glueV4.SetExpiryClock(func() time.Time { return index })
+			r.glueV6.SetExpiryClock(func() time.Time { return index })
+			r.pruneClock = func() time.Time { return judge }
+			addr := netip.MustParseAddr("192.0.2.10")
 
-	r.addIPv4Cache(map[string]nsAddrs{"short.example.": {addrs: []netip.Addr{addr}, ttl: 60}})
-	r.addIPv4Cache(map[string]nsAddrs{"long.example.": {addrs: []netip.Addr{addr}, ttl: 3600}})
-	r.addIPv6Cache(map[string]nsAddrs{"short.example.": {addrs: []netip.Addr{netip.MustParseAddr("2001:db8::10")}, ttl: 60}})
+			r.addIPv4Cache(map[string]nsAddrs{"short.example.": {addrs: []netip.Addr{addr}, ttl: 60}})
+			r.addIPv4Cache(map[string]nsAddrs{"long.example.": {addrs: []netip.Addr{addr}, ttl: 3600}})
+			r.addIPv6Cache(map[string]nsAddrs{"short.example.": {addrs: []netip.Addr{netip.MustParseAddr("2001:db8::10")}, ttl: 60}})
 
-	// Ten minutes on, the one-minute glue of each family has run out and
-	// its bucket (6h/256, about 84 s) has passed; the hour-long has not.
-	r.pruneCaches(later)
-	if _, _, ok := r.getIPv4Cache("long.example."); !ok {
-		t.Fatal("the fresh glue was pruned")
-	}
-	if n := r.glueV4.Len(); n != 1 {
-		t.Fatalf("%d IPv4 glue entries left, want the fresh one", n)
-	}
-	if n := r.glueV6.Len(); n != 0 {
-		t.Fatalf("%d IPv6 glue entries left, want none", n)
+			if staleJudge {
+				// The index has moved ten minutes on, but the verdict reads a
+				// clock from thirty seconds in: the one-minute glue looks
+				// alive. It must come round again, not drop out of the index.
+				judge = start.Add(30 * time.Second)
+				r.pruneCaches()
+				if r.glueV4.Len() != 2 || r.glueV6.Len() != 1 {
+					t.Fatal("glue alive by the stale clock was removed")
+				}
+				index, judge = start.Add(12*time.Minute), start.Add(12*time.Minute)
+			}
+			// Ten minutes on, the one-minute glue of each family has run out
+			// and its bucket (6h/256, about 84 s) has passed; the hour-long
+			// has not.
+			r.pruneCaches()
+			if _, _, ok := r.getIPv4Cache("long.example."); !ok {
+				t.Fatal("the fresh glue was pruned")
+			}
+			if n := r.glueV4.Len(); n != 1 {
+				t.Fatalf("%d IPv4 glue entries left, want the fresh one", n)
+			}
+			if n := r.glueV6.Len(); n != 0 {
+				t.Fatalf("%d IPv6 glue entries left, want none", n)
+			}
+		})
 	}
 }

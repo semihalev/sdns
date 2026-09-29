@@ -37,24 +37,30 @@ var (
 func (r *Resolver) pruneLoop() {
 	ticker := time.NewTicker(resolverPruneInterval)
 	defer ticker.Stop()
-	for now := range ticker.C {
-		r.pruneCaches(now)
+	for range ticker.C {
+		r.pruneCaches()
 	}
 }
 
-// pruneCaches removes the delegations and the glue whose time is up at now
-// and whose expiry records have come due, and publishes what is left.
-func (r *Resolver) pruneCaches(now time.Time) {
+// pruneCaches removes the delegations and the glue whose time is up and
+// whose expiry records have come due, and publishes what is left.
+func (r *Resolver) pruneCaches() {
 	prunedDelegations.Add(int64(r.delegations.Prune()))
 	resolverCacheSize.WithLabelValues("delegation").Set(float64(r.delegations.Len()))
 
-	// The same wall-clock horizon glueGet reads glue by.
-	judgeGlue := func(e *glueEntry) (cache.Verdict, time.Duration) {
+	// Glue is judged by the wall-clock horizon glueGet reads it by, at the
+	// time of each verdict: a late tick or a slow pass must not judge an
+	// index that has moved on by an older clock.
+	judgeGlue := func(e *glueEntry) (cache.Verdict, time.Time) {
+		now := time.Now()
+		if r.pruneClock != nil {
+			now = r.pruneClock()
+		}
 		left := time.Duration(e.expiresAt - now.UnixNano())
 		if left <= 0 {
-			return cache.Dead, 0
+			return cache.Dead, time.Time{}
 		}
-		return cache.Alive, left
+		return cache.Alive, now.Add(left)
 	}
 	prunedGlueV4.Add(int64(r.glueV4.Expire(judgeGlue)))
 	resolverCacheSize.WithLabelValues("glue_v4").Set(float64(r.glueV4.Len()))

@@ -23,6 +23,8 @@ type Delegation struct {
 	Servers *Servers
 	DSSet   []dns.RR
 	Lease   lease.Lease
+
+	expiry cache.ExpiryMark // the delegation cache's expiry index mark
 }
 
 // Cache type.
@@ -35,7 +37,7 @@ type Cache struct {
 // NewCache return new cache.
 func NewCache() *Cache {
 	n := &Cache{
-		cache: cache.NewWithExpiry[*Delegation](defaultCap, maximumTTL),
+		cache: cache.NewWithExpiry(defaultCap, maximumTTL, func(d *Delegation) *cache.ExpiryMark { return &d.expiry }),
 		now:   time.Now,
 	}
 
@@ -161,8 +163,9 @@ func (n *Cache) store(key uint64, dsSet []dns.RR, servers *Servers, expiresAt le
 
 // leaseEnd is the instant a delegation's expiry record is filed for: its
 // monotonic deadline when it has one, else its wall-clock one. A lease
-// runs out at the earlier of the two, so either is at or after the end,
-// never before it.
+// runs out at the earlier of the two, so either is at or after the end;
+// a wall-clock one read early, the clock since stepped back, only comes
+// round again.
 func leaseEnd(l lease.Lease) time.Time {
 	if until := l.Mono().Until; !until.IsZero() {
 		return until
@@ -175,16 +178,16 @@ func leaseEnd(l lease.Lease) time.Time {
 // otherwise only replaced or evicted, never dropped for having expired:
 // Get reports it expired and leaves it in place.
 func (n *Cache) Prune() int {
-	return n.cache.Expire(func(d *Delegation) (cache.Verdict, time.Duration) {
+	return n.cache.Expire(func(d *Delegation) (cache.Verdict, time.Time) {
 		now := n.now()
 		left, bounded := d.Lease.Remaining(now)
 		switch {
 		case !bounded:
-			return cache.Alive, 0
+			return cache.Alive, time.Time{}
 		case left <= 0:
-			return cache.Dead, 0
+			return cache.Dead, time.Time{}
 		}
-		return cache.Alive, left
+		return cache.Alive, now.Add(left)
 	})
 }
 

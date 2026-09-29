@@ -25,18 +25,22 @@ type Cache[V comparable] struct {
 	data    *SyncUInt64Map[V]
 	maxSize int64
 	exp     *expiryIndex // nil unless built by NewWithExpiry
+	marker  func(V) *ExpiryMark
 }
 
 // NewWithExpiry creates a bounded cache with an expiry index whose ring
-// spans horizon: the values inserted through AddFor and its siblings are
+// spans horizon: the values inserted through AddUntil and its siblings are
 // found by Expire when their time comes, without a walk. A bucket is
 // horizon/256 wide, at least a second, and that is how late past its end a
-// value may be found.
-func NewWithExpiry[V comparable](size int, horizon time.Duration) *Cache[V] {
+// value may be found. marker returns the word each value lends the index.
+func NewWithExpiry[V comparable](size int, horizon time.Duration, marker func(V) *ExpiryMark) *Cache[V] {
 	c := New[V](size)
 	c.exp = newExpiryIndex(horizon)
+	c.marker = marker
 	return c
 }
+
+func (c *Cache[V]) mark(v V) *ExpiryMark { return c.marker(v) }
 
 // New creates a bounded cache.
 func New[V comparable](size int) *Cache[V] {

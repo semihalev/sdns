@@ -72,26 +72,24 @@ func (s *Store) prune() int {
 // removal takes its refresh claim: a refresh that claimed it first keeps
 // it, and is looked at again later; one that tries after finds it claimed
 // and starts nothing, so no refresh is left writing back to an entry
-// already gone. A servable answer reports how long it has left.
-func (s *Store) judgeExpired(e *CacheEntry) (cache.Verdict, time.Duration) {
+// already gone. A servable answer reports the end it has now, read at the
+// time of the verdict: an answer whose record came early, its lease on a
+// wall clock that stepped back, comes round again at that end.
+func (s *Store) judgeExpired(e *CacheEntry) (cache.Verdict, time.Time) {
 	now := time.Now()
 	if s.pruneClock != nil {
 		now = s.pruneClock()
 	}
 	if s.unservable(e, now) {
 		if e.prefetch.CompareAndSwap(false, true) {
-			return cache.Dead, 0
+			return cache.Dead, time.Time{}
 		}
-		return cache.Busy, 0
+		return cache.Busy, time.Time{}
 	}
 	if e.prefetch.Load() {
-		return cache.Busy, 0
+		return cache.Busy, time.Time{}
 	}
-	until := s.servableUntil(e, now)
-	if until.IsZero() {
-		return cache.Alive, 0
-	}
-	return cache.Alive, until.Sub(now)
+	return cache.Alive, s.servableUntil(e, now)
 }
 
 // servableUntil is the instant from which unservable holds for e (a

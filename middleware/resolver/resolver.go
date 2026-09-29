@@ -61,6 +61,9 @@ type Resolver struct {
 	// glue addrs cache
 	glueV4 *cache.Cache[*glueEntry]
 	glueV6 *cache.Cache[*glueEntry]
+	// pruneClock, when set, is the time the pruner judges glue by, for
+	// tests that move time by hand; nil is time.Now.
+	pruneClock func() time.Time
 
 	// localRoot serves TLD referrals, DS answers and NXDOMAIN proofs from
 	// a verified local root zone copy (RFC 8806); nil when disabled. Its
@@ -257,7 +260,7 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 		rootServers: new(authority.Servers),
 
-		glueV4: cache.NewWithExpiry[*glueEntry](defaultCacheSize, glueTTLCap),
+		glueV4: cache.NewWithExpiry(defaultCacheSize, glueTTLCap, glueMark),
 
 		dnssec: cfg.DNSSEC == "on",
 
@@ -284,7 +287,7 @@ func NewResolver(cfg *config.Config) *Resolver {
 	r.zoneInflight = newZoneInflightLimiter(max(maxConcurrent/16, 16))
 
 	if r.cfg.IPv6Access {
-		r.glueV6 = cache.NewWithExpiry[*glueEntry](defaultCacheSize, glueTTLCap)
+		r.glueV6 = cache.NewWithExpiry(defaultCacheSize, glueTTLCap, glueMark)
 	}
 
 	// Enrichment used to gate one goroutine per referral behind a semaphore
@@ -1042,7 +1045,10 @@ type nsAddrs struct {
 type glueEntry struct {
 	addrs     []netip.Addr
 	expiresAt int64
+	mark      cache.ExpiryMark // the glue cache's expiry index mark
 }
+
+func glueMark(e *glueEntry) *cache.ExpiryMark { return &e.mark }
 
 const (
 	// glueTTLFloor keeps a zero- or near-zero-TTL record from turning every

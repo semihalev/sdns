@@ -78,8 +78,8 @@ func TestUnservable(t *testing.T) {
 // checkServableUntil pins servableUntil to unservable: an answer's expiry
 // record is filed for the instant unservable starts to hold, so up to it
 // the answer is servable and from just past it on it is not. Filed early,
-// the record would find the answer alive and drop it, leaving the answer
-// to eviction; filed late, the pruner would only be late.
+// the record would only come round again; filed late, the pruner would be
+// late.
 func checkServableUntil(t *testing.T, s *Store, e *CacheEntry, now time.Time) {
 	t.Helper()
 	const eps = time.Millisecond
@@ -229,5 +229,37 @@ func TestPruneLeavesARefreshedAnswer(t *testing.T) {
 	}
 	if c.store.PositiveLen() != 1 {
 		t.Fatal("the refreshed answer is gone")
+	}
+}
+
+// An answer whose record comes due while it is still servable, as it is
+// when a wall-clock lease was read before the clock stepped back, keeps
+// its tracking: the pruner files it again at the end it has now and
+// removes it once that has passed, instead of dropping its only record.
+func TestPruneKeepsTrackingAnAnswerFoundServable(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024})
+	defer c.Stop()
+	start := time.Now()
+	var index, judge atomic.Int64 // offsets from start
+	c.store.positive.cache.SetExpiryClock(func() time.Time { return start.Add(time.Duration(index.Load())) })
+	c.store.pruneClock = func() time.Time { return start.Add(time.Duration(judge.Load())) }
+
+	req := new(dns.Msg)
+	req.SetQuestion("rollback.example.", dns.TypeA)
+	// Fresh for 20 s more: its record is filed for then.
+	seedStaleEntry(t, c, staleTestAnswer(req, "192.0.2.1"), netip.Prefix{}, -20*time.Second, 0)
+
+	// The index passes that end, but the verdict's clock reads 10 s: still
+	// servable.
+	index.Store(int64(40 * time.Second))
+	judge.Store(int64(10 * time.Second))
+	if removed := c.store.prune(); removed != 0 {
+		t.Fatal("removed an answer the verdict found servable")
+	}
+	// Both clocks move past its end: the refiled record removes it.
+	index.Store(int64(80 * time.Second))
+	judge.Store(int64(80 * time.Second))
+	if removed := c.store.prune(); removed != 1 || c.store.PositiveLen() != 0 {
+		t.Fatalf("pruned %d, %d left; the answer lost its tracking", removed, c.store.PositiveLen())
 	}
 }
