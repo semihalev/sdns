@@ -52,6 +52,17 @@ func filed(c *Cache[*expiring]) (n int) {
 	return n
 }
 
+// held is the bytes the index's slices keep, the capacity they hold on
+// to, used or not.
+func held(c *Cache[*expiring]) (n int) {
+	for s := range c.exp.shards {
+		for _, b := range c.exp.shards[s].ring {
+			n += cap(b) * 8
+		}
+	}
+	return n
+}
+
 // A value is found once its bucket has wholly passed, and not before.
 func TestExpireRemovesWhatHasDied(t *testing.T) {
 	c, clock, judge := testExpiry(t, 1024)
@@ -354,10 +365,10 @@ func TestExpireBoundsRewritesIntoOneBucket(t *testing.T) {
 	t.Run("keys interleaved", func(t *testing.T) {
 		c, clock, judge := testExpiry(t, 64)
 		// 7 and 23 share a shard, so their writes interleave in one bucket.
-		for i := range uint64(10000) {
+		for i := range uint64(200000) {
 			put(c, clock, 7+16*(i%2), &expiring{}, 120*time.Second)
 		}
-		if n := filed(c); n != 10000 {
+		if n := filed(c); n != 200000 {
 			t.Fatalf("setup: %d records, want every interleaved write", n)
 		}
 		clock.Store(int64(10 * time.Second))
@@ -367,6 +378,10 @@ func TestExpireBoundsRewritesIntoOneBucket(t *testing.T) {
 		}
 		if n := c.exp.records.Load(); n != 2 {
 			t.Fatalf("records counted %d after compaction, want 2", n)
+		}
+		// The array the repeats filled is let go, not kept for the two.
+		if n := held(c); n > 1024 {
+			t.Fatalf("after compaction the index holds %d bytes for 2 records", n)
 		}
 		clock.Store(int64(122 * time.Second))
 		if removed := c.Expire(judge); removed != 2 {
@@ -440,6 +455,28 @@ func TestExpireBoundsRewritesIntoOneBucket(t *testing.T) {
 			t.Fatalf("%d values lost their tracking", n)
 		}
 	})
+}
+
+// A bucket that took a burst does not keep the burst's array once it has
+// fired: what the ring holds unused follows what it holds live.
+func TestExpireLetsGoOfABurst(t *testing.T) {
+	c, clock, judge := testExpiry(t, 1<<20)
+	// 600 a shard into one bucket: a slice under expiryKeepCap, which the
+	// fixed cap alone would keep.
+	for k := uint64(1); k <= 16*600; k++ {
+		put(c, clock, k, &expiring{}, 5*time.Second)
+	}
+	if c.exp.shards[1].ring[5] == nil || cap(c.exp.shards[1].ring[5]) > expiryKeepCap {
+		t.Fatalf("setup: the burst's slice holds %d, want at most %d", cap(c.exp.shards[1].ring[5]), expiryKeepCap)
+	}
+	put(c, clock, 1<<30, &expiring{}, time.Hour) // one survivor
+	clock.Store(int64(7 * time.Second))
+	if removed := c.Expire(judge); removed != 16*600 {
+		t.Fatalf("removed %d, want the burst", removed)
+	}
+	if n := held(c); n > 16*1024 {
+		t.Fatalf("the index holds %d bytes after the burst fired, for 1 record", n)
+	}
 }
 
 // Records of evicted values find nothing when they fire, and the count

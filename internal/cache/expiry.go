@@ -30,7 +30,8 @@ const (
 	expiryShards  = 16
 
 	// expiryKeepCap is the largest bucket slice kept for reuse once its
-	// bucket has fired; a larger one, from a burst, goes to the GC.
+	// bucket has fired, whatever the ring holds; a larger one, from a
+	// burst, goes to the GC.
 	expiryKeepCap = 1024
 )
 
@@ -248,7 +249,12 @@ func (c *Cache[V]) Expire(judge func(V) (Verdict, time.Time)) (removed int) {
 
 			removed += c.fire(keys, markOf(b), due, judge)
 
-			if cap(keys) <= expiryKeepCap {
+			// A fired bucket's slice is kept for its next turn only when it
+			// is no bigger than twice a bucket's share of the records, so
+			// what the ring holds unused follows what it holds live, not
+			// the largest burst a bucket ever took.
+			share := x.records.Load() / (expiryShards * expiryBuckets)
+			if n := int64(cap(keys)); n <= expiryKeepCap && n <= 2*share+16 {
 				sh.mu.Lock()
 				if sh.ring[i] == nil {
 					sh.ring[i] = keys[:0]
@@ -347,6 +353,13 @@ func (c *Cache[V]) compact() {
 					continue
 				}
 				kept = append(kept, key)
+			}
+			// What survives is filtered in place, over the array the repeats
+			// filled; a survivor that fits a fraction of it gets an array of
+			// its own, or the whole array would stay held until the bucket
+			// fires.
+			if cap(kept) > 2*len(kept)+16 {
+				kept = append([]uint64(nil), kept...)
 			}
 			if len(kept) > 0 {
 				sh.ring[i] = kept
