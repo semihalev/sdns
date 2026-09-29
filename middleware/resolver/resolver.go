@@ -257,7 +257,7 @@ func NewResolver(cfg *config.Config) *Resolver {
 
 		rootServers: new(authority.Servers),
 
-		glueV4: cache.New[*glueEntry](defaultCacheSize),
+		glueV4: cache.NewWithExpiry[*glueEntry](defaultCacheSize, glueTTLCap),
 
 		dnssec: cfg.DNSSEC == "on",
 
@@ -284,7 +284,7 @@ func NewResolver(cfg *config.Config) *Resolver {
 	r.zoneInflight = newZoneInflightLimiter(max(maxConcurrent/16, 16))
 
 	if r.cfg.IPv6Access {
-		r.glueV6 = cache.New[*glueEntry](defaultCacheSize)
+		r.glueV6 = cache.NewWithExpiry[*glueEntry](defaultCacheSize, glueTTLCap)
 	}
 
 	// Enrichment used to gate one goroutine per referral behind a semaphore
@@ -348,6 +348,7 @@ func NewResolver(cfg *config.Config) *Resolver {
 	}
 
 	go r.run()
+	go r.pruneLoop()
 
 	return r
 }
@@ -1053,7 +1054,10 @@ const (
 	glueTTLCap = 6 * time.Hour
 )
 
-func glueExpiry(ttl uint32) int64 {
+// glueUntil is the instant glue under a record TTL expires, floored and
+// capped. It keeps its monotonic reading, which files the entry's expiry
+// record; the entry stamps its wall-clock form.
+func glueUntil(ttl uint32) time.Time {
 	d := time.Duration(ttl) * time.Second
 	if d < glueTTLFloor {
 		d = glueTTLFloor
@@ -1061,7 +1065,7 @@ func glueExpiry(ttl uint32) int64 {
 	if d > glueTTLCap {
 		d = glueTTLCap
 	}
-	return time.Now().Add(d).UnixNano()
+	return time.Now().Add(d)
 }
 
 // glueGet reads one entry, expiring it lazily: a stale read deletes only
@@ -1090,7 +1094,8 @@ func glueGet(c *cache.Cache[*glueEntry], key uint64) ([]netip.Addr, uint32, bool
 func (r *Resolver) addIPv4Cache(nsipv4 map[string]nsAddrs) {
 	for name, set := range nsipv4 {
 		key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET})
-		r.glueV4.Add(key, &glueEntry{addrs: set.addrs, expiresAt: glueExpiry(set.ttl)})
+		until := glueUntil(set.ttl)
+		r.glueV4.AddUntil(key, &glueEntry{addrs: set.addrs, expiresAt: until.UnixNano()}, until)
 	}
 }
 
@@ -1105,7 +1110,8 @@ func (r *Resolver) removeIPv4Cache(name string) {
 func (r *Resolver) addIPv6Cache(nsipv6 map[string]nsAddrs) {
 	for name, set := range nsipv6 {
 		key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET})
-		r.glueV6.Add(key, &glueEntry{addrs: set.addrs, expiresAt: glueExpiry(set.ttl)})
+		until := glueUntil(set.ttl)
+		r.glueV6.AddUntil(key, &glueEntry{addrs: set.addrs, expiresAt: until.UnixNano()}, until)
 	}
 }
 

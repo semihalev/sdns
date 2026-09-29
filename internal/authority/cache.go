@@ -35,7 +35,7 @@ type Cache struct {
 // NewCache return new cache.
 func NewCache() *Cache {
 	n := &Cache{
-		cache: cache.New[*Delegation](defaultCap),
+		cache: cache.NewWithExpiry[*Delegation](defaultCap, maximumTTL),
 		now:   time.Now,
 	}
 
@@ -135,7 +135,7 @@ func (n *Cache) SetUntilIfAbsent(key uint64, dsSet []dns.RR, servers *Servers, e
 	for {
 		cur, ok := n.cache.Get(key)
 		if !ok {
-			if n.cache.AddIfAbsent(key, d) {
+			if n.cache.AddIfAbsentUntil(key, d, leaseEnd(expiresAt)) {
 				return d
 			}
 			// Lost the insert race; re-examine what landed.
@@ -144,7 +144,7 @@ func (n *Cache) SetUntilIfAbsent(key uint64, dsSet []dns.RR, servers *Servers, e
 		if !cur.Lease.Expired(n.now()) {
 			return cur
 		}
-		if n.cache.CompareAndSwap(key, cur, d) {
+		if n.cache.CompareAndSwapUntil(key, cur, d, leaseEnd(expiresAt)) {
 			return d
 		}
 		// The expired value was replaced under us; re-examine the newer one.
@@ -152,11 +152,46 @@ func (n *Cache) SetUntilIfAbsent(key uint64, dsSet []dns.RR, servers *Servers, e
 }
 
 func (n *Cache) store(key uint64, dsSet []dns.RR, servers *Servers, expiresAt lease.Lease) {
-	n.cache.Add(key, &Delegation{
+	n.cache.AddUntil(key, &Delegation{
 		Servers: servers,
 		DSSet:   dsSet,
 		Lease:   expiresAt,
+	}, leaseEnd(expiresAt))
+}
+
+// leaseEnd is the instant a delegation's expiry record is filed for: its
+// monotonic deadline when it has one, else its wall-clock one. A lease
+// runs out at the earlier of the two, so either is at or after the end,
+// never before it.
+func leaseEnd(l lease.Lease) time.Time {
+	if until := l.Mono().Until; !until.IsZero() {
+		return until
+	}
+	return l.Wall().Until
+}
+
+// Prune removes the delegations whose leases have run out and whose
+// expiry records have come due, and returns how many. A delegation is
+// otherwise only replaced or evicted, never dropped for having expired:
+// Get reports it expired and leaves it in place.
+func (n *Cache) Prune() int {
+	return n.cache.Expire(func(d *Delegation) (cache.Verdict, time.Duration) {
+		now := n.now()
+		left, bounded := d.Lease.Remaining(now)
+		switch {
+		case !bounded:
+			return cache.Alive, 0
+		case left <= 0:
+			return cache.Dead, 0
+		}
+		return cache.Alive, left
 	})
+}
+
+// Len returns how many delegations the cache holds, expired ones not yet
+// pruned included.
+func (n *Cache) Len() int {
+	return n.cache.Len()
 }
 
 // (*Cache).Remove remove remove a cache.

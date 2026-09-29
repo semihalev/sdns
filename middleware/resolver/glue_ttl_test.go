@@ -94,3 +94,35 @@ func TestGlueCacheHitDoesNotRenewHorizon(t *testing.T) {
 			(got-expiresAt)/int64(time.Second))
 	}
 }
+
+// The pruner removes glue once its horizon has passed, through both
+// families' writers, and keeps what is still fresh; a read alone would
+// never find glue nobody asks for again.
+func TestPruneCachesRemovesExpiredGlue(t *testing.T) {
+	r := &Resolver{
+		delegations: authority.NewCache(),
+		glueV4:      cache.NewWithExpiry[*glueEntry](16, glueTTLCap),
+		glueV6:      cache.NewWithExpiry[*glueEntry](16, glueTTLCap),
+	}
+	later := time.Now().Add(10 * time.Minute)
+	r.glueV4.SetExpiryClock(func() time.Time { return later })
+	r.glueV6.SetExpiryClock(func() time.Time { return later })
+	addr := netip.MustParseAddr("192.0.2.10")
+
+	r.addIPv4Cache(map[string]nsAddrs{"short.example.": {addrs: []netip.Addr{addr}, ttl: 60}})
+	r.addIPv4Cache(map[string]nsAddrs{"long.example.": {addrs: []netip.Addr{addr}, ttl: 3600}})
+	r.addIPv6Cache(map[string]nsAddrs{"short.example.": {addrs: []netip.Addr{netip.MustParseAddr("2001:db8::10")}, ttl: 60}})
+
+	// Ten minutes on, the one-minute glue of each family has run out and
+	// its bucket (6h/256, about 84 s) has passed; the hour-long has not.
+	r.pruneCaches(later)
+	if _, _, ok := r.getIPv4Cache("long.example."); !ok {
+		t.Fatal("the fresh glue was pruned")
+	}
+	if n := r.glueV4.Len(); n != 1 {
+		t.Fatalf("%d IPv4 glue entries left, want the fresh one", n)
+	}
+	if n := r.glueV6.Len(); n != 0 {
+		t.Fatalf("%d IPv6 glue entries left, want none", n)
+	}
+}
