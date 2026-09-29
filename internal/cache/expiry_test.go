@@ -327,6 +327,121 @@ func TestExpireBoundsTheIndexUnderChurn(t *testing.T) {
 	})
 }
 
+// A mark names a bucket, not a value: a key rewritten with new values
+// into the same bucket must not leave a record per write that every
+// compaction keeps. Written back to back, the bucket keeps the one it has;
+// interleaved with other keys, compaction keeps one per key.
+func TestExpireBoundsRewritesIntoOneBucket(t *testing.T) {
+	defer func(s int64) { compactSlack = s }(compactSlack)
+	compactSlack = 128
+
+	t.Run("one key back to back", func(t *testing.T) {
+		c, clock, judge := testExpiry(t, 64)
+		for range 10000 {
+			put(c, clock, 7, &expiring{}, 120*time.Second)
+		}
+		if n := filed(c); n != 1 {
+			t.Fatalf("%d records before any compaction, want the bucket's one", n)
+		}
+		for _, s := range []int64{10, 20, 30} {
+			clock.Store(s * int64(time.Second))
+			c.Expire(judge)
+		}
+		if n := filed(c); n != 1 || c.Len() != 1 {
+			t.Fatalf("%d records for %d values", n, c.Len())
+		}
+	})
+	t.Run("keys interleaved", func(t *testing.T) {
+		c, clock, judge := testExpiry(t, 64)
+		// 7 and 23 share a shard, so their writes interleave in one bucket.
+		for i := range uint64(10000) {
+			put(c, clock, 7+16*(i%2), &expiring{}, 120*time.Second)
+		}
+		if n := filed(c); n != 10000 {
+			t.Fatalf("setup: %d records, want every interleaved write", n)
+		}
+		clock.Store(int64(10 * time.Second))
+		c.Expire(judge)
+		if n := filed(c); n != 2 {
+			t.Fatalf("after compaction: %d records for 2 values", n)
+		}
+		if n := c.exp.records.Load(); n != 2 {
+			t.Fatalf("records counted %d after compaction, want 2", n)
+		}
+		clock.Store(int64(122 * time.Second))
+		if removed := c.Expire(judge); removed != 2 {
+			t.Fatalf("at their end: %d removed, want 2", removed)
+		}
+	})
+	t.Run("a write during compaction", func(t *testing.T) {
+		c, clock, judge := testExpiry(t, 64)
+		// Interleaved in one bucket, so only compaction folds them.
+		for i := range uint64(1000) {
+			put(c, clock, 7+16*(i%2), &expiring{}, 120*time.Second)
+		}
+		// Key 7 is written again, into the same bucket, while its shard's
+		// ring is detached: the survivor and the new record are one key.
+		compactDetached = func(shard int) {
+			if shard == 7 {
+				// At 10 s, the same 120 s end as the others.
+				put(c, clock, 7, &expiring{}, 110*time.Second)
+			}
+		}
+		defer func() { compactDetached = nil }()
+		compactSlack = 0
+		clock.Store(int64(10 * time.Second))
+		c.Expire(judge)
+		compactSlack = 128
+		if n := filed(c); n != 2 {
+			t.Fatalf("%d records for 2 values after a racing write", n)
+		}
+		if n := c.exp.records.Load(); n != 2 {
+			t.Fatalf("records counted %d, want 2", n)
+		}
+		clock.Store(int64(122 * time.Second))
+		if removed := c.Expire(judge); removed != 2 {
+			t.Fatalf("at their end: %d removed, want 2", removed)
+		}
+	})
+	t.Run("compaction racing writers", func(t *testing.T) {
+		c, clock, judge := testExpiry(t, 1024)
+		var wg sync.WaitGroup
+		stop := make(chan struct{})
+		for w := range uint64(4) {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for i := range uint64(20000) {
+					put(c, clock, 1+(w*3+i)%16, &expiring{}, 120*time.Second)
+				}
+			}()
+		}
+		go func() {
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					c.Expire(judge)
+				}
+			}
+		}()
+		wg.Wait()
+		close(stop)
+		clock.Store(int64(10 * time.Second))
+		c.Expire(judge)
+		if n := filed(c); n > 2*16+int(compactSlack) {
+			t.Fatalf("%d records for 16 values", n)
+		}
+		// Every value is still tracked: past the end, all are removed.
+		clock.Store(int64(122 * time.Second))
+		c.Expire(judge)
+		if n := c.Len(); n != 0 {
+			t.Fatalf("%d values lost their tracking", n)
+		}
+	})
+}
+
 // Records of evicted values find nothing when they fire, and the count
 // stays true: a cache far over its capacity evicts most of what it was
 // given, and expiring the rest leaves it empty, not below zero.

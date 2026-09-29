@@ -38,6 +38,11 @@ const (
 // index holds before Expire compacts it.
 var compactSlack int64 = 4096
 
+// compactDetached, when set, runs after compaction has taken a shard's
+// ring and before it files the survivors back: tests write there to stand
+// for inserts racing the compaction.
+var compactDetached func(shard int)
+
 // Verdict is an owner's judgement of a value an expiry record points at.
 type Verdict uint8
 
@@ -138,13 +143,19 @@ func newExpiryIndex(horizon time.Duration) *expiryIndex {
 // file marks m with the bucket of at, nanoseconds since the epoch, and
 // files key there. An end already past is due in the first bucket still
 // to fire; one beyond the ring waits in its last bucket and is filed again
-// from there.
+// from there. A key the bucket has just been given is not given again: a
+// mark names a bucket, not a value, so the record there already stands for
+// whichever value the key holds.
 func (x *expiryIndex) file(key uint64, m *ExpiryMark, at int64) {
 	sh := &x.shards[key%expiryShards]
 	sh.mu.Lock()
 	b := min(max(at/x.gran, sh.next), sh.next+expiryBuckets-1)
 	m.setMark(markOf(b))
 	i := b % expiryBuckets
+	if n := len(sh.ring[i]); n > 0 && sh.ring[i][n-1] == key {
+		sh.mu.Unlock()
+		return
+	}
 	sh.ring[i] = append(sh.ring[i], key)
 	sh.mu.Unlock()
 	x.records.Add(1)
@@ -287,13 +298,17 @@ func (c *Cache[V]) fire(keys []uint64, mark uint32, due int64, judge func(V) (Ve
 	return removed
 }
 
-// compact drops the stale records: each shard's ring is taken whole and
-// only the records whose values still carry their bucket's mark are filed
-// back. It runs under Expire's lock, so no bucket fires meanwhile; inserts
-// go on into the emptied ring.
+// compact drops the stale records and the repeats: each shard's ring is
+// taken whole, and each bucket gets back one record for every key whose
+// value still carries its mark. A mark names a bucket, not a value, so a
+// key rewritten into the same bucket leaves records that all look live;
+// one of them is enough. It runs under Expire's lock, so no bucket fires
+// meanwhile; inserts go on into the emptied ring, and what they filed
+// there is merged back without repeating a key the bucket kept.
 func (c *Cache[V]) compact() {
 	x := c.exp
 	m := c.data.data
+	seen := make(map[uint64]struct{})
 	for s := range x.shards {
 		sh := &x.shards[s]
 		sh.mu.Lock()
@@ -301,6 +316,9 @@ func (c *Cache[V]) compact() {
 		next := sh.next
 		sh.ring = [expiryBuckets][]uint64{}
 		sh.mu.Unlock()
+		if compactDetached != nil {
+			compactDetached(s)
+		}
 
 		var dropped int64
 		for i := range ring {
@@ -308,19 +326,31 @@ func (c *Cache[V]) compact() {
 			// is i modulo the ring.
 			b := next + (int64(i)-next%expiryBuckets+expiryBuckets)%expiryBuckets
 			mark := markOf(b)
+			clear(seen)
 			kept := ring[i][:0]
 			for _, key := range ring[i] {
+				if _, dup := seen[key]; dup {
+					dropped++
+					continue
+				}
 				if v, ok := m.Get(key); ok && c.mark(v).mark() == mark {
+					seen[key] = struct{}{}
 					kept = append(kept, key)
 				} else {
 					dropped++
 				}
 			}
-			if len(kept) == 0 {
-				continue
-			}
 			sh.mu.Lock()
-			sh.ring[i] = append(sh.ring[i], kept...)
+			for _, key := range sh.ring[i] {
+				if _, dup := seen[key]; dup {
+					dropped++
+					continue
+				}
+				kept = append(kept, key)
+			}
+			if len(kept) > 0 {
+				sh.ring[i] = kept
+			}
 			sh.mu.Unlock()
 		}
 		x.records.Add(-dropped)
