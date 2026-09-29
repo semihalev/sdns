@@ -30,7 +30,7 @@ func TestValidateRejectsUnusableValues(t *testing.T) {
 		// on when the operator meant to switch it off.
 		{"dnssec enum", Config{DNSSEC: "maybe"}, "dnssec"},
 		{"log level", Config{LogLevel: "verbose"}, "loglevel"},
-		{"bind address", Config{Bind: "not an address"}, "bind"},
+		{"bind address", Config{Bind: Addrs{"not an address"}}, "bind"},
 		{"nullroute", Config{Nullroute: "not-an-ip"}, "nullroute"},
 		{"accesslist", Config{AccessList: []string{"999.999.999.999/99"}}, "accesslist"},
 		// The access list is parsed with netip.ParsePrefix alone, so a bare
@@ -96,7 +96,7 @@ func TestValidateAcceptsUsableValues(t *testing.T) {
 	cfg := Config{
 		DNSSEC:           "on",
 		LogLevel:         "info",
-		Bind:             ":53",
+		Bind:             Addrs{":53"},
 		Nullroute:        "0.0.0.0",
 		Nullroutev6:      "::0",
 		AccessList:       []string{"0.0.0.0/0", "::0/0", "192.0.2.1/32"},
@@ -114,7 +114,7 @@ func TestValidateAcceptsUsableValues(t *testing.T) {
 func TestValidateReportsEveryProblem(t *testing.T) {
 	err := (&Config{
 		DNSSEC:    "maybe",
-		Bind:      "nope",
+		Bind:      Addrs{"nope"},
 		Nullroute: "also-nope",
 	}).Validate()
 	if err == nil {
@@ -396,8 +396,8 @@ func TestValidatePortRange(t *testing.T) {
 		cfg  Config
 		want bool
 	}{
-		{"listener port above range", Config{Bind: ":65536"}, false},
-		{"listener port negative", Config{Bind: ":-1"}, false},
+		{"listener port above range", Config{Bind: Addrs{":65536"}}, false},
+		{"listener port negative", Config{Bind: Addrs{":-1"}}, false},
 		{"api port above range", Config{API: "127.0.0.1:99999"}, false},
 		{"upstream port above range", Config{RootServers: []string{"192.0.2.1:99999"}}, false},
 		{"forwarder port above range", Config{ForwarderServers: []string{"1.1.1.1:70000"}}, false},
@@ -407,12 +407,12 @@ func TestValidatePortRange(t *testing.T) {
 		// Asked of the net package, not of a number range: ":domain" really
 		// does listen on 53, so a numeric test here would refuse a config
 		// that works.
-		{"listener service name", Config{Bind: ":domain"}, true},
+		{"listener service name", Config{Bind: Addrs{":domain"}}, true},
 		// bind opens UDP and TCP separately, so port 0 would land them on
 		// different ports; a single-transport listener is free to ask.
-		{"port zero on a two-transport listener", Config{Bind: ":0"}, false},
+		{"port zero on a two-transport listener", Config{Bind: Addrs{":0"}}, false},
 
-		{"ordinary listener", Config{Bind: ":53"}, true},
+		{"ordinary listener", Config{Bind: Addrs{":53"}}, true},
 		{"ordinary upstream", Config{RootServers: []string{"192.0.2.1:53"}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -504,7 +504,7 @@ func TestValidatePathKinds(t *testing.T) {
 	// A directory satisfies Stat and then fails at the read, taking the TLS
 	// listener down after this test reported success.
 	tlsCfg := &Config{
-		BindTLS:        ":853",
+		BindTLS:        Addrs{":853"},
 		TLSCertificate: dir,
 		TLSPrivateKey:  dir,
 	}
@@ -741,7 +741,7 @@ func TestValidatePortZeroSpellings(t *testing.T) {
 	// free port; one that opens two may not, since each socket asks
 	// separately and they would not agree.
 	for _, spelling := range []string{"0", "00", "+0"} {
-		if err := (&Config{Bind: ":" + spelling}).Validate(); err == nil {
+		if err := (&Config{Bind: Addrs{":" + spelling}}).Validate(); err == nil {
 			t.Fatalf("Validate() accepted port %q on a two-transport listener", spelling)
 		}
 	}
@@ -939,15 +939,51 @@ func TestValidateLeavesListenerHostAlone(t *testing.T) {
 		cfg  Config
 		want bool
 	}{
-		{"empty host is every interface", Config{Bind: ":53"}, true},
-		{"IP literal", Config{Bind: "127.0.0.1:53"}, true},
-		{"IPv6 literal", Config{Bind: "[::1]:53"}, true},
-		{"an address not held yet", Config{Bind: "192.0.2.1:53"}, true},
-		{"a name is left to listen time", Config{Bind: "localhost:53"}, true},
+		{"empty host is every interface", Config{Bind: Addrs{":53"}}, true},
+		{"IP literal", Config{Bind: Addrs{"127.0.0.1:53"}}, true},
+		{"IPv6 literal", Config{Bind: Addrs{"[::1]:53"}}, true},
+		{"an address not held yet", Config{Bind: Addrs{"192.0.2.1:53"}}, true},
+		{"a name is left to listen time", Config{Bind: Addrs{"localhost:53"}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.cfg.Validate(); (err == nil) != tc.want {
 				t.Fatalf("Validate() accepted = %v, want %v (err = %v)", err == nil, tc.want, err)
+			}
+		})
+	}
+}
+
+// TestValidateBindList: every address of a list is judged on its own, the
+// same address may not appear twice however it is spelled, and a wildcard
+// cannot share a list with specific addresses, which it already covers.
+func TestValidateBindList(t *testing.T) {
+	cert, key := writeCert(t, []string{"dns.example.net"}, nil)
+	for _, tc := range []struct {
+		name string
+		cfg  Config
+		want string // "" for a list that passes
+	}{
+		{"two specific addresses", Config{Bind: Addrs{"192.0.2.53:53", "[2001:db8::53]:53"}}, ""},
+		{"one address on two ports", Config{Bind: Addrs{"127.0.0.1:53", "127.0.0.1:5353"}}, ""},
+		{"a wildcard on two ports", Config{Bind: Addrs{":53", ":5353"}}, ""},
+		{"each address is judged", Config{Bind: Addrs{"127.0.0.1:53", "nope"}}, `bind = "nope": must be host:port`},
+		{"port 0 in a list", Config{Bind: Addrs{"127.0.0.1:53", "127.0.0.2:0"}}, "port 0"},
+		{"the same address twice", Config{Bind: Addrs{"127.0.0.1:53", "127.0.0.1:53"}}, "listed twice"},
+		{"one IPv6 address spelled twice", Config{Bind: Addrs{"[::1]:53", "[0:0:0:0:0:0:0:1]:53"}}, "listed twice"},
+		{"one port spelled twice", Config{Bind: Addrs{"127.0.0.1:53", "127.0.0.1:domain"}}, "listed twice"},
+		{"two wildcard spellings", Config{Bind: Addrs{":53", "[::]:53"}}, "listed twice"},
+		{"a wildcard with a specific address", Config{Bind: Addrs{":53", "127.0.0.1:5353"}}, "listens on every address already"},
+		{"an unspecified literal with a specific address", Config{Bind: Addrs{"0.0.0.0:53", "127.0.0.1:53"}}, "listens on every address already"},
+		{"a DoT list", Config{BindTLS: Addrs{"192.0.2.53:853", "192.0.2.54:853"}, TLSCertificate: cert, TLSPrivateKey: key}, ""},
+		{"a DoQ duplicate", Config{BindDOQ: Addrs{"192.0.2.53:853", "192.0.2.53:853"}, TLSCertificate: cert, TLSPrivateKey: key}, "binddoq"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			switch {
+			case tc.want == "" && err != nil && strings.Contains(err.Error(), "bind"):
+				t.Fatalf("unexpected bind problem: %v", err)
+			case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
+				t.Fatalf("got %v, want a problem mentioning %q", err, tc.want)
 			}
 		})
 	}
@@ -1223,10 +1259,10 @@ func TestPortNetworksPerCaller(t *testing.T) {
 		want []string
 	}{
 		// The plain listener answers over both; DoH brings HTTP/3 with it.
-		{"bind", Config{Bind: ":53"}, []string{"udp", "tcp"}},
-		{"binddoh", Config{BindDOH: ":443", TLSCertificate: "x", TLSPrivateKey: "x"}, []string{"udp", "tcp"}},
-		{"binddoq", Config{BindDOQ: ":853", TLSCertificate: "x", TLSPrivateKey: "x"}, []string{"udp"}},
-		{"bindtls", Config{BindTLS: ":853", TLSCertificate: "x", TLSPrivateKey: "x"}, []string{"tcp"}},
+		{"bind", Config{Bind: Addrs{":53"}}, []string{"udp", "tcp"}},
+		{"binddoh", Config{BindDOH: Addrs{":443"}, TLSCertificate: "x", TLSPrivateKey: "x"}, []string{"udp", "tcp"}},
+		{"binddoq", Config{BindDOQ: Addrs{":853"}, TLSCertificate: "x", TLSPrivateKey: "x"}, []string{"udp"}},
+		{"bindtls", Config{BindTLS: Addrs{":853"}, TLSCertificate: "x", TLSPrivateKey: "x"}, []string{"tcp"}},
 		{"api", Config{API: "127.0.0.1:8080"}, []string{"tcp"}},
 		// Plain DNS retries over TCP when an answer does not fit.
 		{"rootservers", Config{RootServers: []string{"192.5.5.241:53"}}, []string{"udp", "tcp"}},
@@ -2027,19 +2063,19 @@ func TestValidatePortZeroFollowsTransportCount(t *testing.T) {
 		cfg  Config
 		want bool
 	}{
-		{"bind opens udp and tcp", Config{Bind: ":0"}, false},
+		{"bind opens udp and tcp", Config{Bind: Addrs{":0"}}, false},
 		{"doh brings http/3 with it", Config{
-			BindDOH: ":0", TLSCertificate: cert, TLSPrivateKey: key,
+			BindDOH: Addrs{":0"}, TLSCertificate: cert, TLSPrivateKey: key,
 		}, false},
 		{"dot is tcp alone", Config{
-			BindTLS: ":0", TLSCertificate: cert, TLSPrivateKey: key,
+			BindTLS: Addrs{":0"}, TLSCertificate: cert, TLSPrivateKey: key,
 		}, true},
 		{"doq is udp alone", Config{
-			BindDOQ: ":0", TLSCertificate: cert, TLSPrivateKey: key,
+			BindDOQ: Addrs{":0"}, TLSCertificate: cert, TLSPrivateKey: key,
 		}, true},
 		{"the api is tcp alone", Config{API: "127.0.0.1:0"}, true},
 		// A named port is fine everywhere.
-		{"bind with a real port", Config{Bind: ":53"}, true},
+		{"bind with a real port", Config{Bind: Addrs{":53"}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if err := tc.cfg.Validate(); (err == nil) != tc.want {
@@ -2122,7 +2158,7 @@ func TestValidatePortNameMustAgreeAcrossTransports(t *testing.T) {
 	}
 
 	// bind opens both, so the disagreement matters.
-	if err := (&Config{Bind: ":split"}).Validate(); err == nil {
+	if err := (&Config{Bind: Addrs{":split"}}).Validate(); err == nil {
 		t.Fatal("Validate() accepted a name that is a different port on each transport")
 	}
 
@@ -2135,13 +2171,13 @@ func TestValidatePortNameMustAgreeAcrossTransports(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	single := &Config{BindDOQ: ":split", TLSCertificate: cert, TLSPrivateKey: key}
+	single := &Config{BindDOQ: Addrs{":split"}, TLSCertificate: cert, TLSPrivateKey: key}
 	if err := single.Validate(); err != nil {
 		t.Fatalf("Validate() refused a one-transport listener: %v", err)
 	}
 
 	// A name both tables agree on is fine everywhere.
-	if err := (&Config{Bind: ":domain"}).Validate(); err != nil {
+	if err := (&Config{Bind: Addrs{":domain"}}).Validate(); err != nil {
 		t.Fatalf("Validate() refused a name both transports know: %v", err)
 	}
 }

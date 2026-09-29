@@ -54,8 +54,16 @@ func enabled(binds ...string) *config.Config {
 	cfg := new(config.Config)
 	cfg.DDR.Enabled = true
 	cfg.DDR.Name = "DNS.Example.COM"
-	cfg.BindDOH, cfg.BindTLS, cfg.BindDOQ = binds[0], binds[1], binds[2]
+	cfg.BindDOH, cfg.BindTLS, cfg.BindDOQ = addrs(binds[0]), addrs(binds[1]), addrs(binds[2])
 	return cfg
+}
+
+// addrs is the list a one-address key decodes to: none for "".
+func addrs(bind string) config.Addrs {
+	if bind == "" {
+		return nil
+	}
+	return config.Addrs{bind}
 }
 
 func param[T dns.SVCBKeyValue](rr *dns.SVCB) (T, bool) {
@@ -523,4 +531,28 @@ func TestLoopbackListenersAndProxiedDoH(t *testing.T) {
 			t.Fatalf("records %v, want DoH with the listener's h2 and h3", rrs)
 		}
 	})
+}
+
+// TestListenerOnSeveralAddresses: the addresses of a listener are not what
+// is advertised, so two on one port are one record, a second port is a
+// second record at the next priority, and a loopback address among them is
+// left out without taking the others with it.
+func TestListenerOnSeveralAddresses(t *testing.T) {
+	cfg := enabled("", "", "")
+	cfg.BindTLS = config.Addrs{"192.0.2.53:853", "[2001:db8::53]:853", "127.0.0.1:853", "192.0.2.53:8853"}
+	rrs := advertised(t, New(cfg))
+	if len(rrs) != 2 {
+		t.Fatalf("records %v, want one per port", rrs)
+	}
+	if p, ok := param[*dns.SVCBPort](rrs[0]); ok || rrs[0].Priority != 1 {
+		t.Fatalf("first record %v (port %v), want priority 1 on the default port", rrs[0], p)
+	}
+	if p, ok := param[*dns.SVCBPort](rrs[1]); !ok || p.Port != 8853 || rrs[1].Priority != 2 {
+		t.Fatalf("second record %v, want priority 2 on 8853", rrs[1])
+	}
+
+	cfg.BindTLS = config.Addrs{"127.0.0.1:853", "[::1]:853"}
+	if rrs := advertised(t, New(cfg)); len(rrs) != 0 {
+		t.Fatalf("records %v, want none for loopback alone", rrs)
+	}
 }

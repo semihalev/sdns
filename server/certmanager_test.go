@@ -577,7 +577,7 @@ func TestGetTLSConfigRefusedAfterStop(t *testing.T) {
 	cert, key := generateTestCert(t, "stop.test")
 	writeCertAndKey(t, certPath, keyPath, cert, key)
 
-	s := New(&config.Config{Bind: "127.0.0.1:0", TLSCertificate: certPath, TLSPrivateKey: keyPath})
+	s := New(&config.Config{Bind: config.Addrs{"127.0.0.1:0"}, TLSCertificate: certPath, TLSPrivateKey: keyPath})
 
 	if s.GetTLSConfig() == nil {
 		t.Fatal("provider refused a valid certificate before stop")

@@ -38,7 +38,7 @@ func TestDirectPackOverRealSockets(t *testing.T) {
 	middleware.Register("direct-pack-stub", func(*config.Config) middleware.Handler {
 		return directPackStub{}
 	})
-	cfg := &config.Config{Bind: "127.0.0.1:0"}
+	cfg := &config.Config{Bind: config.Addrs{"127.0.0.1:0"}}
 	middleware.Setup(cfg)
 	s := New(cfg)
 
@@ -72,7 +72,7 @@ func TestDirectPackOverRealSockets(t *testing.T) {
 	udpAddr := udp.pcs[0].LocalAddr().String()
 	udp.mu.Unlock()
 	tcp.mu.Lock()
-	tcpAddr := tcp.ln.Addr().String()
+	tcpAddr := tcp.lns[0].Addr().String()
 	tcp.mu.Unlock()
 
 	for _, tc := range []struct {

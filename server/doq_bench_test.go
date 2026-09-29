@@ -53,8 +53,8 @@ func doqBenchServer(tb testing.TB) *quic.Conn {
 	defaults.RegisterUpTo("resolver")
 	middleware.Register("bench-answer-stub", func(*config.Config) middleware.Handler { return benchAnswerStub{} })
 	cfg := &config.Config{ //nolint:gosec // G101, the cookie secret is a test fixture, not a credential
-		Bind:           "127.0.0.1:0",
-		BindDOQ:        addr,
+		Bind:           config.Addrs{"127.0.0.1:0"},
+		BindDOQ:        config.Addrs{addr},
 		TLSCertificate: certPath,
 		TLSPrivateKey:  keyPath,
 		Expire:         600,

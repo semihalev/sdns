@@ -105,7 +105,7 @@ func TestServeDNSContextPreservesTransportCancellation(t *testing.T) {
 
 func TestServeHTTPPropagatesRequestContext(t *testing.T) {
 	cfg := &config.Config{
-		BindDOH:      "127.0.0.1:443",
+		BindDOH:      config.Addrs{"127.0.0.1:443"},
 		QueryTimeout: config.Duration{Duration: time.Second},
 	}
 	var gotValue any
@@ -133,7 +133,7 @@ func TestServeHTTPPropagatesRequestContext(t *testing.T) {
 
 func TestServeHTTPCanceledRequestDoesNotEmitBadRequest(t *testing.T) {
 	cfg := &config.Config{
-		BindDOH:      "127.0.0.1:443",
+		BindDOH:      config.Addrs{"127.0.0.1:443"},
 		QueryTimeout: config.Duration{Duration: time.Second},
 	}
 	called := false

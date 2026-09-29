@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,16 +15,17 @@ import (
 // tcpListener runs the owned TCP engine (tcp_engine.go): an accept loop
 // admitting up to the configured connection cap, per-connection goroutines
 // with the handler inline, prefix-first job acquisition from a shared
-// large-class ring.
+// large-class ring. Several addresses are one accept loop each over the one
+// engine, so the connection cap is the transport's, not an address's.
 type tcpListener struct {
-	addr     string
+	addrs    []string
 	handler  rawHandler
 	maxConns int
 	plan     resourcePlan
 	timeout  time.Duration
 
 	mu       sync.Mutex
-	ln       net.Listener
+	lns      []net.Listener
 	engine   *tcpEngine
 	done     chan struct{}
 	shutdown sync.Once
@@ -32,12 +34,12 @@ type tcpListener struct {
 	serving  atomic.Bool
 }
 
-func newTCPListener(addr string, h rawHandler, timeout time.Duration, maxConns int, plan resourcePlan) *tcpListener {
-	return &tcpListener{addr: addr, handler: h, timeout: timeout, maxConns: maxConns, plan: plan}
+func newTCPListener(addrs []string, h rawHandler, timeout time.Duration, maxConns int, plan resourcePlan) *tcpListener {
+	return &tcpListener{addrs: addrs, handler: h, timeout: timeout, maxConns: maxConns, plan: plan}
 }
 
 func (l *tcpListener) Proto() string  { return "tcp" }
-func (l *tcpListener) Addr() string   { return l.addr }
+func (l *tcpListener) Addr() string   { return strings.Join(l.addrs, ", ") }
 func (l *tcpListener) Critical() bool { return true }
 func (l *tcpListener) Serving() bool  { return l.serving.Load() }
 
@@ -51,15 +53,14 @@ func (l *tcpListener) Quiesced() bool {
 func (l *tcpListener) Bind(ctx context.Context) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.ln != nil {
+	if l.lns != nil {
 		return errors.New("tcp listener: Bind called twice")
 	}
-	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "tcp", l.addr)
+	lns, err := listenTCPAll(ctx, l.addrs, nil)
 	if err != nil {
 		return err
 	}
-	l.ln = ln
+	l.lns = lns
 	l.engine = newTCPEngine(l.handler, "tcp", l.maxConns, l.plan)
 	l.done = make(chan struct{})
 	return nil
@@ -67,28 +68,30 @@ func (l *tcpListener) Bind(ctx context.Context) error {
 
 func (l *tcpListener) Serve(_ context.Context) error {
 	l.mu.Lock()
-	ln, engine, done := l.ln, l.engine, l.done
+	lns, engine, done := l.lns, l.engine, l.done
 	l.mu.Unlock()
-	if ln == nil {
+	if lns == nil {
 		return errListenerNotBound
 	}
 
-	zlog.Info("DNS server listening", "net", "tcp", "addr", l.addr,
+	zlog.Info("DNS server listening", "net", "tcp", "addr", l.Addr(),
 		"maxconns", engine.maxConns, "smalljobs", cap(engine.smallTokens), "largejobs", cap(engine.largeTokens))
 	l.serving.Store(true)
 	defer l.serving.Store(false)
 
-	if !engine.startAccepting(ln, func() {
-		if !l.closing.Load() {
-			zlog.Error("TCP accept loop exited outside shutdown", "addr", l.addr)
-			recordListenerErr("tcp")
+	for _, ln := range lns {
+		addr := ln.Addr().String()
+		if !engine.startAccepting(ln, func() {
+			if !l.closing.Load() {
+				zlog.Error("TCP accept loop exited outside shutdown", "addr", addr)
+				recordListenerErr("tcp")
+			}
+		}) {
+			// Shutdown got here first and the engine refused the loop
+			// rather than joining a barrier that is already being waited
+			// on; it closed this socket, and Shutdown closes the rest.
+			break
 		}
-	}) {
-		// Shutdown got here first and the engine refused the loop rather
-		// than joining a barrier that is already being waited on. The
-		// listener is closed; there is nothing to serve.
-		<-done
-		return l.drainErr
 	}
 
 	<-done
@@ -97,9 +100,9 @@ func (l *tcpListener) Serve(_ context.Context) error {
 
 func (l *tcpListener) Shutdown(_ context.Context) error {
 	l.mu.Lock()
-	ln, engine := l.ln, l.engine
+	lns, engine := l.lns, l.engine
 	l.mu.Unlock()
-	if ln == nil {
+	if lns == nil {
 		return nil
 	}
 
@@ -108,11 +111,13 @@ func (l *tcpListener) Shutdown(_ context.Context) error {
 		if timeout <= 0 {
 			timeout = 5 * time.Second
 		}
-		zlog.Info("DNS server stopping", "net", "tcp", "addr", l.addr)
+		zlog.Info("DNS server stopping", "net", "tcp", "addr", l.Addr())
 
 		l.closing.Store(true)
-		if err := ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			l.drainErr = errors.Join(l.drainErr, err)
+		for _, ln := range lns {
+			if err := ln.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+				l.drainErr = errors.Join(l.drainErr, err)
+			}
 		}
 		if err := engine.shutdown(time.Now().Add(timeout)); err != nil {
 			l.drainErr = errors.Join(l.drainErr, err)

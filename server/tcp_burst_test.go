@@ -35,7 +35,7 @@ func TestTCPPipelinedBurst(t *testing.T) {
 		return true
 	})
 
-	l := newTCPListener("127.0.0.1:0", echo, time.Second, 8, defaultResourcePlan(1))
+	l := newTCPListener([]string{"127.0.0.1:0"}, echo, time.Second, 8, defaultResourcePlan(1))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := l.Bind(ctx); err != nil {
@@ -56,7 +56,7 @@ func TestTCPPipelinedBurst(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	l.mu.Lock()
-	addr := l.ln.Addr().String()
+	addr := l.lns[0].Addr().String()
 	l.mu.Unlock()
 
 	conn, err := net.Dial("tcp", addr)
@@ -265,7 +265,7 @@ func TestTCPPartialPrefixStillFlushes(t *testing.T) {
 		return true
 	})
 
-	l := newTCPListener("127.0.0.1:0", echo, time.Second, 8, defaultResourcePlan(1))
+	l := newTCPListener([]string{"127.0.0.1:0"}, echo, time.Second, 8, defaultResourcePlan(1))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := l.Bind(ctx); err != nil {
@@ -285,7 +285,7 @@ func TestTCPPartialPrefixStillFlushes(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	l.mu.Lock()
-	addr := l.ln.Addr().String()
+	addr := l.lns[0].Addr().String()
 	l.mu.Unlock()
 
 	conn, err := net.Dial("tcp", addr)

@@ -69,8 +69,8 @@ type Server struct {
 
 // New return new server.
 func New(cfg *config.Config) *Server {
-	if cfg.Bind == "" {
-		cfg.Bind = ":53"
+	if len(cfg.Bind) == 0 {
+		cfg.Bind = config.Addrs{":53"}
 	}
 
 	s := &Server{cfg: cfg, pipeline: middleware.GlobalPipeline(), trimEnabled: cfg.MemoryTrim}
@@ -88,10 +88,10 @@ func New(cfg *config.Config) *Server {
 	// many there are. The plan is a value on this Server, a second
 	// Server in the same process lives inside its own arithmetic.
 	engines := 1
-	if cfg.BindTLS != "" {
+	if len(cfg.BindTLS) > 0 {
 		engines = 2
 	}
-	plan := defaultResourcePlanWith(engines, cfg.BindDOQ != "")
+	plan := defaultResourcePlanWith(engines, len(cfg.BindDOQ) > 0)
 	plan.publish()
 
 	timeout := cfg.QueryTimeout.Duration
@@ -104,16 +104,16 @@ func New(cfg *config.Config) *Server {
 		newUDPListener(cfg.Bind, s, timeout, cfg.IngressWorkers, cfg.IngressQueue, plan),
 		newTCPListener(cfg.Bind, s, timeout, cfg.IngressTCPConns, plan),
 	}
-	if cfg.BindTLS != "" {
+	if len(cfg.BindTLS) > 0 {
 		s.listeners = append(s.listeners, newTLSListener(cfg.BindTLS, s, s, timeout, cfg.IngressTCPConns, plan))
 	}
-	if cfg.BindDOH != "" {
+	if len(cfg.BindDOH) > 0 {
 		s.listeners = append(s.listeners,
 			newDOHListener(cfg.BindDOH, s, s, timeout),
 			newDOH3Listener(cfg.BindDOH, s, s),
 		)
 	}
-	if cfg.BindDOQ != "" {
+	if len(cfg.BindDOQ) > 0 {
 		s.listeners = append(s.listeners, newDOQListener(cfg.BindDOQ, s, s, timeout, plan))
 	}
 
@@ -231,14 +231,32 @@ type dohWriter struct {
 
 func (w dohWriter) SourceVerified() bool { return w.verified }
 
+// altSvcPort is the port HTTP/3 answers on for r: the one r arrived on,
+// since each DoH address opens its HTTP/3 listener on the same address.
+// With several DoH addresses on different ports, the configured list cannot
+// say which; the connection can. Without it, the first configured address.
+func (s *Server) altSvcPort(r *http.Request) string {
+	if local, ok := r.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
+		if _, port, err := net.SplitHostPort(local.String()); err == nil {
+			return port
+		}
+	}
+	if len(s.cfg.BindDOH) > 0 {
+		_, port, _ := net.SplitHostPort(s.cfg.BindDOH[0])
+		return port
+	}
+	return ""
+}
+
 // ServeHTTP implements http.Handler (DoH + DoH3).
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Server", "sdns")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
 	if r.ProtoMajor < 3 {
-		_, port, _ := net.SplitHostPort(s.cfg.BindDOH)
-		w.Header().Set("Alt-Svc", `h3=":`+port+`"; ma=2592000`)
+		if port := s.altSvcPort(r); port != "" {
+			w.Header().Set("Alt-Svc", `h3=":`+port+`"; ma=2592000`)
+		}
 	}
 
 	// HTTP/1 and HTTP/2 ride a TCP connection. HTTP/3 accepts early data,

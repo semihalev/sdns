@@ -55,10 +55,10 @@ type Config struct {
 	AccessList      []string
 	LogLevel        string
 	AccessLog       string
-	Bind            string
-	BindTLS         string
-	BindDOH         string
-	BindDOQ         string
+	Bind            Addrs
+	BindTLS         Addrs
+	BindDOH         Addrs
+	BindDOQ         Addrs
 	TLSCertificate  string
 	TLSPrivateKey   string
 	API             string
@@ -684,6 +684,9 @@ version = "%s"
 directory = "db"
 
 # DNS server bind address and port
+# Each bind key takes one "host:port" or a list of them, for example
+# bind = ["192.0.2.53:53", "[2001:db8::53]:53"]
+# An empty host listens on every address and cannot be listed with others
 bind = ":53"
 
 # DNS-over-TLS (DoT) server bind address and port

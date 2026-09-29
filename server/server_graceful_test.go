@@ -14,10 +14,10 @@ func TestServerGracefulDegradation(t *testing.T) {
 	// DoH, DoH3 and DoQ listeners mark themselves non-critical, log,
 	// and let startup continue.
 	cfg := &config.Config{
-		Bind:           "127.0.0.1:0",
-		BindTLS:        "127.0.0.1:0",
-		BindDOH:        "127.0.0.1:0",
-		BindDOQ:        "127.0.0.1:0",
+		Bind:           config.Addrs{"127.0.0.1:0"},
+		BindTLS:        config.Addrs{"127.0.0.1:0"},
+		BindDOH:        config.Addrs{"127.0.0.1:0"},
+		BindDOQ:        config.Addrs{"127.0.0.1:0"},
 		TLSCertificate: "/nonexistent/cert.pem",
 		TLSPrivateKey:  "/nonexistent/key.pem",
 		QueryTimeout:   config.Duration{Duration: 5 * time.Second},
@@ -75,10 +75,10 @@ func TestServerWithValidCertificate(t *testing.T) {
 	writeCertAndKey(t, certPath, keyPath, cert, key)
 
 	cfg := &config.Config{
-		Bind:           "127.0.0.1:0",
-		BindTLS:        "127.0.0.1:0",
-		BindDOH:        "127.0.0.1:0",
-		BindDOQ:        "127.0.0.1:0",
+		Bind:           config.Addrs{"127.0.0.1:0"},
+		BindTLS:        config.Addrs{"127.0.0.1:0"},
+		BindDOH:        config.Addrs{"127.0.0.1:0"},
+		BindDOQ:        config.Addrs{"127.0.0.1:0"},
 		TLSCertificate: certPath,
 		TLSPrivateKey:  keyPath,
 		QueryTimeout:   config.Duration{Duration: 5 * time.Second},
@@ -133,9 +133,9 @@ func TestServerHasListenerReflectsServeState(t *testing.T) {
 	writeCertAndKey(t, certPath, keyPath, cert, key)
 
 	cfg := &config.Config{
-		Bind:           "127.0.0.1:0",
-		BindDOH:        "127.0.0.1:0",
-		BindDOQ:        "127.0.0.1:0",
+		Bind:           config.Addrs{"127.0.0.1:0"},
+		BindDOH:        config.Addrs{"127.0.0.1:0"},
+		BindDOQ:        config.Addrs{"127.0.0.1:0"},
 		TLSCertificate: certPath,
 		TLSPrivateKey:  keyPath,
 		QueryTimeout:   config.Duration{Duration: 5 * time.Second},
@@ -218,9 +218,9 @@ func TestServerRestartReleasesSockets(t *testing.T) {
 
 	// Use fixed ports on loopback so the second Run must re-bind them.
 	cfg := &config.Config{
-		Bind:           "127.0.0.1:0",
-		BindDOH:        "127.0.0.1:23234", // DoH3 also binds this UDP port
-		BindDOQ:        "127.0.0.1:23235",
+		Bind:           config.Addrs{"127.0.0.1:0"},
+		BindDOH:        config.Addrs{"127.0.0.1:23234"}, // DoH3 also binds this UDP port
+		BindDOQ:        config.Addrs{"127.0.0.1:23235"},
 		TLSCertificate: certPath,
 		TLSPrivateKey:  keyPath,
 		QueryTimeout:   config.Duration{Duration: 5 * time.Second},

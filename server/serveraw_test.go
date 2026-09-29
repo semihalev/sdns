@@ -90,7 +90,7 @@ func newRawTestServer(t *testing.T) *Server {
 	t.Cleanup(middleware.Reset)
 	middleware.Register("edns", func(cfg *config.Config) middleware.Handler { return edns.New(cfg) })
 	middleware.Register("raw-answer-stub", func(*config.Config) middleware.Handler { return rawAnswerStub{} })
-	cfg := &config.Config{Bind: "127.0.0.1:0"}
+	cfg := &config.Config{Bind: config.Addrs{"127.0.0.1:0"}}
 	middleware.Setup(cfg)
 	return New(cfg)
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -900,6 +901,45 @@ func TestLoadServeStaleMode(t *testing.T) {
 			t.Fatalf("%q: Load() error = %v, want it loaded", tc.lines, err)
 		case tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)):
 			t.Fatalf("%q: Load() error = %v, want %q", tc.lines, err, tc.want)
+		}
+	}
+}
+
+// TestLoadBindAddrs pins the two spellings a listener key takes, one
+// "host:port" string as configurations have always written it or a list of
+// them, and that anything else is refused rather than read as no address.
+func TestLoadBindAddrs(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want Addrs
+		err  string // "" for a config that loads
+	}{
+		{`bind = "127.0.0.1:5353"`, Addrs{"127.0.0.1:5353"}, ""},
+		{`bind = ["127.0.0.1:5353", "[::1]:5353"]`, Addrs{"127.0.0.1:5353", "[::1]:5353"}, ""},
+		{`bind = ["127.0.0.1:5353"]`, Addrs{"127.0.0.1:5353"}, ""},
+		{`bind = ""`, nil, ""},
+		{`bind = []`, nil, ""},
+		{`bind = 5353`, nil, "not int64"},
+		{`bind = ["127.0.0.1:5353", 5353]`, nil, "not int64"},
+		{`bind = ["127.0.0.1:5353", "127.0.0.1:5353"]`, nil, "listed twice"},
+	} {
+		tmpDir := t.TempDir()
+		cfgFile := filepath.Join(tmpDir, "sdns.conf")
+		content := fmt.Sprintf("version = %q\ndirectory = %q\nipv6access = true\ndnssec = \"off\"\nrootservers = [\"192.5.5.241:53\"]\n%s\n",
+			configver, filepath.Join(tmpDir, "db"), tc.line)
+		if err := os.WriteFile(cfgFile, []byte(content), 0644); err != nil { //nolint:gosec // G306 - test file
+			t.Fatal(err)
+		}
+		cfg, err := Load(cfgFile, "test")
+		switch {
+		case tc.err != "":
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Fatalf("%s: Load() error = %v, want %q", tc.line, err, tc.err)
+			}
+		case err != nil:
+			t.Fatalf("%s: Load() error = %v, want it loaded", tc.line, err)
+		case !slices.Equal(cfg.Bind, tc.want):
+			t.Fatalf("%s: bind = %q, want %q", tc.line, cfg.Bind, tc.want)
 		}
 	}
 }

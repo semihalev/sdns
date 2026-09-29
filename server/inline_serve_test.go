@@ -58,7 +58,7 @@ func newInlineTestServer(t *testing.T, witness *replayWitness) *Server {
 	middleware.Register("replay-witness", func(*config.Config) middleware.Handler { return witness })
 
 	cfg := &config.Config{ //nolint:gosec // G101, the cookie secret is a test fixture, not a credential
-		Bind:         "127.0.0.1:0",
+		Bind:         config.Addrs{"127.0.0.1:0"},
 		Expire:       600,
 		CacheSize:    10240,
 		CookieSecret: "6c6f6f6b61686172646c6f6f6b6168617264",

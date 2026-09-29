@@ -74,7 +74,7 @@ func TestStoppedMeansTheAddressIsFree(t *testing.T) {
 	addr := dualStackFreeAddr(t)
 
 	cfg := new(config.Config)
-	cfg.Bind = addr
+	cfg.Bind = config.Addrs{addr}
 	cfg.QueryTimeout.Duration = time.Second
 
 	for i := range 25 {
@@ -113,7 +113,7 @@ func TestStoppedIsNotAheadOfTheSockets(t *testing.T) {
 	addr := dualStackFreeAddr(t)
 
 	cfg := new(config.Config)
-	cfg.Bind = addr
+	cfg.Bind = config.Addrs{addr}
 	cfg.QueryTimeout.Duration = time.Second
 
 	for i := range 25 {
@@ -195,12 +195,12 @@ func TestQUICListenersReleasePortsBeforeStopped(t *testing.T) {
 		{
 			name:  "doq",
 			proto: "doq",
-			bind:  func(cfg *config.Config, addr string) { cfg.BindDOQ = addr },
+			bind:  func(cfg *config.Config, addr string) { cfg.BindDOQ = config.Addrs{addr} },
 		},
 		{
 			name:  "doh3",
 			proto: "doh3",
-			bind:  func(cfg *config.Config, addr string) { cfg.BindDOH = addr },
+			bind:  func(cfg *config.Config, addr string) { cfg.BindDOH = config.Addrs{addr} },
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -215,7 +215,7 @@ func TestQUICListenersReleasePortsBeforeStopped(t *testing.T) {
 
 			for i := range 25 {
 				cfg := &config.Config{
-					Bind:           "127.0.0.1:0",
+					Bind:           config.Addrs{"127.0.0.1:0"},
 					TLSCertificate: certPath,
 					TLSPrivateKey:  keyPath,
 					QueryTimeout:   config.Duration{Duration: time.Second},
