@@ -59,6 +59,13 @@ func TestValidateRejectsUnusableValues(t *testing.T) {
 		{"root server without port", Config{RootServers: []string{"192.0.2.1"}}, "rootservers"},
 		{"forwarder upstream", Config{ForwarderServers: []string{"nonsense"}}, "forwarderservers"},
 		{"DoT needs an IP", Config{ForwarderServers: []string{"tls://dns.example.com:853"}}, "forwarderservers"},
+		{"DoT needs an IP beside its name", Config{ForwarderServers: []string{"tls://dns.example.com:853#dns.example.com"}}, "forwarderservers"},
+		{"DoT name is a host name", Config{ForwarderServers: []string{"tls://192.0.2.1:853#not_a_host"}}, "forwarderservers"},
+		{"DoT name is not an address", Config{ForwarderServers: []string{"tls://192.0.2.1:853#192.0.2.1"}}, "forwarderservers"},
+		{"DoT name is not empty", Config{ForwarderServers: []string{"tls://192.0.2.1:853#"}}, "forwarderservers"},
+		{"forward zone DoT name", Config{ForwardZones: []ForwardZoneConfig{
+			{Name: "corp.example.", Servers: []string{"tls://10.0.0.54:853#-bad.example"}},
+		}}, "forward_zone"},
 		{"forward zone upstream", Config{ForwardZones: []ForwardZoneConfig{
 			{Name: "corp.example.", Servers: []string{"nonsense"}},
 		}}, "forward_zone"},
@@ -94,15 +101,16 @@ func TestValidateRejectsUnusableValues(t *testing.T) {
 
 func TestValidateAcceptsUsableValues(t *testing.T) {
 	cfg := Config{
-		DNSSEC:           "on",
-		LogLevel:         "info",
-		Bind:             ":53",
-		Nullroute:        "0.0.0.0",
-		Nullroutev6:      "::0",
-		AccessList:       []string{"0.0.0.0/0", "::0/0", "192.0.2.1/32"},
-		RootServers:      []string{"192.5.5.241:53"},
-		Root6Servers:     []string{"[2001:500:2f::f]:53"},
-		ForwarderServers: []string{"1.1.1.1:53", "tls://1.1.1.1:853", "https://cloudflare-dns.com/dns-query"},
+		DNSSEC:       "on",
+		LogLevel:     "info",
+		Bind:         ":53",
+		Nullroute:    "0.0.0.0",
+		Nullroutev6:  "::0",
+		AccessList:   []string{"0.0.0.0/0", "::0/0", "192.0.2.1/32"},
+		RootServers:  []string{"192.5.5.241:53"},
+		Root6Servers: []string{"[2001:500:2f::f]:53"},
+		ForwarderServers: []string{"1.1.1.1:53", "tls://1.1.1.1:853", "https://cloudflare-dns.com/dns-query",
+			"tls://9.9.9.9:853#dns.quad9.net", "tls://[2620:fe::fe]:853#dns.quad9.net."},
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() rejected a usable configuration: %v", err)
