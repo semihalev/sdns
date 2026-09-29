@@ -123,6 +123,19 @@ func TestDoTAuthenticatesTheConfiguredName(t *testing.T) {
 	}
 }
 
+// Names differing only in case are one name, so their repeats are one
+// upstream: they must not spend the attempts a query gets before a later,
+// different name is ever tried.
+func TestDoTNameRepeatsInAnotherCaseAreOneUpstream(t *testing.T) {
+	addr, roots, _ := startNamedDoTServer(t)
+
+	rcode := forwardOnce(t, roots,
+		"tls://"+addr+"#wrong.test", "tls://"+addr+"#WRONG.test", "tls://"+addr+"#Wrong.Test.", "tls://"+addr+"#dns.test")
+	if rcode != dns.RcodeSuccess {
+		t.Fatalf("rcode %s, want NOERROR from dns.test after one failed wrong.test", dns.RcodeToString[rcode])
+	}
+}
+
 // A name is part of what a DoT upstream is: one address under two names is
 // two servers, and a repeat of either is dropped.
 func TestDoTUpstreamsAreKeyedByName(t *testing.T) {
@@ -131,6 +144,7 @@ func TestDoTUpstreamsAreKeyedByName(t *testing.T) {
 		"tls://192.0.2.1:853#a.example",
 		"tls://192.0.2.1:853#b.example",
 		"tls://192.0.2.1:853#a.example",
+		"tls://192.0.2.1:853#A.Example.",
 		"tls://192.0.2.1:853",
 		"tls://192.0.2.1:853#bad_name",
 	}, time.Second, time.Second, "test")

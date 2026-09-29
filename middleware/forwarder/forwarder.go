@@ -158,8 +158,10 @@ func parseServers(list []string, dialTimeout, requestTimeout time.Duration, labe
 			endpoint = srv.DoHURL
 		}
 		// The authentication name is part of what an upstream is: one
-		// address under two names is two servers, each held to its own.
-		key := srv.Proto + "\x00" + middleware.CanonicalResolutionEndpoint(endpoint) + "#" + srv.AuthName
+		// address under two names is two servers, each held to its own. A
+		// certificate matches a name in any case, so the key folds it: a
+		// repeat in another case is the same server, not another attempt.
+		key := srv.Proto + "\x00" + middleware.CanonicalResolutionEndpoint(endpoint) + "#" + strings.ToLower(srv.AuthName)
 		if _, ok := seen[key]; ok {
 			return
 		}
