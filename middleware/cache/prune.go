@@ -14,15 +14,12 @@ import (
 
 // An expired answer leaves the positive cache when a lookup meets it or
 // when an insert evicts it. One nobody asks for again, under a capacity
-// that is rarely reached, stays in memory for good, counted as cached. The
-// pruner removes those: a background pass every pruneInterval, one small
-// step at a time (cache.Prune), resting pruneRest between steps so it takes
-// no more than a sliver of a core and never holds a segment lock for longer
-// than one step's slots.
-const (
-	pruneInterval = 5 * time.Minute
-	pruneRest     = 250 * time.Microsecond
-)
+// that is rarely reached, would stay in memory for good, counted as
+// cached. The pruner removes those without walking the cache: every answer
+// is filed in the cache's expiry index for the instant nothing can serve
+// it any more (lifeOf), and every pruneInterval the pruner opens the
+// buckets whose time has passed and removes what it finds there unservable.
+const pruneInterval = 10 * time.Second
 
 var cachePruned = metric.NewCounter(nil, prometheus.CounterOpts{
 	Name: "dns_cache_pruned_total",
@@ -60,40 +57,60 @@ func (s *Store) pruneLoop(p *pruner) {
 			return
 		case <-ticker.C:
 		}
-		cachePruned.Add(int64(s.prunePass(&p.stopped, pruneRest)))
+		cachePruned.Add(int64(s.prune()))
 	}
 }
 
-// prunePass walks the whole answer cache once, resting rest between steps,
-// and returns how many answers it removed. It ends early once stopped.
-func (s *Store) prunePass(stopped *atomic.Bool, rest time.Duration) int {
-	var (
-		cur     cache.PruneCursor
-		removed int
-	)
-	for !stopped.Load() {
-		now := time.Now()
-		dead := func(e *CacheEntry) bool { return s.unservable(e, now) }
-		take := func(e *CacheEntry) bool { return s.takeForPrune(e, now) }
-		n, done := s.positive.cache.Prune(&cur, dead, take)
-		removed += n
-		if done {
-			break
-		}
-		if rest > 0 {
-			time.Sleep(rest)
-		}
-	}
-	return removed
+// prune removes the answers whose expiry records have come due and that
+// nothing can serve any more, and returns how many.
+func (s *Store) prune() int {
+	return s.positive.cache.Expire(s.judgeExpired)
 }
 
-// takeForPrune is the removal's decision, under the segment's write lock:
-// e is still unservable, and the removal takes its refresh claim. A
-// refresh that claimed it first keeps it; one that tries after finds it
-// claimed and starts nothing, so no refresh is left writing back to an
-// entry already gone.
-func (s *Store) takeForPrune(e *CacheEntry, now time.Time) bool {
-	return s.unservable(e, now) && e.prefetch.CompareAndSwap(false, true)
+// judgeExpired is the verdict on an answer whose expiry record came due,
+// under its segment's write lock. An unservable answer is removed, and the
+// removal takes its refresh claim: a refresh that claimed it first keeps
+// it, and is looked at again later; one that tries after finds it claimed
+// and starts nothing, so no refresh is left writing back to an entry
+// already gone. A servable answer reports the end it has now, read at the
+// time of the verdict: an answer whose record came early, its lease on a
+// wall clock that stepped back, comes round again at that end.
+func (s *Store) judgeExpired(e *CacheEntry) (cache.Verdict, time.Time) {
+	now := time.Now()
+	if s.pruneClock != nil {
+		now = s.pruneClock()
+	}
+	if s.unservable(e, now) {
+		if e.prefetch.CompareAndSwap(false, true) {
+			return cache.Dead, time.Time{}
+		}
+		return cache.Busy, time.Time{}
+	}
+	if e.prefetch.Load() {
+		return cache.Busy, time.Time{}
+	}
+	return cache.Alive, s.servableUntil(e, now)
+}
+
+// servableUntil is the instant from which unservable holds for e (a
+// refresh claim aside): the earlier of its TTL and its lease, and, where
+// serve-stale may answer from it, the earlier of its lease and
+// serve_stale_max_ttl past its TTL. With neither of those it has no end,
+// the zero time.
+func (s *Store) servableUntil(e *CacheEntry, now time.Time) time.Time {
+	ttlRemaining, leaseRemaining := e.remainingBounds(now)
+	end, bounded := ttlRemaining, true
+	if s.cfg.ServeStale && staleEligible(e) {
+		maxStale := s.cfg.ServeStaleMaxTTL
+		end, bounded = ttlRemaining+maxStale, maxStale > 0
+	}
+	if !e.cutUntil.IsZero() && (!bounded || leaseRemaining < end) {
+		end, bounded = leaseRemaining, true
+	}
+	if !bounded {
+		return time.Time{}
+	}
+	return now.Add(end)
 }
 
 // unservable reports that nothing can answer from e again: it has expired,

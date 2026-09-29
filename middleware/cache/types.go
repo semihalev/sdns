@@ -88,7 +88,9 @@ type CacheEntry struct {
 	// Store/CacheEntry consumers writing responses directly.
 	compress bool
 	origTTL  uint32 // Original TTL in seconds for prefetch calculation
-	prefetch atomic.Bool
+	// prefetch is the refresh claim. Its word also holds the entry's mark
+	// in the answer cache's expiry index, which costs the entry nothing.
+	prefetch refreshClaim
 	// rateLimit is the per-entry rate limit (0 = no limit).
 	rateLimit  int32
 	rateLimKey uint64 // Key for shared rate limiter lookup
@@ -198,6 +200,19 @@ func (e *CacheEntry) setLease(cut lease.Lease) {
 func (e *CacheEntry) Sidecar() *middleware.Sidecar {
 	return e.sidecar.Load()
 }
+
+// refreshClaim is an entry's refresh claim, read and taken as an atomic
+// bool, kept in the owner's bit of the word it lends the expiry index.
+type refreshClaim struct {
+	cache.ExpiryMark
+}
+
+func (c *refreshClaim) Load() bool                         { return c.Flag() }
+func (c *refreshClaim) Store(v bool)                       { c.SetFlag(v) }
+func (c *refreshClaim) CompareAndSwap(old, next bool) bool { return c.CompareAndSwapFlag(old, next) }
+
+// expiryMark is the word e lends the answer cache's expiry index.
+func expiryMark(e *CacheEntry) *cache.ExpiryMark { return &e.prefetch.ExpiryMark }
 
 // CompareAndStampSidecar installs next if the entry still carries prev,
 // the restamp a serve performs when it finds a stale generation. The

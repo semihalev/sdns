@@ -245,6 +245,6 @@ func (s *Store) restoreRecord(rec *snapshotRecord, elapsed time.Duration, now ti
 		e.origTTL = rec.origTTL
 	}
 	s.stampSidecar(e, filtered)
-	s.positive.Set(key, e)
+	s.positive.setAt(key, e, now)
 	return restoreAdmitted
 }

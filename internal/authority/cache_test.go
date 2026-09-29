@@ -244,3 +244,39 @@ func TestSetUntilIfAbsent(t *testing.T) {
 		}
 	})
 }
+
+// Prune removes a delegation once its lease has run out and its expiry
+// record has come due, through either door that stores one, and keeps the
+// ones still live. Get alone reports an expired delegation and leaves it.
+func TestPruneRemovesExpiredDelegations(t *testing.T) {
+	nscache := NewCache()
+	base := time.Now()
+	cur := base
+	nscache.now = func() time.Time { return cur }
+	nscache.cache.SetExpiryClock(func() time.Time { return cur })
+	servers := &Servers{List: []*Server{NewServer("1.2.3.4:53", IPv4)}}
+
+	nscache.SetUntil(1, nil, servers, lease.Until(base.Add(10*time.Second)))
+	nscache.SetUntilIfAbsent(2, nil, servers, lease.Until(base.Add(20*time.Second)))
+	nscache.SetUntil(3, nil, servers, lease.Until(base.Add(time.Hour)))
+
+	// Buckets are 12h/256, about 169 s wide: both short leases have run
+	// out and their buckets have passed by 400 s.
+	cur = base.Add(400 * time.Second)
+	if _, err := nscache.Get(1); err == nil {
+		t.Fatal("the 10 s delegation is live at 400 s")
+	}
+	if n := nscache.Len(); n != 3 {
+		t.Fatalf("Get dropped something: %d held, want 3", n)
+	}
+	if removed := nscache.Prune(); removed != 2 {
+		t.Fatalf("pruned %d, want the 2 expired", removed)
+	}
+	if _, err := nscache.Get(3); err != nil {
+		t.Fatalf("the live delegation: %v", err)
+	}
+	cur = base.Add(time.Hour + 400*time.Second)
+	if removed := nscache.Prune(); removed != 1 || nscache.Len() != 0 {
+		t.Fatalf("pruned %d, %d left once the hour ran out; want 1 and 0", removed, nscache.Len())
+	}
+}
