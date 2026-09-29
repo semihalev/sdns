@@ -704,7 +704,7 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Pr
 		ttl := capTTL(s.positive.ttl.Bound(msgTTL))
 		if ttl > 0 {
 			if entry := newEntry(filtered, ttl); entry != nil {
-				s.positive.Set(key, entry)
+				s.positive.setAt(key, entry, now)
 			}
 		}
 		// A scoped write has no source prefix here (only its already-hashed

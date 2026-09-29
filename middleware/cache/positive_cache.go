@@ -74,7 +74,13 @@ func (pc *PositiveCache) retained(key uint64) (*CacheEntry, bool) {
 
 // (*PositiveCache).Set set stores an entry in the positive cache.
 func (pc *PositiveCache) Set(key uint64, entry *CacheEntry) {
-	pc.cache.AddFor(key, entry, pc.lifeOf(entry, time.Now()))
+	pc.setAt(key, entry, time.Now())
+}
+
+// setAt is Set for an admission that already read the clock: now is the
+// instant entry was stored at, and its life is counted from it.
+func (pc *PositiveCache) setAt(key uint64, entry *CacheEntry, now time.Time) {
+	pc.cache.AddFor(key, entry, pc.lifeOf(entry, now))
 }
 
 // (*PositiveCache).Remove remove deletes an entry from the positive cache.
