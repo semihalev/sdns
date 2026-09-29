@@ -62,6 +62,9 @@ type Store struct {
 	// pruner is the background pass removing answers nothing can serve
 	// again (prune.go); nil for a Store the owning Cache did not start.
 	pruner *pruner
+	// pruneClock, when set, is the time the pruner judges answers by, for
+	// tests that move time by hand; nil is time.Now.
+	pruneClock func() time.Time
 }
 
 // SetSidecarEvaluator wires the admission half of the sidecar seam. Call
@@ -128,7 +131,7 @@ func NewStore(positive *PositiveCache, negative *NegativeCache, cfg CacheConfig,
 		proofMaxTTL = cfg.MaxTTL
 	}
 
-	return &Store{
+	s := &Store{
 		positive:     positive,
 		negative:     negative,
 		failure:      failure,
@@ -136,6 +139,10 @@ func NewStore(positive *PositiveCache, negative *NegativeCache, cfg CacheConfig,
 		denialProofs: newDenialProofCache(proofSize, proofMaxTTL),
 		cfg:          cfg,
 	}
+	if positive != nil {
+		positive.life = s.lifeOf
+	}
+	return s
 }
 
 // Lookup returns the cache entry for req without materialising a
@@ -775,7 +782,7 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 		if entry == nil {
 			return false
 		}
-		return s.positive.cache.CompareAndSwap(key, expected, entry)
+		return s.positive.cache.CompareAndSwapFor(key, expected, entry, s.positive.lifeOf(entry, now))
 	case dnsutil.TypeServerFailure:
 		entry := inherit(newCacheEntryAt(filtered, s.negative.ttl.Calculate(msgTTL), s.cfg.RateLimit, key, now))
 		if entry == nil {

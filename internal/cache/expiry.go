@@ -132,6 +132,15 @@ func (c *Cache[V]) CompareAndSwapFor(key uint64, old, value V, life time.Duratio
 	return true
 }
 
+// SetExpiryClock replaces the clock the expiry index files and fires by,
+// time since some fixed start, for tests that move time by hand. It must
+// be set before the first insert.
+func (c *Cache[V]) SetExpiryClock(now func() time.Duration) {
+	if c.exp != nil {
+		c.exp.now = func() int64 { return int64(now()) }
+	}
+}
+
 // Expire fires every bucket whose time has passed and returns how many
 // values it removed. judge runs under the key's segment write lock, one
 // key per hold: it must be quick and must not touch this cache. It

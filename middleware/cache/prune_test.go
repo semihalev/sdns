@@ -9,6 +9,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/cache"
+	"github.com/semihalev/sdns/internal/lease"
 )
 
 // An answer is pruned once nothing can serve it again: past its TTL
@@ -64,17 +65,61 @@ func TestUnservable(t *testing.T) {
 			}
 			e := seedStaleEntry(t, c, resp, netip.Prefix{}, tc.staleFor, tc.leaseRemaining)
 			e.prefetch.Store(tc.refreshing)
-			if got := c.store.unservable(e, time.Now()); got != tc.want {
+			now := time.Now()
+			if got := c.store.unservable(e, now); got != tc.want {
 				t.Fatalf("unservable = %v, want %v", got, tc.want)
+			}
+			if !tc.refreshing {
+				checkLifeOf(t, c.store, e, now)
 			}
 		})
 	}
 }
 
-// A pass removes the expired answers and keeps the fresh ones.
-func TestPrunePass(t *testing.T) {
+// checkLifeOf pins lifeOf to unservable: an answer's expiry record is
+// filed for the instant unservable starts to hold, so up to it the answer
+// is servable and from just past it on it is not. Filed early, the record
+// would find the answer alive and drop it, leaving the answer to eviction;
+// filed late, the pruner would only be late.
+func checkLifeOf(t *testing.T, s *Store, e *CacheEntry, now time.Time) {
+	t.Helper()
+	const eps = time.Millisecond
+	life := s.lifeOf(e, now)
+	if life == cache.Forever {
+		if s.unservable(e, now.Add(100*365*24*time.Hour)) {
+			t.Fatal("lifeOf has no end, but the answer becomes unservable")
+		}
+		return
+	}
+	if life > eps && s.unservable(e, now.Add(life-eps)) {
+		t.Fatalf("unservable before the life lifeOf gives (%v)", life)
+	}
+	if !s.unservable(e, now.Add(max(life, 0)+eps)) {
+		t.Fatalf("still servable past the life lifeOf gives (%v)", life)
+	}
+}
+
+// expiryClock moves the pruner's time by hand, the expiry index's and the
+// one it judges answers by together: advance shifts both ahead of real
+// time. It is set before anything is stored.
+func expiryClock(c *Cache) (advance func(time.Duration)) {
+	start := time.Now()
+	var shift atomic.Int64
+	c.store.positive.cache.SetExpiryClock(func() time.Duration {
+		return time.Since(start) + time.Duration(shift.Load())
+	})
+	c.store.pruneClock = func() time.Time {
+		return time.Now().Add(time.Duration(shift.Load()))
+	}
+	return func(d time.Duration) { shift.Add(int64(d)) }
+}
+
+// The pruner removes the expired answers once their records come due, and
+// keeps the fresh ones.
+func TestPruneRemovesTheUnservable(t *testing.T) {
 	c := New(&config.Config{CacheSize: 4096})
 	defer c.Stop()
+	advance := expiryClock(c)
 	for i, name := range []string{"a.example.", "b.example.", "c.example.", "d.example."} {
 		req := new(dns.Msg)
 		req.SetQuestion(name, dns.TypeA)
@@ -84,48 +129,102 @@ func TestPrunePass(t *testing.T) {
 		}
 		seedStaleEntry(t, c, staleTestAnswer(req, "192.0.2.1"), netip.Prefix{}, staleFor, 0)
 	}
-	var stopped atomic.Bool
-	if removed := c.store.prunePass(&stopped, 0); removed != 2 {
+	if removed := c.store.prune(); removed != 0 {
+		t.Fatalf("removed %d before any bucket passed", removed)
+	}
+	advance(15 * time.Second) // one bucket, about 14 s
+	if removed := c.store.prune(); removed != 2 {
 		t.Fatalf("removed %d, want the 2 expired", removed)
 	}
 	if n := c.store.PositiveLen(); n != 2 {
 		t.Fatalf("%d answers left, want the 2 fresh", n)
 	}
+	// A minute later the fresh ones have run out too.
+	advance(2 * time.Minute)
+	if removed := c.store.prune(); removed != 2 || c.store.PositiveLen() != 0 {
+		t.Fatalf("removed %d once the rest expired, want 2", removed)
+	}
 }
 
 // A refresh and the removal race for the entry's claim, and only one wins.
-// A claim taken between the pass selecting the entry and removing it keeps
-// the entry for the refresh; a removal that wins holds the claim, so a
-// refresh arriving after starts nothing.
+// An entry a refresh has claimed stays for the refresh and is looked at
+// again later; a removal that wins holds the claim, so a refresh arriving
+// after starts nothing.
 func TestPruneAndRefreshShareTheClaim(t *testing.T) {
 	for _, refreshFirst := range []bool{true, false} {
 		t.Run(map[bool]string{true: "the refresh claims first", false: "the removal claims first"}[refreshFirst], func(t *testing.T) {
 			c := New(&config.Config{CacheSize: 1024})
 			defer c.Stop()
+			advance := expiryClock(c)
 			req := new(dns.Msg)
 			req.SetQuestion("claim.example.", dns.TypeA)
 			e := seedStaleEntry(t, c, staleTestAnswer(req, "192.0.2.1"), netip.Prefix{}, time.Minute, 0)
-			now := time.Now()
-			var cur cache.PruneCursor
-			for {
-				_, done := c.store.positive.cache.Prune(&cur, func(v *CacheEntry) bool {
-					selected := c.store.unservable(v, now)
-					if selected && refreshFirst {
-						v.prefetch.Store(true) // a refresh claims it between the scan and the removal
-					}
-					return selected
-				}, func(v *CacheEntry) bool { return c.store.takeForPrune(v, now) })
-				if done {
-					break
-				}
-			}
+			e.prefetch.Store(refreshFirst)
+			advance(15 * time.Second)
+			c.store.prune()
 			present := c.store.PositiveLen() == 1
 			if refreshFirst != present {
 				t.Fatalf("entry present %v after the pass, want %v", present, refreshFirst)
 			}
-			if !refreshFirst && e.prefetch.CompareAndSwap(false, true) {
-				t.Fatal("a refresh could claim an entry the removal took")
+			if !refreshFirst {
+				if e.prefetch.CompareAndSwap(false, true) {
+					t.Fatal("a refresh could claim an entry the removal took")
+				}
+				return
+			}
+			// The refresh gives up its claim. A busy entry is filed a bucket
+			// on, which lands it up to two buckets away, so two later it
+			// is gone.
+			e.prefetch.Store(false)
+			advance(30 * time.Second)
+			if removed := c.store.prune(); removed != 1 {
+				t.Fatalf("a released entry: %d removed, want 1", removed)
 			}
 		})
+	}
+}
+
+// An answer serve-stale may still answer from stays until
+// serve_stale_max_ttl past its TTL, then goes.
+func TestPruneWaitsOutServeStale(t *testing.T) {
+	cfg := &config.Config{CacheSize: 1024, ServeStale: true}
+	cfg.ServeStaleMaxTTL.Duration = time.Hour
+	c := New(cfg)
+	defer c.Stop()
+	advance := expiryClock(c)
+	req := new(dns.Msg)
+	req.SetQuestion("stale.example.", dns.TypeA)
+	seedStaleEntry(t, c, staleTestAnswer(req, "192.0.2.1"), netip.Prefix{}, time.Minute, 0)
+
+	advance(15 * time.Second)
+	if removed := c.store.prune(); removed != 0 {
+		t.Fatal("removed an answer serve-stale may still answer from")
+	}
+	// Its stale window ends 59 minutes from now, inside the next hour.
+	advance(time.Hour)
+	if removed := c.store.prune(); removed != 1 {
+		t.Fatalf("past its stale window: %d removed, want 1", removed)
+	}
+}
+
+// A refresh that replaces an answer leaves the new one to its own record:
+// the old record finds it servable and does not remove it.
+func TestPruneLeavesARefreshedAnswer(t *testing.T) {
+	c := New(&config.Config{CacheSize: 1024})
+	defer c.Stop()
+	advance := expiryClock(c)
+	req := new(dns.Msg)
+	req.SetQuestion("refreshed.example.", dns.TypeA)
+	old := seedStaleEntry(t, c, staleTestAnswer(req, "192.0.2.1"), netip.Prefix{}, -10*time.Second, 0)
+	key := CacheKey{Question: req.Question[0]}.Hash()
+	if !c.store.ReplaceIfCurrent(key, old, staleTestAnswer(req, "192.0.2.2"), lease.Lease{}) {
+		t.Fatal("the refresh did not replace the answer")
+	}
+	advance(30 * time.Second) // past the old answer's end, not the new one's
+	if removed := c.store.prune(); removed != 0 {
+		t.Fatal("the old record removed the refreshed answer")
+	}
+	if c.store.PositiveLen() != 1 {
+		t.Fatal("the refreshed answer is gone")
 	}
 }

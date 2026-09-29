@@ -255,14 +255,14 @@ func BenchmarkExpiryInsert(b *testing.B) {
 	b.Run("Add", func(b *testing.B) {
 		c := New[*expiring](1 << 20)
 		b.ReportAllocs()
-		for i := range uint64(b.N) {
+		for i := uint64(0); b.Loop(); i++ {
 			c.Add(i&(1<<20-1)+1, v)
 		}
 	})
 	b.Run("AddFor", func(b *testing.B) {
 		c := NewWithExpiry[*expiring](1<<20, 4*time.Hour)
 		b.ReportAllocs()
-		for i := range uint64(b.N) {
+		for i := uint64(0); b.Loop(); i++ {
 			c.AddFor(i&(1<<20-1)+1, v, time.Duration(i%3600)*time.Second)
 		}
 		var bytes int
@@ -275,4 +275,25 @@ func BenchmarkExpiryInsert(b *testing.B) {
 			b.ReportMetric(float64(bytes)/float64(n), "index-B/record")
 		}
 	})
+}
+
+// Records of evicted values find nothing when they fire, and the count
+// stays true: a cache far over its capacity evicts most of what it was
+// given, and expiring the rest leaves it empty, not below zero.
+func TestExpireAfterEviction(t *testing.T) {
+	c, clock, judge := testExpiry(t, 64)
+	for k := uint64(1); k <= 5000; k++ {
+		put(c, clock, k, &expiring{}, time.Duration(k%30+1)*time.Second)
+	}
+	if n := c.Len(); n > 64 {
+		t.Fatalf("%d stored, over the capacity of 64", n)
+	}
+	kept := c.Len()
+	clock.Store(int64(40 * time.Second))
+	if removed := c.Expire(judge); removed != kept {
+		t.Fatalf("removed %d, want the %d eviction left", removed, kept)
+	}
+	if n := c.Len(); n != 0 {
+		t.Fatalf("Len %d after everything expired", n)
+	}
 }

@@ -6,20 +6,43 @@ import (
 	"github.com/semihalev/sdns/internal/cache"
 )
 
+// answerExpiryHorizon is the span of the answer cache's expiry ring: a
+// bucket is 1/256 of it, about 14 s, and an answer that can be served for
+// longer waits in the far list until it comes within reach.
+const answerExpiryHorizon = time.Hour
+
 // PositiveCache handles successful DNS responses.
 type PositiveCache struct {
 	cache   *cache.Cache[*CacheEntry]
 	ttl     TTLManager
 	metrics *CacheMetrics
+
+	// life is how long from now an entry can still be served, the instant
+	// its expiry record is filed for. The Store sets it from its
+	// serve-stale bounds; without one, an entry lives for its TTL and
+	// lease.
+	life func(e *CacheEntry, now time.Time) time.Duration
 }
 
 // NewPositiveCache creates a new positive cache.
 func NewPositiveCache(size int, minTTL, maxTTL time.Duration, metrics *CacheMetrics) *PositiveCache {
 	return &PositiveCache{
-		cache:   cache.New[*CacheEntry](size),
+		cache:   cache.NewWithExpiry[*CacheEntry](size, answerExpiryHorizon),
 		ttl:     NewTTLManager(minTTL, maxTTL),
 		metrics: metrics,
 	}
+}
+
+// lifeOf is how long from now e can still be served.
+func (pc *PositiveCache) lifeOf(e *CacheEntry, now time.Time) time.Duration {
+	if pc.life != nil {
+		return pc.life(e, now)
+	}
+	ttl, lease := e.remainingBounds(now)
+	if !e.cutUntil.IsZero() && lease < ttl {
+		return lease
+	}
+	return ttl
 }
 
 // (*PositiveCache).Get get retrieves an entry from the positive cache.
@@ -51,7 +74,7 @@ func (pc *PositiveCache) retained(key uint64) (*CacheEntry, bool) {
 
 // (*PositiveCache).Set set stores an entry in the positive cache.
 func (pc *PositiveCache) Set(key uint64, entry *CacheEntry) {
-	pc.cache.Add(key, entry)
+	pc.cache.AddFor(key, entry, pc.lifeOf(entry, time.Now()))
 }
 
 // (*PositiveCache).Remove remove deletes an entry from the positive cache.
