@@ -6,7 +6,7 @@ order: 3
 description: Every metric sdns exports, what it means, and the queries worth building a dashboard from.
 ---
 
-sdns exports 70 metrics in Prometheus format on the API listener, alongside the
+sdns exports 72 metrics in Prometheus format on the API listener, alongside the
 Go runtime and process collectors.
 
 ```toml
@@ -84,6 +84,8 @@ is served straight from stored bytes rather than being re-encoded.
 |---|---|---|---|
 | `dns_resolver_failures_total` | counter | `reason` | Recursive resolution failures |
 | `dns_resolver_dnssec_failures_total` | counter | `reason` | DNSSEC validation failures |
+| `dns_resolver_cache_size` | gauge | `type` | Entries the resolver's own caches hold, `delegation`, `glue_v4` and `glue_v6`, expired ones not yet pruned included |
+| `dns_resolver_cache_pruned_total` | counter | `type` | Expired delegations and glue the resolver's pruner removed |
 | `dns_circuit_breaker_trips_total` | counter | | Resolver circuit breaker opened (5 consecutive failures) |
 | `dns_circuit_breaker_resets_total` | counter | | An open breaker closed again |
 | `dns_trust_anchor_refresh_total` | counter | `result` | RFC 5011 refresh attempts, by terminal result |
@@ -97,6 +99,11 @@ your traffic, is otherwise invisible.
 
 `dns_trust_anchor_lifecycle_total` is quiet for years and then matters
 enormously. Watch it around a root KSK rollover.
+
+`dns_resolver_cache_size` is refreshed every 30 seconds, when the pruner runs.
+Delegations settle where the pruner keeps up with new zones, well under the
+cap of 262,144 per cache; a count pinned at the cap means traffic touches new
+zones faster than their leases run out.
 
 ## Recursion work
 
