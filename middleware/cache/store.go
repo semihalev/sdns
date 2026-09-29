@@ -140,7 +140,7 @@ func NewStore(positive *PositiveCache, negative *NegativeCache, cfg CacheConfig,
 		cfg:          cfg,
 	}
 	if positive != nil {
-		positive.life = s.lifeOf
+		positive.until = s.servableUntil
 	}
 	return s
 }
@@ -782,7 +782,7 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 		if entry == nil {
 			return false
 		}
-		return s.positive.cache.CompareAndSwapFor(key, expected, entry, s.positive.lifeOf(entry, now))
+		return s.positive.cache.CompareAndSwapUntil(key, expected, entry, s.positive.servableUntil(entry, now))
 	case dnsutil.TypeServerFailure:
 		entry := inherit(newCacheEntryAt(filtered, s.negative.ttl.Calculate(msgTTL), s.cfg.RateLimit, key, now))
 		if entry == nil {

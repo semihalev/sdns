@@ -17,11 +17,11 @@ type PositiveCache struct {
 	ttl     TTLManager
 	metrics *CacheMetrics
 
-	// life is how long from now an entry can still be served, the instant
-	// its expiry record is filed for. The Store sets it from its
-	// serve-stale bounds; without one, an entry lives for its TTL and
-	// lease.
-	life func(e *CacheEntry, now time.Time) time.Duration
+	// until is the instant from which an entry can no longer be served,
+	// the one its expiry record is filed for; the zero time is none. The
+	// Store sets it from its serve-stale bounds; without one, an entry
+	// lives for its TTL and lease.
+	until func(e *CacheEntry, now time.Time) time.Time
 }
 
 // NewPositiveCache creates a new positive cache.
@@ -33,16 +33,16 @@ func NewPositiveCache(size int, minTTL, maxTTL time.Duration, metrics *CacheMetr
 	}
 }
 
-// lifeOf is how long from now e can still be served.
-func (pc *PositiveCache) lifeOf(e *CacheEntry, now time.Time) time.Duration {
-	if pc.life != nil {
-		return pc.life(e, now)
+// servableUntil is the instant from which e can no longer be served.
+func (pc *PositiveCache) servableUntil(e *CacheEntry, now time.Time) time.Time {
+	if pc.until != nil {
+		return pc.until(e, now)
 	}
 	ttl, lease := e.remainingBounds(now)
 	if !e.cutUntil.IsZero() && lease < ttl {
-		return lease
+		return now.Add(lease)
 	}
-	return ttl
+	return now.Add(ttl)
 }
 
 // (*PositiveCache).Get get retrieves an entry from the positive cache.
@@ -78,9 +78,9 @@ func (pc *PositiveCache) Set(key uint64, entry *CacheEntry) {
 }
 
 // setAt is Set for an admission that already read the clock: now is the
-// instant entry was stored at, and its life is counted from it.
+// instant entry was stored at, and its end is placed from it.
 func (pc *PositiveCache) setAt(key uint64, entry *CacheEntry, now time.Time) {
-	pc.cache.AddFor(key, entry, pc.lifeOf(entry, now))
+	pc.cache.AddUntil(key, entry, pc.servableUntil(entry, now))
 }
 
 // (*PositiveCache).Remove remove deletes an entry from the positive cache.

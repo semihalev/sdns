@@ -87,27 +87,32 @@ func (s *Store) judgeExpired(e *CacheEntry) (cache.Verdict, time.Duration) {
 	if e.prefetch.Load() {
 		return cache.Busy, 0
 	}
-	return cache.Alive, s.lifeOf(e, now)
+	until := s.servableUntil(e, now)
+	if until.IsZero() {
+		return cache.Alive, 0
+	}
+	return cache.Alive, until.Sub(now)
 }
 
-// lifeOf is how long from now e can still be served, the instant from
-// which unservable holds for it (a refresh claim aside): the earlier of
-// its TTL and its lease, and, where serve-stale may answer from it, the
-// earlier of its lease and serve_stale_max_ttl past its TTL, or no end
-// with neither.
-func (s *Store) lifeOf(e *CacheEntry, now time.Time) time.Duration {
+// servableUntil is the instant from which unservable holds for e (a
+// refresh claim aside): the earlier of its TTL and its lease, and, where
+// serve-stale may answer from it, the earlier of its lease and
+// serve_stale_max_ttl past its TTL. With neither of those it has no end,
+// the zero time.
+func (s *Store) servableUntil(e *CacheEntry, now time.Time) time.Time {
 	ttlRemaining, leaseRemaining := e.remainingBounds(now)
-	end := ttlRemaining
+	end, bounded := ttlRemaining, true
 	if s.cfg.ServeStale && staleEligible(e) {
-		end = cache.Forever
-		if maxStale := s.cfg.ServeStaleMaxTTL; maxStale > 0 {
-			end = ttlRemaining + maxStale
-		}
+		maxStale := s.cfg.ServeStaleMaxTTL
+		end, bounded = ttlRemaining+maxStale, maxStale > 0
 	}
-	if !e.cutUntil.IsZero() && leaseRemaining < end {
-		end = leaseRemaining
+	if !e.cutUntil.IsZero() && (!bounded || leaseRemaining < end) {
+		end, bounded = leaseRemaining, true
 	}
-	return end
+	if !bounded {
+		return time.Time{}
+	}
+	return now.Add(end)
 }
 
 // unservable reports that nothing can answer from e again: it has expired,

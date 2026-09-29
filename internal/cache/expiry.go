@@ -1,23 +1,23 @@
 package cache
 
 import (
-	"math"
 	"sync"
 	"time"
 )
 
 // The expiry index finds the values whose time has come without walking
-// the cache. Each insert that states a lifetime files its key, 8 bytes,
-// in the bucket of the instant its value can be dead by; Expire opens only
-// the buckets whose time has passed and asks the owner about each key
-// there. The index holds keys, not values: a record outlives the value it
-// was filed for when that value is replaced or removed, and the owner's
+// the cache. Each insert that states an end files its key, 8 bytes, in the
+// bucket of the instant its value can be dead by; Expire opens only the
+// buckets whose time has passed and asks the owner about each key there.
+// The index holds keys, not values: a record outlives the value it was
+// filed for when that value is replaced or removed, and the owner's
 // verdict on whatever the key now holds sorts that out.
 //
 // Buckets form a ring of expiryBuckets slots, gran apart, in expiryShards
-// independent shards so writers rarely meet. A lifetime beyond the ring
-// goes to the shard's far list, which is filed again once per turn of the
-// ring.
+// independent shards so writers rarely meet. An end beyond the ring goes
+// to the shard's far list, which is filed again once per turn of the ring.
+// Filing reads no clock: an end is placed against the index's epoch, and
+// the ring against the first bucket still to fire.
 const (
 	expiryBuckets = 256
 	expiryShards  = 16
@@ -32,8 +32,9 @@ type Verdict uint8
 
 const (
 	// Alive: the value is not dead yet. A ring record is dropped, the
-	// value's own record covers it (see AddFor); a far record is filed
-	// again at the lifetime the owner reports.
+	// value's own record covers it (see AddUntil); a far record is filed
+	// again at the time the owner reports it has left, or dropped when
+	// that is not positive, for a value with no end.
 	Alive Verdict = iota
 	// Dead: remove the value.
 	Dead
@@ -49,8 +50,9 @@ type expiryShard struct {
 }
 
 type expiryIndex struct {
-	gran   int64 // nanoseconds a bucket spans
-	now    func() int64
+	gran   int64     // nanoseconds a bucket spans
+	epoch  time.Time // ends are filed as nanoseconds since it
+	now    func() time.Time
 	run    sync.Mutex // one Expire at a time
 	shards [expiryShards]expiryShard
 }
@@ -60,33 +62,21 @@ func newExpiryIndex(horizon time.Duration) *expiryIndex {
 	if gran < int64(time.Second) {
 		gran = int64(time.Second)
 	}
-	epoch := time.Now()
 	return &expiryIndex{
-		gran: gran,
-		now:  func() int64 { return int64(time.Since(epoch)) },
+		gran:  gran,
+		epoch: time.Now(),
+		now:   time.Now,
 	}
 }
 
-// Forever is the lifetime of a value with no end: AddFor files nothing
-// for it.
-const Forever = time.Duration(math.MaxInt64)
-
-// add files key to fire once life has passed. A life already over, one
-// computed from a deadline that passed on the way here, is due now.
-func (x *expiryIndex) add(key uint64, life time.Duration) {
-	if life == Forever {
-		return
-	}
-	life = max(life, 0)
+// add files key to fire once at, nanoseconds since the epoch, has passed.
+// An end already past is due in the first bucket still to fire.
+func (x *expiryIndex) add(key uint64, at int64) {
 	sh := &x.shards[key%expiryShards]
-	now := x.now()
 	sh.mu.Lock()
-	// The bucket that holds the instant life ends: firing it, which waits
-	// for its whole span to pass, finds the value dead.
-	b := sh.next + expiryBuckets // far unless it fits
-	if int64(life) < expiryBuckets*x.gran {
-		b = max((now+int64(life))/x.gran, sh.next)
-	}
+	// The bucket that holds at: firing it, which waits for its whole span
+	// to pass, finds the value dead.
+	b := max(at/x.gran, sh.next)
 	if b-sh.next >= expiryBuckets {
 		sh.far = append(sh.far, key)
 	} else {
@@ -96,48 +86,58 @@ func (x *expiryIndex) add(key uint64, life time.Duration) {
 	sh.mu.Unlock()
 }
 
-// AddFor is Add for a value that can be dead by life from now, filing its
-// key in the expiry index. life must be an upper bound: a value the
-// verdict finds alive when its own record fires is taken for a replaced
-// one and is left to eviction. Forever files nothing, for a value with no
-// end.
-func (c *Cache[V]) AddFor(key uint64, value V, life time.Duration) {
+// addUntil files key for until; the zero time, no end, files nothing.
+// Reading a monotonic until against the epoch is arithmetic, not a clock
+// read. A wall-clock until is placed by the wall clock, so a wall clock
+// stepped back after filing fires its record early: the value is found
+// alive, the record dropped, and the value left to eviction.
+func (x *expiryIndex) addUntil(key uint64, until time.Time) {
+	if until.IsZero() {
+		return
+	}
+	x.add(key, int64(until.Sub(x.epoch)))
+}
+
+// AddUntil is Add for a value that can be dead by until, filing its key
+// in the expiry index. until must be an upper bound: a value the verdict
+// finds alive when its own record fires is taken for a replaced one and is
+// left to eviction. The zero time files nothing, for a value with no end.
+func (c *Cache[V]) AddUntil(key uint64, value V, until time.Time) {
 	c.data.SetWithCap(key, value, c.maxSize)
 	if c.exp != nil {
-		c.exp.add(key, life)
+		c.exp.addUntil(key, until)
 	}
 }
 
-// AddIfAbsentFor is AddIfAbsent filing the key as AddFor does, when value
-// was stored.
-func (c *Cache[V]) AddIfAbsentFor(key uint64, value V, life time.Duration) bool {
+// AddIfAbsentUntil is AddIfAbsent filing the key as AddUntil does, when
+// value was stored.
+func (c *Cache[V]) AddIfAbsentUntil(key uint64, value V, until time.Time) bool {
 	if !c.AddIfAbsent(key, value) {
 		return false
 	}
 	if c.exp != nil {
-		c.exp.add(key, life)
+		c.exp.addUntil(key, until)
 	}
 	return true
 }
 
-// CompareAndSwapFor is CompareAndSwap filing the key as AddFor does, when
-// value was stored.
-func (c *Cache[V]) CompareAndSwapFor(key uint64, old, value V, life time.Duration) bool {
+// CompareAndSwapUntil is CompareAndSwap filing the key as AddUntil does,
+// when value was stored.
+func (c *Cache[V]) CompareAndSwapUntil(key uint64, old, value V, until time.Time) bool {
 	if !c.CompareAndSwap(key, old, value) {
 		return false
 	}
 	if c.exp != nil {
-		c.exp.add(key, life)
+		c.exp.addUntil(key, until)
 	}
 	return true
 }
 
-// SetExpiryClock replaces the clock the expiry index files and fires by,
-// time since some fixed start, for tests that move time by hand. It must
-// be set before the first insert.
-func (c *Cache[V]) SetExpiryClock(now func() time.Duration) {
+// SetExpiryClock replaces the clock Expire fires by, for tests that move
+// time by hand.
+func (c *Cache[V]) SetExpiryClock(now func() time.Time) {
 	if c.exp != nil {
-		c.exp.now = func() int64 { return int64(now()) }
+		c.exp.now = now
 	}
 }
 
@@ -153,7 +153,8 @@ func (c *Cache[V]) Expire(judge func(V) (Verdict, time.Duration)) (removed int) 
 	}
 	x.run.Lock()
 	defer x.run.Unlock()
-	due := x.now() / x.gran // every bucket before it has passed
+	now := int64(x.now().Sub(x.epoch))
+	due := now / x.gran // every bucket before it has passed
 	for s := range x.shards {
 		sh := &x.shards[s]
 		for {
@@ -173,8 +174,8 @@ func (c *Cache[V]) Expire(judge func(V) (Verdict, time.Duration)) (removed int) 
 			sh.next = b + 1
 			sh.mu.Unlock()
 
-			removed += c.fire(keys, false, judge)
-			removed += c.fire(far, true, judge)
+			removed += c.fire(keys, false, now, judge)
+			removed += c.fire(far, true, now, judge)
 
 			if cap(keys) <= expiryKeepCap {
 				sh.mu.Lock()
@@ -189,7 +190,7 @@ func (c *Cache[V]) Expire(judge func(V) (Verdict, time.Duration)) (removed int) 
 }
 
 // fire judges the value each key holds now.
-func (c *Cache[V]) fire(keys []uint64, far bool, judge func(V) (Verdict, time.Duration)) (removed int) {
+func (c *Cache[V]) fire(keys []uint64, far bool, now int64, judge func(V) (Verdict, time.Duration)) (removed int) {
 	m := c.data.data
 	for _, key := range keys {
 		seg := m.getSegment(key)
@@ -211,9 +212,9 @@ func (c *Cache[V]) fire(keys []uint64, far bool, judge func(V) (Verdict, time.Du
 		seg.rwlock.Unlock()
 		switch {
 		case verdict == Busy:
-			c.exp.add(key, time.Duration(c.exp.gran))
-		case far:
-			c.exp.add(key, left)
+			c.exp.add(key, now+c.exp.gran)
+		case far && left > 0:
+			c.exp.add(key, now+int64(left))
 		}
 	}
 	return removed

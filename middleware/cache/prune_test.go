@@ -8,7 +8,6 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
-	"github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/lease"
 )
 
@@ -70,47 +69,51 @@ func TestUnservable(t *testing.T) {
 				t.Fatalf("unservable = %v, want %v", got, tc.want)
 			}
 			if !tc.refreshing {
-				checkLifeOf(t, c.store, e, now)
+				checkServableUntil(t, c.store, e, now)
 			}
 		})
 	}
 }
 
-// checkLifeOf pins lifeOf to unservable: an answer's expiry record is
-// filed for the instant unservable starts to hold, so up to it the answer
-// is servable and from just past it on it is not. Filed early, the record
-// would find the answer alive and drop it, leaving the answer to eviction;
-// filed late, the pruner would only be late.
-func checkLifeOf(t *testing.T, s *Store, e *CacheEntry, now time.Time) {
+// checkServableUntil pins servableUntil to unservable: an answer's expiry
+// record is filed for the instant unservable starts to hold, so up to it
+// the answer is servable and from just past it on it is not. Filed early,
+// the record would find the answer alive and drop it, leaving the answer
+// to eviction; filed late, the pruner would only be late.
+func checkServableUntil(t *testing.T, s *Store, e *CacheEntry, now time.Time) {
 	t.Helper()
 	const eps = time.Millisecond
-	life := s.lifeOf(e, now)
-	if life == cache.Forever {
+	until := s.servableUntil(e, now)
+	if until.IsZero() {
 		if s.unservable(e, now.Add(100*365*24*time.Hour)) {
-			t.Fatal("lifeOf has no end, but the answer becomes unservable")
+			t.Fatal("servableUntil has no end, but the answer becomes unservable")
 		}
 		return
 	}
-	if life > eps && s.unservable(e, now.Add(life-eps)) {
-		t.Fatalf("unservable before the life lifeOf gives (%v)", life)
+	if until.Sub(now) > eps && s.unservable(e, until.Add(-eps)) {
+		t.Fatalf("unservable before servableUntil (%v from now)", until.Sub(now))
 	}
-	if !s.unservable(e, now.Add(max(life, 0)+eps)) {
-		t.Fatalf("still servable past the life lifeOf gives (%v)", life)
+	// An end already past is judged from now: unservable already holds.
+	if !s.unservable(e, maxTime(until, now).Add(eps)) {
+		t.Fatalf("still servable past servableUntil (%v from now)", until.Sub(now))
 	}
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
 
 // expiryClock moves the pruner's time by hand, the expiry index's and the
 // one it judges answers by together: advance shifts both ahead of real
 // time. It is set before anything is stored.
 func expiryClock(c *Cache) (advance func(time.Duration)) {
-	start := time.Now()
 	var shift atomic.Int64
-	c.store.positive.cache.SetExpiryClock(func() time.Duration {
-		return time.Since(start) + time.Duration(shift.Load())
-	})
-	c.store.pruneClock = func() time.Time {
-		return time.Now().Add(time.Duration(shift.Load()))
-	}
+	now := func() time.Time { return time.Now().Add(time.Duration(shift.Load())) }
+	c.store.positive.cache.SetExpiryClock(now)
+	c.store.pruneClock = now
 	return func(d time.Duration) { shift.Add(int64(d)) }
 }
 

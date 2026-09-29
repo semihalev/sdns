@@ -18,8 +18,8 @@ type expiring struct {
 func testExpiry(t *testing.T, size int) (*Cache[*expiring], *atomic.Int64, func(*expiring) (Verdict, time.Duration)) {
 	t.Helper()
 	c := NewWithExpiry[*expiring](size, 256*time.Second)
-	var clock atomic.Int64
-	c.exp.now = clock.Load
+	var clock atomic.Int64 // nanoseconds since the index's epoch
+	c.SetExpiryClock(func() time.Time { return c.exp.epoch.Add(time.Duration(clock.Load())) })
 	judge := func(v *expiring) (Verdict, time.Duration) {
 		left := time.Duration(v.dies - clock.Load())
 		switch {
@@ -36,7 +36,12 @@ func testExpiry(t *testing.T, size int) (*Cache[*expiring], *atomic.Int64, func(
 // put stores v under key, dying life from the clock's now.
 func put(c *Cache[*expiring], clock *atomic.Int64, key uint64, v *expiring, life time.Duration) {
 	v.dies = clock.Load() + int64(life)
-	c.AddFor(key, v, life)
+	addFor(c, clock, key, v, life)
+}
+
+// addFor stores v under key, filed for life from the clock's now.
+func addFor(c *Cache[*expiring], clock *atomic.Int64, key uint64, v *expiring, life time.Duration) {
+	c.AddUntil(key, v, c.exp.epoch.Add(time.Duration(clock.Load())+life))
 }
 
 // filed counts the records the index holds.
@@ -160,20 +165,33 @@ func TestExpireFilesAStaleReadIntoTheNextBucket(t *testing.T) {
 	clock.Store(int64(100 * time.Second))
 	c.Expire(judge) // buckets up to 99 have fired
 	clock.Store(int64(50 * time.Second))
-	c.AddFor(9, &expiring{dies: int64(51 * time.Second)}, time.Second)
+	addFor(c, clock, 9, &expiring{dies: int64(51 * time.Second)}, time.Second)
 	clock.Store(int64(102 * time.Second))
 	if removed := c.Expire(judge); removed != 1 {
 		t.Fatalf("a record filed behind the ring: %d removed, want 1", removed)
 	}
 }
 
-// Forever files nothing: that value is never expired.
+// The zero time files nothing: that value is never expired.
 func TestExpireIgnoresAValueWithNoEnd(t *testing.T) {
 	c, clock, judge := testExpiry(t, 1024)
-	c.AddFor(5, &expiring{dies: 0}, Forever)
+	c.AddUntil(5, &expiring{dies: 0}, time.Time{})
 	clock.Store(int64(10000 * time.Second))
 	if removed := c.Expire(judge); removed != 0 {
 		t.Fatal("an untracked value was expired")
+	}
+}
+
+// A far record whose key now holds a value with no end, Alive with nothing
+// left, is dropped, not filed again every turn of the ring.
+func TestExpireDropsAFarRecordForAValueWithNoEnd(t *testing.T) {
+	c, clock, _ := testExpiry(t, 1024)
+	put(c, clock, 4, &expiring{}, 1000*time.Second)
+	endless := func(*expiring) (Verdict, time.Duration) { return Alive, 0 }
+	clock.Store(int64(600 * time.Second)) // two turns of the 256 s ring
+	c.Expire(endless)
+	if n := filed(c); n != 0 {
+		t.Fatalf("%d records left for a value with no end, want 0", n)
 	}
 }
 
@@ -182,7 +200,7 @@ func TestExpireIgnoresAValueWithNoEnd(t *testing.T) {
 func TestExpireTakesANegativeLifetimeAsDue(t *testing.T) {
 	c, clock, judge := testExpiry(t, 1024)
 	clock.Store(int64(10 * time.Second))
-	c.AddFor(5, &expiring{dies: int64(9 * time.Second)}, -time.Second)
+	addFor(c, clock, 5, &expiring{dies: int64(9 * time.Second)}, -time.Second)
 	clock.Store(int64(12 * time.Second))
 	if removed := c.Expire(judge); removed != 1 {
 		t.Fatalf("a value dead on arrival: %d removed, want 1", removed)
@@ -195,11 +213,12 @@ func TestExpireFilesOnlyWhatWasStored(t *testing.T) {
 	c, clock, judge := testExpiry(t, 1024)
 	first := &expiring{}
 	put(c, clock, 1, first, 100*time.Second)
-	if c.AddIfAbsentFor(1, &expiring{}, time.Second) {
-		t.Fatal("AddIfAbsentFor stored over a present key")
+	soon := c.exp.epoch.Add(time.Second)
+	if c.AddIfAbsentUntil(1, &expiring{}, soon) {
+		t.Fatal("AddIfAbsentUntil stored over a present key")
 	}
-	if c.CompareAndSwapFor(1, &expiring{}, &expiring{}, time.Second) {
-		t.Fatal("CompareAndSwapFor swapped a different value")
+	if c.CompareAndSwapUntil(1, &expiring{}, &expiring{}, soon) {
+		t.Fatal("CompareAndSwapUntil swapped a different value")
 	}
 	if n := filed(c); n != 1 {
 		t.Fatalf("%d records filed, want 1", n)
@@ -210,7 +229,7 @@ func TestExpireFilesOnlyWhatWasStored(t *testing.T) {
 	}
 
 	plain := New[*expiring](16)
-	plain.AddFor(1, &expiring{}, time.Second)
+	plain.AddUntil(1, &expiring{}, time.Now().Add(time.Second))
 	if plain.Expire(judge) != 0 || plain.Len() != 1 {
 		t.Fatal("a cache without an index expired something")
 	}
@@ -228,7 +247,7 @@ func TestExpireUnderConcurrentWriters(t *testing.T) {
 			for i := range uint64(2000) {
 				key := w*10000 + i + 1
 				v := &expiring{dies: clock.Load() + int64(time.Duration(i%60+1)*time.Second)}
-				c.AddFor(key, v, time.Duration(v.dies-clock.Load()))
+				c.AddUntil(key, v, c.exp.epoch.Add(time.Duration(v.dies)))
 			}
 		}()
 	}
@@ -259,11 +278,12 @@ func BenchmarkExpiryInsert(b *testing.B) {
 			c.Add(i&(1<<20-1)+1, v)
 		}
 	})
-	b.Run("AddFor", func(b *testing.B) {
+	b.Run("AddUntil", func(b *testing.B) {
 		c := NewWithExpiry[*expiring](1<<20, 4*time.Hour)
+		start := time.Now()
 		b.ReportAllocs()
 		for i := uint64(0); b.Loop(); i++ {
-			c.AddFor(i&(1<<20-1)+1, v, time.Duration(i%3600)*time.Second)
+			c.AddUntil(i&(1<<20-1)+1, v, start.Add(time.Duration(i%3600)*time.Second))
 		}
 		var bytes int
 		for s := range c.exp.shards {
@@ -271,7 +291,7 @@ func BenchmarkExpiryInsert(b *testing.B) {
 				bytes += cap(r) * 8
 			}
 		}
-		if n := filed(any(c).(*Cache[*expiring])); n > 0 {
+		if n := filed(c); n > 0 {
 			b.ReportMetric(float64(bytes)/float64(n), "index-B/record")
 		}
 	})
