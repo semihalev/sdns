@@ -2,6 +2,7 @@ package cache
 
 import (
 	"errors"
+	"time"
 )
 
 var (
@@ -23,6 +24,18 @@ var (
 type Cache[V comparable] struct {
 	data    *SyncUInt64Map[V]
 	maxSize int64
+	exp     *expiryIndex // nil unless built by NewWithExpiry
+}
+
+// NewWithExpiry creates a bounded cache with an expiry index whose ring
+// spans horizon: the values inserted through AddFor and its siblings are
+// found by Expire when their time comes, without a walk. A bucket is
+// horizon/256 wide, at least a second, and that is how late past its end a
+// value may be found.
+func NewWithExpiry[V comparable](size int, horizon time.Duration) *Cache[V] {
+	c := New[V](size)
+	c.exp = newExpiryIndex(horizon)
+	return c
 }
 
 // New creates a bounded cache.
