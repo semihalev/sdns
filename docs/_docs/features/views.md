@@ -72,12 +72,24 @@ zone the public namespace cannot resolve at all.
 forwarderservers = [
     "8.8.8.8:53",
     "tls://8.8.8.8:853",
+    "tls://9.9.9.9:853#dns.quad9.net",
     "https://cloudflare-dns.com/dns-query",
 ]
 ```
 
 With this set, sdns stops resolving from the root and forwards everything.
 Plain DNS, DoT (`tls://`) and DoH (`https://`, RFC 8484) are all accepted.
+
+A DoT upstream is an IP address and port, and by default its certificate must
+be valid for that address. Some providers' certificates carry only their
+service name. For those, add the name after `#`:
+`tls://9.9.9.9:853#dns.quad9.net` connects to 9.9.9.9, sends `dns.quad9.net`
+as SNI, and accepts only a certificate valid for that name. The name is never
+resolved: the address says where to connect, and the name what must answer
+there. This is the IP address plus authentication domain name configuration
+of RFC 8310, and it works in forward zones too. A certificate that does not
+match fails that upstream, and the next configured one is tried as usual;
+sdns never retries it without the name.
 
 DoH URLs may use an IP literal or a hostname. A hostname is resolved once at
 startup through the system resolver and the resulting addresses are pinned for

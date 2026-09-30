@@ -47,6 +47,13 @@ type server struct {
 	Addr  string
 	Proto string // "udp" | "tcp-tls" | "doh"
 
+	// DoT only, set when the upstream names what it must authenticate as
+	// ("tls://ip:port#name"): the name, and the TLS config that sends it as
+	// SNI and verifies the certificate against it. The connection still goes
+	// to Addr. nil keeps the default, a certificate valid for Addr's IP.
+	AuthName  string
+	TLSConfig *tls.Config
+
 	// DoH-only fields. Populated by newDoHServer when Proto=="doh";
 	// nil for plain UDP and DoT entries.
 	DoHURL    string
@@ -86,7 +93,11 @@ type Forwarder struct {
 //
 // Accepted forwarder_servers formats:
 //   - "1.1.1.1:53": plain UDP (TCP fallback on TC)
-//   - "tls://1.1.1.1:853": DoT (RFC 7858) over TCP-TLS
+//   - "tls://1.1.1.1:853": DoT (RFC 7858) over TCP-TLS, the certificate
+//     verified for the IP address
+//   - "tls://9.9.9.9:853#dns.quad9.net": DoT to that address, the
+//     certificate verified for the name after #, which is also sent as SNI
+//     and never resolved (RFC 8310's IP address plus authentication name)
 //   - "https://1.1.1.1/dns-query": DoH (RFC 8484) with IP literal
 //   - "https://dns.example.com/dns-query": DoH with hostname (bootstrapped
 //     via the system resolver once at startup; resolved IPs are pinned for
@@ -146,7 +157,11 @@ func parseServers(list []string, dialTimeout, requestTimeout time.Duration, labe
 		if srv.Proto == "doh" {
 			endpoint = srv.DoHURL
 		}
-		key := srv.Proto + "\x00" + middleware.CanonicalResolutionEndpoint(endpoint)
+		// The authentication name is part of what an upstream is: one
+		// address under two names is two servers, each held to its own. A
+		// certificate matches a name in any case, so the key folds it: a
+		// repeat in another case is the same server, not another attempt.
+		key := srv.Proto + "\x00" + middleware.CanonicalResolutionEndpoint(endpoint) + "#" + strings.ToLower(srv.AuthName)
 		if _, ok := seen[key]; ok {
 			return
 		}
@@ -164,12 +179,16 @@ func parseServers(list []string, dialTimeout, requestTimeout time.Duration, labe
 			appendServer(srv)
 
 		case strings.HasPrefix(s, "tls://"):
-			addr := strings.TrimPrefix(s, "tls://")
-			if !validForwarderAddr(addr) {
+			addr, authName, ok := config.SplitDoTUpstream(strings.TrimPrefix(s, "tls://"))
+			if !ok || !validForwarderAddr(addr) {
 				zlog.Error("Server is not correct. Check your config.", "list", label, "server", s)
 				continue
 			}
-			appendServer(&server{Addr: addr, Proto: "tcp-tls"})
+			srv := &server{Addr: addr, Proto: "tcp-tls", AuthName: authName}
+			if authName != "" {
+				srv.TLSConfig = &tls.Config{ServerName: authName, MinVersion: tls.VersionTLS12}
+			}
+			appendServer(srv)
 
 		default:
 			if !validForwarderAddr(s) {
@@ -295,6 +314,9 @@ func (f *Forwarder) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			client.DoHClient = server.DoHClient
 		case "tcp-tls":
 			client.TLSConfig = f.tlsConfig
+			if server.TLSConfig != nil {
+				client.TLSConfig = server.TLSConfig
+			}
 		}
 
 		resp, _, err := client.Exchange(ctx, req, server.Addr)

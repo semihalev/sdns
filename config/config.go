@@ -301,7 +301,7 @@ type ForwardZoneConfig struct {
 	// Name is the zone apex. Queries at or below it are forwarded.
 	Name string `toml:"name"`
 	// Servers are the upstreams, in the same forms as forwarderservers:
-	// "ip:port", "tls://ip:port", or an https:// URL.
+	// "ip:port", "tls://ip:port", "tls://ip:port#name", or an https:// URL.
 	Servers []string `toml:"servers"`
 }
 
@@ -853,11 +853,16 @@ fallbackservers = [
 # IP literal or a hostname, hostnames are resolved once at startup
 # through the system resolver and the resulting IPs are pinned for the
 # process lifetime (no per-query DNS dependency).
+# A DoT server's certificate must be valid for its IP address. For one whose
+# certificate carries its service name instead, add the name after #: sdns
+# connects to the address, sends the name as SNI and accepts only a
+# certificate valid for it. The name is never resolved (RFC 8310).
 forwarderservers = [
     # Examples:
     # "8.8.8.8:53",                          # Standard DNS
     # "[2001:4860:4860::8888]:53",           # Standard DNS IPv6
     # "tls://8.8.8.8:853",                   # DNS-over-TLS
+    # "tls://9.9.9.9:853#dns.quad9.net",     # DNS-over-TLS, authenticated by name
     # "https://1.1.1.1/dns-query",           # DoH, IP literal
     # "https://cloudflare-dns.com/dns-query" # DoH, hostname (system-resolver bootstrap)
 ]
