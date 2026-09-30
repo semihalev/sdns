@@ -128,6 +128,9 @@ func TestTCPBurstCostsOneWrite(t *testing.T) {
 	e := newTCPEngine(echo, "tcp", 8, defaultResourcePlan(1))
 	conn := newCountingConn(frames)
 
+	if !e.reserve() {
+		t.Fatal("connection cap refused the fixture connection")
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
