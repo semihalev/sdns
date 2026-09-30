@@ -141,7 +141,17 @@ func TestCachedValidationFailureIsNotFailedOver(t *testing.T) {
 	if got := ask("www.target.test."); got == nil || got.Rcode != dns.RcodeServerFailure {
 		t.Fatalf("target: %v, want SERVFAIL", got)
 	}
+	// The resolver races the target's IPv4 and IPv6 addresses. The loser,
+	// cancelled once the winner answers, may already have sent its query,
+	// and the server counts it whenever it arrives, which can be after the
+	// answer is back. Count once that has had time to land.
 	targetAsked := target.asked("www.target.test.", dns.TypeA)
+	for quiet, deadline := time.Now(), time.Now().Add(5*time.Second); time.Since(quiet) < 200*time.Millisecond && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+		if n := target.asked("www.target.test.", dns.TypeA); n != targetAsked {
+			targetAsked, quiet = n, time.Now()
+		}
+	}
 
 	got := ask("www.alias.test.")
 	if got == nil || got.Rcode != dns.RcodeServerFailure {

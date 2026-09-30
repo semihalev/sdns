@@ -1720,7 +1720,11 @@ func validUpstream(addr string) error {
 		}
 		return nil
 	case strings.HasPrefix(addr, "tls://"):
-		if !validIPPort(strings.TrimPrefix(addr, "tls://"), "tcp") {
+		hostport, _, ok := SplitDoTUpstream(strings.TrimPrefix(addr, "tls://"))
+		if !ok {
+			return fmt.Errorf("the name after # must be a host name to authenticate the server as, e.g. tls://192.0.2.1:853#dns.example.com")
+		}
+		if !validIPPort(hostport, "tcp") {
 			return fmt.Errorf("DoT needs an IP address and port, e.g. tls://192.0.2.1:853")
 		}
 		return nil
