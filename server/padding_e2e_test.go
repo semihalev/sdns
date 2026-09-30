@@ -85,7 +85,7 @@ func TestDoTRepliesArePaddedWhenTheClientPads(t *testing.T) {
 	certPath, keyPath := dir+"/cert.pem", dir+"/key.pem"
 	writeCertAndKey(t, certPath, keyPath, cert, key)
 	cfg := &config.Config{
-		Bind: "127.0.0.1:0", BindTLS: "127.0.0.1:0",
+		Bind: config.Addrs{"127.0.0.1:0"}, BindTLS: config.Addrs{"127.0.0.1:0"},
 		TLSCertificate: certPath, TLSPrivateKey: keyPath,
 		CacheSize: 1024, Expire: 600,
 	}
@@ -120,13 +120,13 @@ func TestDoTRepliesArePaddedWhenTheClientPads(t *testing.T) {
 		_ = dot.Shutdown(sctx)
 	})
 	tcp.mu.Lock()
-	tcpAddr := tcp.ln.Addr().String()
+	tcpAddr := tcp.lns[0].Addr().String()
 	tcp.mu.Unlock()
 	deadline := time.Now().Add(2 * time.Second)
 	for !dot.Serving() && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	dotAddr := dot.ln.Addr().String()
+	dotAddr := dot.lns[0].Addr().String()
 
 	askName := func(t *testing.T, name string, qtype uint16, net, addr string, pad bool) (*dns.Msg, int) {
 		t.Helper()

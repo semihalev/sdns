@@ -20,6 +20,22 @@ families; give an address to narrow it (`"192.0.2.10:53"`, `"[2001:db8::1]:53"`)
 Leaving a key unset means that listener is not started, the encrypted
 transports are all unset by default.
 
+Every key also takes a list, to listen on some addresses but not all of them:
+
+```toml
+bind    = ["192.0.2.10:53", "[2001:db8::1]:53", "127.0.0.1:53"]
+bindtls = ["192.0.2.10:853", "[2001:db8::1]:853"]
+```
+
+A listener on several addresses is still one listener: its workers, connection
+limits and memory budget are shared across the addresses, not multiplied by
+them. It opens every address it names or none, so an address that cannot be
+opened stops startup with that address in the error, as a single address
+always has. `sdns -t` refuses an address listed twice, however it is spelled,
+and a wildcard (`":53"`, `"0.0.0.0:53"`, `"[::]:53"`) listed with specific
+addresses, since the wildcard already covers them. A wildcard on two ports
+(`[":53", ":5353"]`) is fine.
+
 `bindtls` and `binddoq` can share port 853 because one is TCP and the other UDP.
 
 ### TLS material

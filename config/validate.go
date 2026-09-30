@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -64,8 +65,9 @@ func (c *Config) Validate() error {
 	}
 
 	for _, bind := range []struct {
-		key, value string
-		networks   []string
+		key      string
+		addrs    Addrs
+		networks []string
 	}{
 		// The plain listener answers over both; the rest open one apiece.
 		{"bind", c.Bind, []string{"udp", "tcp"}},
@@ -74,36 +76,10 @@ func (c *Config) Validate() error {
 		{"binddoh", c.BindDOH, []string{"udp", "tcp"}},
 		{"binddoq", c.BindDOQ, []string{"udp"}},
 	} {
-		if bind.value == "" {
-			continue
-		}
-		host, port, err := net.SplitHostPort(bind.value)
-		switch {
-		case err != nil || port == "":
-			add("%s = %q: must be host:port", bind.key, bind.value)
-		default:
-			// The host half is deliberately not judged. Empty means every
-			// interface; a literal may name an address this machine does not
-			// hold yet, which is how a floating address is served; and
-			// whether a name resolves is a runtime question of the same
-			// class as whether an upstream answers.
-			_ = host
-			n, err := usablePort(port, bind.networks...)
-			switch {
-			case err != nil:
-				add("%s = %q: %v", bind.key, bind.value, err)
-			case n == 0 && len(bind.networks) > 1:
-				// Port 0 asks the kernel for a free one, and each socket
-				// asks separately: the two transports of this setting would
-				// land on different ports, so a truncated UDP answer has no
-				// TCP to fall back to, and DoH would advertise ":0" as its
-				// HTTP/3 port. Fine where the setting opens one socket.
-				add("%s = %q: port 0 gives each transport a different port; name one", bind.key, bind.value)
-			}
-		}
+		validateBind(bind.key, bind.addrs, bind.networks, add)
 	}
 
-	if c.BindTLS != "" || c.BindDOH != "" || c.BindDOQ != "" {
+	if len(c.BindTLS) > 0 || len(c.BindDOH) > 0 || len(c.BindDOQ) > 0 {
 		if c.TLSCertificate == "" || c.TLSPrivateKey == "" {
 			add("tlscertificate and tlsprivatekey are required when bindtls, binddoh or binddoq is set")
 		} else {
@@ -809,7 +785,7 @@ func (c *Config) validateDDR(add func(string, ...any)) {
 	if !c.DDR.Enabled {
 		return
 	}
-	if c.BindTLS == "" && c.BindDOH == "" && c.BindDOQ == "" {
+	if len(c.BindTLS) == 0 && len(c.BindDOH) == 0 && len(c.BindDOQ) == 0 {
 		add("ddr.enabled: there is no encrypted listener to advertise; set binddoh, bindtls or binddoq")
 		return
 	}
@@ -831,7 +807,7 @@ func (c *Config) validateDDR(add func(string, ...any)) {
 	if _, _, err := c.DDRHints(); err != nil {
 		add("%v", err)
 	}
-	if (c.DDR.DoHPort != 0 || len(c.DDR.DoHALPN) > 0) && c.BindDOH == "" {
+	if (c.DDR.DoHPort != 0 || len(c.DDR.DoHALPN) > 0) && len(c.BindDOH) == 0 {
 		add("ddr.doh_port, ddr.doh_alpn: there is no DoH listener to publish; set binddoh")
 	}
 }
@@ -1652,6 +1628,72 @@ func validIPPort(addr string, networks ...string) bool {
 		return false
 	}
 	return net.ParseIP(host) != nil
+}
+
+// validateBind judges one listener setting, every address in it on its own
+// and the list as a whole. A listener opens every address it names or none,
+// so an address it cannot open fails the whole setting at startup; this
+// reports what can be known before then.
+func validateBind(key string, addrs Addrs, networks []string, add func(string, ...any)) {
+	seen := make(map[string]bool, len(addrs))
+	var wildcard, specific string
+	for _, addr := range addrs {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil || port == "" {
+			add("%s = %q: must be host:port", key, addr)
+			continue
+		}
+		// The host half is not judged beyond this. Empty means every
+		// interface; a literal may name an address this machine does not
+		// hold yet, which is how a floating address is served; and whether
+		// a name resolves is a runtime question of the same class as
+		// whether an upstream answers.
+		n, err := usablePort(port, networks...)
+		switch {
+		case err != nil:
+			add("%s = %q: %v", key, addr, err)
+			continue
+		case n == 0 && len(networks) > 1:
+			// Port 0 asks the kernel for a free one, and each socket asks
+			// separately: the two transports of this setting would land on
+			// different ports, so a truncated UDP answer has no TCP to fall
+			// back to, and DoH would advertise ":0" as its HTTP/3 port.
+			// Fine where the setting opens one socket.
+			add("%s = %q: port 0 gives each transport a different port; name one", key, addr)
+			continue
+		}
+		canonical := net.JoinHostPort(canonicalBindHost(host), strconv.Itoa(n))
+		if seen[canonical] {
+			add("%s: %q is listed twice", key, addr)
+			continue
+		}
+		seen[canonical] = true
+		if ip := net.ParseIP(host); host == "" || ip != nil && ip.IsUnspecified() {
+			wildcard = addr
+		} else {
+			specific = addr
+		}
+	}
+	if wildcard != "" && specific != "" {
+		// A wildcard already listens on every address, and on the same port
+		// the kernel refuses the specific one; replies on a wildcard socket
+		// also take a different path. One or the other.
+		add("%s: %q listens on every address already; it cannot be listed with %q", key, wildcard, specific)
+	}
+}
+
+// canonicalBindHost spells an IP literal one way, so "::1" and
+// "0:0:0:0:0:0:0:1" are the same address to the duplicate check. Every
+// wildcard spelling is one address: an empty host and "::" both listen on
+// IPv4 as well, so any two of them on one port collide.
+func canonicalBindHost(host string) string {
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsUnspecified() {
+			return ""
+		}
+		return ip.String()
+	}
+	return strings.ToLower(host)
 }
 
 // validUpstream reports whether addr is one of the three forms a forwarder

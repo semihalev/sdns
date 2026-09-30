@@ -16,10 +16,10 @@ feature is off until you uncomment it.
 |---|---|---|
 | `version` | `"1.8.3"` | Configuration schema version, not the sdns version |
 | `directory` | `"db"` | Writable state: trust anchors, blocklists, local root copy |
-| `bind` | `":53"` | UDP and TCP listener |
-| `bindtls` | *(commented)* | DoT listener, usually `":853"` |
-| `binddoh` | *(commented)* | DoH listener, usually `":443"` |
-| `binddoq` | *(commented)* | DoQ listener, usually `":853"` |
+| `bind` | `":53"` | UDP and TCP listener; one `"host:port"` or a list |
+| `bindtls` | *(commented)* | DoT listener, usually `":853"`; one address or a list |
+| `binddoh` | *(commented)* | DoH listener, usually `":443"`; one address or a list |
+| `binddoq` | *(commented)* | DoQ listener, usually `":853"`; one address or a list |
 | `tlscertificate` | *(commented)* | PEM certificate, required for DoT/DoH/DoQ |
 | `tlsprivatekey` | *(commented)* | PEM private key |
 | `outboundips` | `[]` | IPv4 source addresses for outbound queries |

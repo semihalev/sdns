@@ -17,7 +17,7 @@ import (
 
 func startTCPEngine(t *testing.T, handler rawHandler, maxConns int) (string, *tcpListener, func()) {
 	t.Helper()
-	l := newTCPListener("127.0.0.1:0", handler, time.Second, maxConns, defaultResourcePlan(1))
+	l := newTCPListener([]string{"127.0.0.1:0"}, handler, time.Second, maxConns, defaultResourcePlan(1))
 	if err := l.Bind(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func startTCPEngine(t *testing.T, handler rawHandler, maxConns int) (string, *tc
 	for !l.Serving() && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	addr := l.ln.Addr().String()
+	addr := l.lns[0].Addr().String()
 	return addr, l, func() {
 		if err := l.Shutdown(context.Background()); err != nil {
 			t.Logf("shutdown: %v", err)
@@ -506,7 +506,7 @@ func TestDoTEngineRoundTrip(t *testing.T) {
 	}
 	defer cm.Stop()
 
-	l := newTLSListener("127.0.0.1:0", echoHandler(), cm, time.Second, 8, defaultResourcePlan(1))
+	l := newTLSListener([]string{"127.0.0.1:0"}, echoHandler(), cm, time.Second, 8, defaultResourcePlan(1))
 	if err := l.Bind(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -521,7 +521,7 @@ func TestDoTEngineRoundTrip(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 
-	conn, err := tls.Dial("tcp", l.ln.Addr().String(), &tls.Config{InsecureSkipVerify: true}) //nolint:gosec // self-signed test cert
+	conn, err := tls.Dial("tcp", l.lns[0].Addr().String(), &tls.Config{InsecureSkipVerify: true}) //nolint:gosec // self-signed test cert
 	if err != nil {
 		t.Fatal(err)
 	}

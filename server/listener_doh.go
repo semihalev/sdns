@@ -16,26 +16,27 @@ import (
 	"github.com/semihalev/zlog/v2"
 )
 
-// dohListener serves DNS-over-HTTPS (RFC 8484). Non-critical.
+// dohListener serves DNS-over-HTTPS (RFC 8484). Non-critical. Several
+// addresses are one HTTP server serving each of their sockets.
 type dohListener struct {
-	addr    string
+	addrs   []string
 	handler http.Handler
 	certs   certProvider
 	timeout time.Duration
 
 	mu        sync.Mutex
 	srv       *http.Server
-	ln        net.Listener
+	lns       []net.Listener
 	logCloser io.Closer
 	serving   atomic.Bool
 }
 
-func newDOHListener(addr string, h http.Handler, certs certProvider, timeout time.Duration) *dohListener {
-	return &dohListener{addr: addr, handler: h, certs: certs, timeout: timeout}
+func newDOHListener(addrs []string, h http.Handler, certs certProvider, timeout time.Duration) *dohListener {
+	return &dohListener{addrs: addrs, handler: h, certs: certs, timeout: timeout}
 }
 
 func (d *dohListener) Proto() string  { return "doh" }
-func (d *dohListener) Addr() string   { return d.addr }
+func (d *dohListener) Addr() string   { return strings.Join(d.addrs, ", ") }
 func (d *dohListener) Critical() bool { return false }
 func (d *dohListener) Serving() bool  { return d.serving.Load() }
 
@@ -53,8 +54,7 @@ func (d *dohListener) Bind(ctx context.Context) error {
 		return errors.New("TLS certificate not available")
 	}
 
-	var lc net.ListenConfig
-	ln, err := lc.Listen(ctx, "tcp", d.addr)
+	lns, err := listenTCPAll(ctx, d.addrs, nil)
 	if err != nil {
 		return err
 	}
@@ -64,7 +64,7 @@ func (d *dohListener) Bind(ctx context.Context) error {
 	logReader, logWriter := io.Pipe()
 	go readHTTPServerLogs(logReader)
 
-	d.ln = ln
+	d.lns = lns
 	d.logCloser = logReader
 	d.srv = &http.Server{
 		Handler: d.handler,
@@ -90,27 +90,34 @@ func (d *dohListener) Bind(ctx context.Context) error {
 
 func (d *dohListener) Serve(_ context.Context) error {
 	d.mu.Lock()
-	srv, ln := d.srv, d.ln
+	srv, lns := d.srv, d.lns
 	d.mu.Unlock()
 	if srv == nil {
 		return errListenerNotBound
 	}
 
-	zlog.Info("DNS server listening", "net", "doh", "addr", d.addr)
+	zlog.Info("DNS server listening", "net", "doh", "addr", d.Addr())
 	d.serving.Store(true)
 	defer d.serving.Store(false)
 	// Empty cert/key paths: srv.TLSConfig.GetCertificate handles rotation.
-	err := srv.ServeTLS(ln, "", "")
-	if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
-		return err
+	// One server serves every socket, and Shutdown ends them all.
+	errs := make(chan error, len(lns))
+	for _, ln := range lns {
+		go func() { errs <- srv.ServeTLS(ln, "", "") }()
 	}
-	return nil
+	var serveErr error
+	for range lns {
+		if err := <-errs; err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+			serveErr = errors.Join(serveErr, err)
+		}
+	}
+	return serveErr
 }
 
 func (d *dohListener) Shutdown(_ context.Context) error {
 	d.mu.Lock()
 	srv := d.srv
-	ln := d.ln
+	lns := d.lns
 	lc := d.logCloser
 	d.mu.Unlock()
 	if srv == nil {
@@ -124,16 +131,16 @@ func (d *dohListener) Shutdown(_ context.Context) error {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	zlog.Info("DNS server stopping", "net", "doh", "addr", d.addr)
+	zlog.Info("DNS server stopping", "net", "doh", "addr", d.Addr())
 	// http.Server.Shutdown only closes listeners that were
 	// registered with it via Serve / ServeTLS (trackListener).
-	// Our ln is pre-bound in Bind and isn't handed to ServeTLS
+	// Our listeners are pre-bound in Bind and aren't handed to ServeTLS
 	// until Serve runs, so in the bind-before-serve rollback path
-	// (bindAll partial-failure cleanup) the listener would stay
-	// open. Close it ourselves; net.ErrClosed is the normal-close
-	// race when Serve did run.
+	// (bindAll partial-failure cleanup) they would stay open. Close
+	// them ourselves; net.ErrClosed is the normal-close race when
+	// Serve did run.
 	err := srv.Shutdown(shutdownCtx)
-	if ln != nil {
+	for _, ln := range lns {
 		if cerr := ln.Close(); cerr != nil && !errors.Is(cerr, net.ErrClosed) && err == nil {
 			err = cerr
 		}

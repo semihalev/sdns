@@ -117,7 +117,7 @@ func New(cfg *config.Config) *DDR {
 	// implements DDR speaks, then DoT, then DoQ. The network is the one the
 	// listener opens, which is how its port name is looked up.
 	for _, l := range []struct {
-		bind    string
+		binds   config.Addrs
 		network string
 		alpns   []alpnListener
 		path    bool
@@ -127,23 +127,31 @@ func New(cfg *config.Config) *DDR {
 		{cfg.BindTLS, "tcp", []alpnListener{{"dot", "tls"}}, false, 853},
 		{cfg.BindDOQ, "udp", []alpnListener{{"doq", "doq"}}, false, 853},
 	} {
-		if l.bind == "" {
-			continue
+		// A listener on several addresses is one service per port a client
+		// can reach: the addresses themselves are not advertised, the hints
+		// come from the configuration, so two addresses on one port are
+		// one record.
+		ports := make(map[uint16]bool, len(l.binds))
+		for _, bind := range l.binds {
+			svc, loopback, ok := newService(bind, l.network, l.alpns, l.path, l.deflt)
+			if !ok {
+				zlog.Warn("DDR skips a listener address it cannot describe", "bind", bind)
+				continue
+			}
+			if l.path {
+				svc, loopback = published(cfg.DDR, svc, loopback)
+			}
+			if loopback {
+				zlog.Warn("DDR skips a listener address bound to loopback, which clients cannot reach; "+
+					"a DoH listener behind a reverse proxy is advertised with ddr.doh_port", "bind", bind)
+				continue
+			}
+			if ports[svc.port] {
+				continue
+			}
+			ports[svc.port] = true
+			d.services = append(d.services, svc)
 		}
-		svc, loopback, ok := newService(l.bind, l.network, l.alpns, l.path, l.deflt)
-		if !ok {
-			zlog.Warn("DDR skips a listener it cannot describe", "bind", l.bind)
-			continue
-		}
-		if l.path {
-			svc, loopback = published(cfg.DDR, svc, loopback)
-		}
-		if loopback {
-			zlog.Warn("DDR skips a listener bound to loopback, which clients cannot reach; "+
-				"a DoH listener behind a reverse proxy is advertised with ddr.doh_port", "bind", l.bind)
-			continue
-		}
-		d.services = append(d.services, svc)
 	}
 	return d
 }

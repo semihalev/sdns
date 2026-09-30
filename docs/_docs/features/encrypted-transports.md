@@ -84,7 +84,9 @@ address is a fine hint for a resolver on a home or office network; anything
 that is not global unicast, loopback, link-local, multicast, unspecified or
 the IPv4 limited broadcast, is refused by `sdns -t`. A listener bound
 to a loopback address is not advertised at all: a client would only ever
-reach its own machine there.
+reach its own machine there. A listener on several addresses is advertised
+once per port: the addresses are not in the records, so two on one port are
+one record, and a loopback address among them is simply left out.
 Only listeners that are actually up are
 advertised: one whose port was taken at startup is left out, and DoH offers
 HTTP/3 only while the QUIC listener is serving. The DoT listener selects the

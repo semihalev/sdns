@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -15,24 +16,25 @@ import (
 )
 
 // doh3Listener serves DNS-over-HTTPS over HTTP/3 (RFC 9250 §4).
-// Non-critical: HTTP/3 is optional transport.
+// Non-critical: HTTP/3 is optional transport. Several addresses are one
+// HTTP/3 server serving each of their sockets.
 type doh3Listener struct {
-	addr    string
+	addrs   []string
 	handler http.Handler
 	certs   certProvider
 
 	mu      sync.Mutex
 	srv     *http3.Server
-	pc      net.PacketConn
+	pcs     []net.PacketConn
 	serving atomic.Bool
 }
 
-func newDOH3Listener(addr string, h http.Handler, certs certProvider) *doh3Listener {
-	return &doh3Listener{addr: addr, handler: h, certs: certs}
+func newDOH3Listener(addrs []string, h http.Handler, certs certProvider) *doh3Listener {
+	return &doh3Listener{addrs: addrs, handler: h, certs: certs}
 }
 
 func (d *doh3Listener) Proto() string  { return "doh3" }
-func (d *doh3Listener) Addr() string   { return d.addr }
+func (d *doh3Listener) Addr() string   { return strings.Join(d.addrs, ", ") }
 func (d *doh3Listener) Critical() bool { return false }
 func (d *doh3Listener) Serving() bool  { return d.serving.Load() }
 
@@ -50,12 +52,11 @@ func (d *doh3Listener) Bind(ctx context.Context) error {
 		return errors.New("TLS certificate not available")
 	}
 
-	var lc net.ListenConfig
-	pc, err := lc.ListenPacket(ctx, "udp", d.addr)
+	pcs, err := listenUDPAll(ctx, d.addrs)
 	if err != nil {
 		return err
 	}
-	d.pc = pc
+	d.pcs = pcs
 	d.srv = &http3.Server{
 		Handler:   d.handler,
 		TLSConfig: tlsConfig,
@@ -80,32 +81,39 @@ func (d *doh3Listener) Bind(ctx context.Context) error {
 
 func (d *doh3Listener) Serve(_ context.Context) error {
 	d.mu.Lock()
-	srv, pc := d.srv, d.pc
+	srv, pcs := d.srv, d.pcs
 	d.mu.Unlock()
 	if srv == nil {
 		return errListenerNotBound
 	}
 
-	zlog.Info("DNS server listening", "net", "doh-h3", "addr", d.addr)
+	zlog.Info("DNS server listening", "net", "doh-h3", "addr", d.Addr())
 	d.serving.Store(true)
 	defer d.serving.Store(false)
-	err := srv.Serve(pc)
-	if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) && !errors.Is(err, quic.ErrServerClosed) {
-		return err
+	errs := make(chan error, len(pcs))
+	for _, pc := range pcs {
+		go func() { errs <- srv.Serve(pc) }()
 	}
-	return nil
+	var serveErr error
+	for range pcs {
+		err := <-errs
+		if err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) && !errors.Is(err, quic.ErrServerClosed) {
+			serveErr = errors.Join(serveErr, err)
+		}
+	}
+	return serveErr
 }
 
 func (d *doh3Listener) Shutdown(ctx context.Context) error {
 	d.mu.Lock()
 	srv := d.srv
-	pc := d.pc
+	pcs := d.pcs
 	d.mu.Unlock()
 	if srv == nil {
 		return nil
 	}
 
-	zlog.Info("DNS server stopping", "net", "doh-h3", "addr", d.addr)
+	zlog.Info("DNS server stopping", "net", "doh-h3", "addr", d.Addr())
 	// Shutdown sends a GOAWAY and waits for in-flight requests to
 	// complete within ctx, rather than aborting them mid-stream the
 	// way Close would. If ctx fires before drain completes, Shutdown
@@ -120,7 +128,7 @@ func (d *doh3Listener) Shutdown(ctx context.Context) error {
 	// quic-go v0.59 http3/server.go and server.go). Close the socket
 	// ourselves so the UDP port is actually released and graceful
 	// restart / repeated start-stop cycles don't leak the bind.
-	if pc != nil {
+	for _, pc := range pcs {
 		if cerr := pc.Close(); cerr != nil && !errors.Is(cerr, net.ErrClosed) && err == nil {
 			err = cerr
 		}

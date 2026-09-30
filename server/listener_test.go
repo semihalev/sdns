@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -134,47 +135,54 @@ func TestListenerShutdownBeforeServeReleasesSocket(t *testing.T) {
 
 	cases := []struct {
 		name  string
-		build func(addr string) Listener
+		build func(addrs []string) Listener
 	}{
-		{"udp", func(addr string) Listener {
-			return newUDPListener(addr, handler, time.Second, 0, 0, defaultResourcePlan(1))
+		{"udp", func(addrs []string) Listener {
+			return newUDPListener(addrs, handler, time.Second, 0, 0, defaultResourcePlan(1))
 		}},
-		{"tcp", func(addr string) Listener {
-			return newTCPListener(addr, handler, time.Second, 0, defaultResourcePlan(1))
+		{"tcp", func(addrs []string) Listener {
+			return newTCPListener(addrs, handler, time.Second, 0, defaultResourcePlan(1))
 		}},
-		{"tls", func(addr string) Listener {
-			return newTLSListener(addr, handler, certs, time.Second, 0, defaultResourcePlan(1))
+		{"tls", func(addrs []string) Listener {
+			return newTLSListener(addrs, handler, certs, time.Second, 0, defaultResourcePlan(1))
 		}},
-		{"doh", func(addr string) Listener { return newDOHListener(addr, httpHandler, certs, time.Second) }},
-		{"doh3", func(addr string) Listener { return newDOH3Listener(addr, httpHandler, certs) }},
-		{"doq", func(addr string) Listener {
-			return newDOQListener(addr, handler, certs, time.Second, defaultResourcePlanWith(1, true))
+		{"doh", func(addrs []string) Listener { return newDOHListener(addrs, httpHandler, certs, time.Second) }},
+		{"doh3", func(addrs []string) Listener { return newDOH3Listener(addrs, httpHandler, certs) }},
+		{"doq", func(addrs []string) Listener {
+			return newDOQListener(addrs, handler, certs, time.Second, defaultResourcePlanWith(1, true))
 		}},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			l := tc.build("127.0.0.1:0")
-			if err := l.Bind(context.Background()); err != nil {
-				t.Fatalf("%s: unexpected error: %v", "Bind", err)
-			}
+		for _, addrs := range [][]string{{"127.0.0.1:0"}, {"127.0.0.1:0", "127.0.0.1:0"}} {
+			t.Run(fmt.Sprintf("%s/%d", tc.name, len(addrs)), func(t *testing.T) {
+				l := tc.build(addrs)
+				if err := l.Bind(context.Background()); err != nil {
+					t.Fatalf("%s: unexpected error: %v", "Bind", err)
+				}
 
-			// Capture the bound port so we can try to re-bind it.
-			addr := boundAddr(t, l)
-			if err := l.Shutdown(context.Background()); err != nil {
-				t.Fatalf("%s: unexpected error: %v", "Shutdown", err)
-			}
+				// Capture the bound ports so we can try to re-bind them.
+				bound := boundAddrs(t, l)
+				if len(bound) != len(addrs) {
+					t.Fatalf("bound %v, want one socket per address in %v", bound, addrs)
+				}
+				if err := l.Shutdown(context.Background()); err != nil {
+					t.Fatalf("%s: unexpected error: %v", "Shutdown", err)
+				}
 
-			// If Shutdown actually released the FD, we can open a
-			// fresh socket on the same port immediately. Use the
-			// matching transport, UDP probe for UDP listeners, TCP
-			// probe for the rest.
-			if udpProto(tc.name) {
-				probeUDP(t, addr)
-			} else {
-				probeTCP(t, addr)
-			}
-		})
+				// If Shutdown actually released the FDs, we can open a
+				// fresh socket on each port immediately. Use the
+				// matching transport, UDP probe for UDP listeners, TCP
+				// probe for the rest.
+				for _, addr := range bound {
+					if udpProto(tc.name) {
+						probeUDP(t, addr)
+					} else {
+						probeTCP(t, addr)
+					}
+				}
+			})
+		}
 	}
 }
 
@@ -186,46 +194,46 @@ func udpProto(name string) bool {
 	return false
 }
 
-// boundAddr reads the bound address out of the concrete listener
-// types. We need the resolved port so we can probe the socket
-// after Shutdown.
-func boundAddr(t *testing.T, l Listener) string {
+// boundAddrs reads the distinct bound addresses out of the concrete
+// listener types. We need the resolved ports so we can probe the sockets
+// after Shutdown. A UDP listener may hold several sockets on one port.
+func boundAddrs(t *testing.T, l Listener) []string {
 	t.Helper()
+	var addrs []string
+	add := func(a net.Addr) {
+		if !slices.Contains(addrs, a.String()) {
+			addrs = append(addrs, a.String())
+		}
+	}
 	switch v := l.(type) {
 	case *udpListener:
-		if len(v.pcs) == 0 {
-			t.Fatalf("%s: v.pcs is empty", "udp listener must have at least one PacketConn")
+		for _, pc := range v.pcs {
+			add(pc.LocalAddr())
 		}
-		return v.pcs[0].LocalAddr().String()
 	case *tcpListener:
-		if v.ln == nil {
-			t.Fatalf("%s: v.ln is nil", "tcp listener must have a net.Listener")
+		for _, ln := range v.lns {
+			add(ln.Addr())
 		}
-		return v.ln.Addr().String()
 	case *tlsListener:
-		if v.ln == nil {
-			t.Fatalf("%s: v.ln is nil", "tls listener must have a net.Listener")
+		for _, ln := range v.lns {
+			add(ln.Addr())
 		}
-		return v.ln.Addr().String()
 	case *dohListener:
-		if v.ln == nil {
-			t.Fatalf("%s: v.ln is nil", "doh listener must have a net.Listener")
+		for _, ln := range v.lns {
+			add(ln.Addr())
 		}
-		return v.ln.Addr().String()
 	case *doh3Listener:
-		if v.pc == nil {
-			t.Fatalf("%s: v.pc is nil", "doh3 listener must have a PacketConn")
+		for _, pc := range v.pcs {
+			add(pc.LocalAddr())
 		}
-		return v.pc.LocalAddr().String()
 	case *doqListener:
-		if v.pc == nil {
-			t.Fatalf("%s: v.pc is nil", "doq listener must have a PacketConn")
+		for _, pc := range v.pcs {
+			add(pc.LocalAddr())
 		}
-		return v.pc.LocalAddr().String()
 	default:
 		t.Fatalf("unsupported listener type %T", l)
-		return ""
 	}
+	return addrs
 }
 
 func probeUDP(t *testing.T, addr string) {

@@ -3,7 +3,9 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,8 +24,12 @@ import (
 //
 // A wildcard bind arms the pktinfo machinery (pktinfo_linux.go) so
 // replies leave from the address the query arrived on.
+//
+// Several addresses are several socket groups feeding the one engine: the
+// workers, the queue and the slab budget are the transport's, not an
+// address's, so listening on more addresses does not multiply them.
 type udpListener struct {
-	addr    string
+	addrs   []string
 	handler rawHandler
 	sockets int
 	workers int
@@ -41,9 +47,9 @@ type udpListener struct {
 	serving  atomic.Bool
 }
 
-func newUDPListener(addr string, h rawHandler, timeout time.Duration, workers, queue int, plan resourcePlan) *udpListener {
+func newUDPListener(addrs []string, h rawHandler, timeout time.Duration, workers, queue int, plan resourcePlan) *udpListener {
 	return &udpListener{
-		addr:    addr,
+		addrs:   addrs,
 		handler: h,
 		sockets: plan.udpSockets,
 		workers: workers,
@@ -54,7 +60,7 @@ func newUDPListener(addr string, h rawHandler, timeout time.Duration, workers, q
 }
 
 func (l *udpListener) Proto() string  { return "udp" }
-func (l *udpListener) Addr() string   { return l.addr }
+func (l *udpListener) Addr() string   { return strings.Join(l.addrs, ", ") }
 func (l *udpListener) Critical() bool { return true }
 func (l *udpListener) Serving() bool  { return l.serving.Load() }
 
@@ -90,7 +96,18 @@ func (l *udpListener) Bind(ctx context.Context) error {
 		return errors.New("udp listener: Bind called twice")
 	}
 
-	wildcard := bindWildcard(l.addr)
+	if len(l.addrs) == 0 {
+		return errors.New("udp listener: no address")
+	}
+	// The pktinfo decision is the engine's, so a listener is wildcard or
+	// not as a whole. The config gate refuses the mix; this holds for a
+	// caller that skipped it.
+	wildcard := bindWildcard(l.addrs[0])
+	for _, addr := range l.addrs[1:] {
+		if bindWildcard(addr) != wildcard {
+			return errors.New("udp listener: a wildcard address cannot be listed with specific ones")
+		}
+	}
 	control := reusePortControl
 	if wildcard {
 		control = pktinfoControl("udp")
@@ -101,31 +118,31 @@ func (l *udpListener) Bind(ctx context.Context) error {
 	if kernelLoadBalances {
 		sockets = l.sockets
 	}
-	addr := l.addr
-	for i := 0; i < sockets; i++ {
-		pc, err := lc.ListenPacket(ctx, "udp", addr)
-		if err != nil {
-			for _, open := range l.pcs {
-				_ = open.Close()
-			}
-			l.pcs = nil
-			return err
+	fail := func(err error) error {
+		for _, open := range l.pcs {
+			_ = open.Close()
 		}
-		udpConn, ok := pc.(*net.UDPConn)
-		if !ok {
-			_ = pc.Close()
-			for _, open := range l.pcs {
-				_ = open.Close()
+		l.pcs = nil
+		return err
+	}
+	for _, addr := range l.addrs {
+		for i := 0; i < sockets; i++ {
+			pc, err := lc.ListenPacket(ctx, "udp", addr)
+			if err != nil {
+				return fail(fmt.Errorf("%s: %w", addr, err))
 			}
-			l.pcs = nil
-			return errors.New("udp listener: unexpected packet conn type")
-		}
-		l.pcs = append(l.pcs, udpConn)
-		if i == 0 {
-			// Lock subsequent sockets to the kernel-assigned port so
-			// every socket joins the same SO_REUSEPORT group when the
-			// configured address ends in ":0".
-			addr = pc.LocalAddr().String()
+			udpConn, ok := pc.(*net.UDPConn)
+			if !ok {
+				_ = pc.Close()
+				return fail(errors.New("udp listener: unexpected packet conn type"))
+			}
+			l.pcs = append(l.pcs, udpConn)
+			if i == 0 {
+				// Lock the address's other sockets to the kernel-assigned
+				// port so they join the same SO_REUSEPORT group when the
+				// configured address ends in ":0".
+				addr = pc.LocalAddr().String()
+			}
 		}
 	}
 
@@ -158,7 +175,7 @@ func (l *udpListener) Serve(_ context.Context) error {
 	// The derived bounds are logged because they are derived: an operator
 	// watching a canary needs to know what this machine decided before
 	// reading the counters that report hitting it.
-	zlog.Info("DNS server listening", "net", "udp", "addr", l.addr,
+	zlog.Info("DNS server listening", "net", "udp", "addr", l.Addr(),
 		"sockets", len(engine.pcs), "workers", engine.workers,
 		"slabcap", engine.slabCap)
 	l.serving.Store(true)
@@ -169,7 +186,7 @@ func (l *udpListener) Serve(_ context.Context) error {
 	go func() {
 		engine.readers.Wait()
 		if !l.closing.Load() {
-			zlog.Error("UDP readers exited outside shutdown", "addr", l.addr)
+			zlog.Error("UDP readers exited outside shutdown", "addr", l.Addr())
 			recordListenerErr("udp")
 		}
 	}()
@@ -201,7 +218,7 @@ func (l *udpListener) Shutdown(_ context.Context) error {
 		if timeout <= 0 {
 			timeout = 5 * time.Second
 		}
-		zlog.Info("DNS server stopping", "net", "udp", "addr", l.addr)
+		zlog.Info("DNS server stopping", "net", "udp", "addr", l.Addr())
 
 		// Admission stops now; readers waking on an expired deadline are
 		// the intended path, not a failure. The closing flag flips under

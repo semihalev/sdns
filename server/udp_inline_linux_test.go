@@ -77,7 +77,7 @@ func (h *inlineStubHandler) ServeRawReplay(w middleware.Transport, raw []byte, _
 
 func TestUDPInlineServeEndToEnd(t *testing.T) {
 	stub := &inlineStubHandler{}
-	l := newUDPListener("127.0.0.1:0", stub, time.Second, 4, 64, defaultResourcePlan(1))
+	l := newUDPListener([]string{"127.0.0.1:0"}, stub, time.Second, 4, 64, defaultResourcePlan(1))
 	if err := l.Bind(context.Background()); err != nil {
 		t.Fatal(err)
 	}

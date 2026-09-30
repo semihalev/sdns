@@ -148,6 +148,9 @@ func TestTCPLargeSlabReturnsWhenTheBurstShrinks(t *testing.T) {
 	conns := make([]*scriptedConn, cap(e.largeTokens))
 	for i := range conns {
 		conns[i] = newScriptedConn(burst)
+		if !e.reserve() {
+			t.Fatal("connection cap refused a fixture connection")
+		}
 		e.register(conns[i])
 		go e.serveConn(conns[i])
 	}
@@ -176,6 +179,9 @@ func TestTCPLargeSlabReturnsWhenTheBurstShrinks(t *testing.T) {
 
 	// And the class is usable, not merely accounted for: a large frame
 	// arriving now is served instead of waiting out its budget.
+	if !e.reserve() {
+		t.Fatal("connection cap refused the late connection")
+	}
 	e.register(late)
 	go e.serveConn(late)
 	deadline := time.Now().Add(tcpQueryWait)

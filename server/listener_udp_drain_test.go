@@ -39,7 +39,7 @@ func TestUDPShutdownDrainsInFlight(t *testing.T) {
 		return true
 	})
 
-	l := newUDPListener("127.0.0.1:0", slow, 5*time.Second, 2, 16, defaultResourcePlan(1))
+	l := newUDPListener([]string{"127.0.0.1:0"}, slow, 5*time.Second, 2, 16, defaultResourcePlan(1))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	if err := l.Bind(ctx); err != nil {

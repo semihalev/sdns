@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"time"
 
 	"github.com/semihalev/zlog/v2"
@@ -58,6 +59,51 @@ type Listener interface {
 
 // errListenerNotBound is returned from Serve when called before Bind.
 var errListenerNotBound = errors.New("listener: Serve called before Bind")
+
+// listenTCPAll opens a TCP listener on every address or on none: a failure
+// closes what was already open and names the address that failed. wrap, when
+// set, wraps each one (TLS).
+func listenTCPAll(ctx context.Context, addrs []string, wrap func(net.Listener) net.Listener) ([]net.Listener, error) {
+	if len(addrs) == 0 {
+		return nil, errors.New("no address")
+	}
+	var lc net.ListenConfig
+	lns := make([]net.Listener, 0, len(addrs))
+	for _, addr := range addrs {
+		ln, err := lc.Listen(ctx, "tcp", addr)
+		if err != nil {
+			for _, open := range lns {
+				_ = open.Close()
+			}
+			return nil, fmt.Errorf("%s: %w", addr, err)
+		}
+		if wrap != nil {
+			ln = wrap(ln)
+		}
+		lns = append(lns, ln)
+	}
+	return lns, nil
+}
+
+// listenUDPAll is listenTCPAll for the packet sockets QUIC runs over.
+func listenUDPAll(ctx context.Context, addrs []string) ([]net.PacketConn, error) {
+	if len(addrs) == 0 {
+		return nil, errors.New("no address")
+	}
+	var lc net.ListenConfig
+	pcs := make([]net.PacketConn, 0, len(addrs))
+	for _, addr := range addrs {
+		pc, err := lc.ListenPacket(ctx, "udp", addr)
+		if err != nil {
+			for _, open := range pcs {
+				_ = open.Close()
+			}
+			return nil, fmt.Errorf("%s: %w", addr, err)
+		}
+		pcs = append(pcs, pc)
+	}
+	return pcs, nil
+}
 
 // bindAll runs Bind on every listener and collects the outcome.
 // Non-critical bind failures disable that listener (its Serve becomes

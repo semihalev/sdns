@@ -138,10 +138,10 @@ func Test_ServerBindFail(t *testing.T) {
 	cfg.TLSCertificate = "cert"
 	cfg.TLSPrivateKey = "key"
 	cfg.LogLevel = "crit"
-	cfg.Bind = "1:1"
-	cfg.BindTLS = "1:2"
-	cfg.BindDOH = "1:3"
-	cfg.BindDOQ = "1:4"
+	cfg.Bind = config.Addrs{"1:1"}
+	cfg.BindTLS = config.Addrs{"1:2"}
+	cfg.BindDOH = config.Addrs{"1:3"}
+	cfg.BindDOQ = config.Addrs{"1:4"}
 
 	s := New(cfg)
 	_ = s.Run(context.Background())
@@ -160,10 +160,10 @@ func Test_Server(t *testing.T) {
 	cfg.TLSCertificate = cert
 	cfg.TLSPrivateKey = privkey
 	cfg.LogLevel = "crit"
-	cfg.Bind = "127.0.0.1:0"
-	cfg.BindTLS = "127.0.0.1:23222"
-	cfg.BindDOH = "127.0.0.1:23223"
-	cfg.BindDOQ = "127.0.0.1:23224"
+	cfg.Bind = config.Addrs{"127.0.0.1:0"}
+	cfg.BindTLS = config.Addrs{"127.0.0.1:23222"}
+	cfg.BindDOH = config.Addrs{"127.0.0.1:23223"}
+	cfg.BindDOQ = config.Addrs{"127.0.0.1:23224"}
 	cfg.BlockListDir = filepath.Join(os.TempDir(), "sdns_temp")
 
 	middleware.Register("blocklist", func(cfg *config.Config) middleware.Handler { return blocklist.New(cfg) })

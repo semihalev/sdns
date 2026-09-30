@@ -18,7 +18,7 @@ import (
 // loop that is still admitting connections.
 func TestListenerServeShutdownRace(t *testing.T) {
 	for i := 0; i < 200; i++ {
-		tcp := newTCPListener("127.0.0.1:0", echoHandler(), time.Second, 8, defaultResourcePlan(1))
+		tcp := newTCPListener([]string{"127.0.0.1:0"}, echoHandler(), time.Second, 8, defaultResourcePlan(1))
 		if err := tcp.Bind(context.Background()); err != nil {
 			t.Fatal(err)
 		}

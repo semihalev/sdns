@@ -27,7 +27,7 @@ func startEngine(t *testing.T, handler rawHandler, workers, queue int, plans ...
 	if len(plans) > 0 {
 		plan = plans[0]
 	}
-	l := newUDPListener("127.0.0.1:0", handler, time.Second, workers, queue, plan)
+	l := newUDPListener([]string{"127.0.0.1:0"}, handler, time.Second, workers, queue, plan)
 	if err := l.Bind(context.Background()); err != nil {
 		t.Fatal(err)
 	}

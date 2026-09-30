@@ -23,7 +23,7 @@ import (
 // startDoQ serves the handler on a DoQ listener over loopback.
 func startDoQ(t *testing.T, h rawHandler, plan resourcePlan) (*doqListener, string) {
 	t.Helper()
-	l := newDOQListener("127.0.0.1:0", h, &fakeCerts{cfg: minimalTLSConfig(t)}, time.Second, plan)
+	l := newDOQListener([]string{"127.0.0.1:0"}, h, &fakeCerts{cfg: minimalTLSConfig(t)}, time.Second, plan)
 	if err := l.Bind(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func startDoQ(t *testing.T, h rawHandler, plan resourcePlan) (*doqListener, stri
 		}
 		time.Sleep(time.Millisecond)
 	}
-	return l, l.pc.LocalAddr().String()
+	return l, l.pcs[0].LocalAddr().String()
 }
 
 func dialDoQ(t *testing.T, addr string, alpn ...string) (*quic.Conn, error) {
@@ -643,7 +643,7 @@ func TestServeRawContextCarriesCancellation(t *testing.T) {
 			ch.Cancel()
 		})
 	})
-	cfg := &config.Config{Bind: "127.0.0.1:0"}
+	cfg := &config.Config{Bind: config.Addrs{"127.0.0.1:0"}}
 	cfg.QueryTimeout.Duration = 10 * time.Second
 	middleware.Setup(cfg)
 	s := New(cfg)
@@ -687,7 +687,7 @@ func TestCarrierNeverDelegatesCancellation(t *testing.T) {
 			ch.Cancel()
 		})
 	})
-	cfg := &config.Config{Bind: "127.0.0.1:0"}
+	cfg := &config.Config{Bind: config.Addrs{"127.0.0.1:0"}}
 	cfg.QueryTimeout.Duration = 10 * time.Second
 	middleware.Setup(cfg)
 	s := New(cfg)
