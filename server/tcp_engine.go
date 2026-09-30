@@ -376,7 +376,7 @@ func (e *tcpEngine) acceptLoop(ln net.Listener) {
 			time.Sleep(tcpAcceptErrPause)
 			continue
 		}
-		if e.active.Load() >= e.maxConns {
+		if !e.reserve() {
 			_ = conn.Close()
 			tcpDropConnCap.Inc()
 			continue
@@ -386,8 +386,23 @@ func (e *tcpEngine) acceptLoop(ln net.Listener) {
 	}
 }
 
+// reserve takes a connection slot under the cap in one step. The cap is the
+// engine's and every address runs its own accept loop, so a check followed
+// by an increment would let two loops both take the last slot.
+func (e *tcpEngine) reserve() bool {
+	for {
+		n := e.active.Load()
+		if n >= e.maxConns {
+			return false
+		}
+		if e.active.CompareAndSwap(n, n+1) {
+			return true
+		}
+	}
+}
+
+// register records a connection whose slot reserve took.
 func (e *tcpEngine) register(conn net.Conn) {
-	e.active.Add(1)
 	e.wg.Add(1)
 	e.mu.Lock()
 	e.conns[conn] = struct{}{}

@@ -197,6 +197,48 @@ func TestListenersBindEveryAddressOrNone(t *testing.T) {
 	}
 }
 
+// TestTCPConnectionCapSpansAddresses: the connection cap is the transport's,
+// so accept loops on different addresses share it. Two connections arriving
+// at once, one per address, under a cap of one, leave one admitted.
+func TestTCPConnectionCapSpansAddresses(t *testing.T) {
+	l := newTCPListener(twoAddrs, answer, 5*time.Second, 1, defaultResourcePlan(1))
+	addrs := serveListener(t, l)
+	for round := 0; round < 200; round++ {
+		before := tcpDropConnCap.Value()
+		conns := make(chan net.Conn, len(addrs))
+		for _, addr := range addrs {
+			go func() {
+				conn, err := net.Dial("tcp", addr)
+				if err != nil {
+					t.Error(err)
+				}
+				conns <- conn
+			}()
+		}
+		var open []net.Conn
+		for range addrs {
+			if conn := <-conns; conn != nil {
+				open = append(open, conn)
+			}
+		}
+		for deadline := time.Now().Add(3 * time.Second); tcpDropConnCap.Value() == before && time.Now().Before(deadline); {
+			if n := l.engine.active.Load(); n > 1 {
+				t.Fatalf("round %d: %d connections admitted under a cap of 1", round, n)
+			}
+			time.Sleep(time.Millisecond)
+		}
+		if n := l.engine.active.Load(); n > 1 {
+			t.Fatalf("round %d: %d connections admitted under a cap of 1", round, n)
+		}
+		for _, conn := range open {
+			_ = conn.Close()
+		}
+		for deadline := time.Now().Add(3 * time.Second); l.engine.active.Load() != 0 && time.Now().Before(deadline); {
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
 // TestUDPListenerRefusesMixedWildcard: the pktinfo decision is the engine's,
 // so a wildcard and a specific address cannot share one listener even when
 // the config gate was skipped.
