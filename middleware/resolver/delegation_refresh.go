@@ -93,9 +93,7 @@ func (r *Resolver) scheduleDelegationRefresh(zone string, cd bool, d *authority.
 		base: middleware.WithBestEffortRecursionWork(context.Background()),
 		run: func(ctx context.Context) {
 			defer d.ReleaseRefresh()
-			r.refreshDelegation(ctx, zone, cd)
-			key := cache.Key(dns.Question{Name: zone, Qtype: dns.TypeNS, Qclass: dns.ClassINET}, cd)
-			if cur, err := r.delegations.Get(key); err == nil && cur != d {
+			if r.refreshDelegation(ctx, zone, cd, d) {
 				delegationRefreshes.renewed.Inc()
 			} else {
 				delegationRefreshes.failed.Inc()
@@ -138,7 +136,7 @@ func (r *Resolver) maybeRefreshGlue(c *cache.Cache[*glueEntry], host string, qty
 		base: middleware.WithBestEffortRecursionWork(context.Background()),
 		run: func(ctx context.Context) {
 			defer e.mark.SetFlag(false)
-			if r.refreshGlue(ctx, host, qtype, cd) {
+			if r.refreshGlue(ctx, c, e, host, qtype, cd) {
 				counters.renewed.Inc()
 			} else {
 				counters.failed.Inc()
@@ -151,17 +149,25 @@ func (r *Resolver) maybeRefreshGlue(c *cache.Cache[*glueEntry], host string, qty
 	}
 }
 
-// refreshGlue resolves host's addresses again and stores them as glue, and
-// reports whether it did. A failed lookup changes nothing: the glue runs out
-// as it would have.
-func (r *Resolver) refreshGlue(ctx context.Context, host string, qtype uint16, cd bool) bool {
+// refreshGlue resolves host's addresses again and stores them in c in place
+// of e, and reports whether it did. The lookup skips the answer cache, which
+// would hand back the very addresses being renewed, and keeps the rest of
+// the pipeline. A failed lookup changes nothing, and neither does one that
+// finishes after e was replaced or removed: the newer glue stands.
+func (r *Resolver) refreshGlue(ctx context.Context, c *cache.Cache[*glueEntry], e *glueEntry, host string, qtype uint16, cd bool) bool {
+	q := r.refreshQueryer.Load()
+	if q == nil {
+		if q = r.queryer.Load(); q == nil {
+			return false
+		}
+	}
 	ctx = context.WithValue(ctx, contextKeyNSL, struct{}{})
 	req := new(dns.Msg)
 	req.SetQuestion(host, qtype)
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 	req.CheckingDisabled = cd
 
-	resp, err := r.internalExchange(ctx, req)
+	resp, err := (*q).Query(ctx, req)
 	if err != nil {
 		return false
 	}
@@ -169,27 +175,43 @@ func (r *Resolver) refreshGlue(ctx context.Context, host string, qtype uint16, c
 	if !ok {
 		return false
 	}
-	set := map[string]nsAddrs{host: {addrs: addrs, ttl: ttl}}
-	if qtype == dns.TypeA {
-		r.addIPv4Cache(set)
-	} else {
-		r.addIPv6Cache(set)
-	}
-	return true
+	renewed, until := newGlueEntry(nsAddrs{addrs: addrs, ttl: ttl})
+	return c.CompareAndSwapUntil(cache.Key(dns.Question{Name: host, Qtype: qtype, Qclass: dns.ClassINET}), e, renewed, until)
 }
 
-// refreshDelegation resolves zone's NS set in refresh mode: the walk treats
-// every delegation on its path that is due for renewal as absent, so it
-// starts at the deepest one that is not, asks each parent below it again,
-// and renews the due entries from the referrals it receives, the shallowest
-// first, so each inherits its parent's renewed lease and not the old one.
-func (r *Resolver) refreshDelegation(ctx context.Context, zone string, cd bool) {
+// refreshTarget is the entry a refresh walk set out to renew, and whether
+// it was.
+type refreshTarget struct {
+	key     uint64
+	from    *authority.Delegation
+	renewed atomic.Bool
+}
+
+// errRefreshSuperseded ends a refresh walk whose entry was removed or
+// replaced while it ran: there is nothing left for it to renew.
+var errRefreshSuperseded = errors.New("delegation refresh superseded")
+
+// refreshDelegation resolves zone's NS set in refresh mode to renew d, and
+// reports whether it did: the walk treats every delegation on its path that
+// is due for renewal as absent, so it starts at the deepest one that is not,
+// asks each parent below it again, and renews the due entries from the
+// referrals it receives, the shallowest first, so each inherits its parent's
+// renewed lease and not the old one. The walk asks iteratively, as every
+// walk does once the handler has cleared RD: a parent that refuses
+// recursion answers it like any other.
+func (r *Resolver) refreshDelegation(ctx context.Context, zone string, cd bool, d *authority.Delegation) bool {
 	req := new(dns.Msg)
 	req.SetQuestion(zone, dns.TypeNS)
+	req.RecursionDesired = false
 	req.CheckingDisabled = cd
 	req.SetEdns0(dnsutil.DefaultMsgSize, true)
 
-	if _, err := r.resolveRooted(ctx, req, r.cfg.Maxdepth, true); err != nil && debugLogEnabled() {
+	target := &refreshTarget{
+		key:  cache.Key(dns.Question{Name: zone, Qtype: dns.TypeNS, Qclass: dns.ClassINET}, cd),
+		from: d,
+	}
+	if _, err := r.resolveRooted(ctx, req, r.cfg.Maxdepth, target); err != nil && debugLogEnabled() {
 		zlog.Debug("Delegation refresh failed", "zone", zone, "cd", cd, "error", err.Error())
 	}
+	return target.renewed.Load()
 }

@@ -358,6 +358,11 @@ func (h *DNSHandler) SetStore(s middleware.Store) { h.resolver.store.Store(&s) }
 // Auto-wired during middleware.Setup via middleware.QueryerSetter.
 func (h *DNSHandler) SetQueryer(q middleware.Queryer) { h.resolver.queryer.Store(&q) }
 
+// SetPrefetchQueryer implements middleware.PrefetchQueryerSetter: the
+// pipeline without the answer cache, which nameserver-address refreshes
+// go through so they reach the authority (see refreshGlue).
+func (h *DNSHandler) SetPrefetchQueryer(q middleware.Queryer) { h.resolver.refreshQueryer.Store(&q) }
+
 // DNSSECCryptoLimiter exposes the resolver-owned concurrency gate through the
 // narrow middleware wiring interface. Optional cache-side hashing uses
 // non-blocking admission on the same gate as required DNSSEC validation.

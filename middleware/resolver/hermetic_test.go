@@ -139,6 +139,9 @@ type hermeticServer struct {
 	records  map[hermeticRRSetKey][]dns.RR
 	names    map[string]bool              // every name this server holds any type for
 	children map[string]*hermeticReferral // referral, by delegated zone
+	// refuseRD answers REFUSED to a query that asks for recursion, as an
+	// authority that offers none may.
+	refuseRD bool
 	// proofs are the authority-section records a negative answer carries:
 	// the zone's SOA and an NSEC denying the queried type. Without them a
 	// validating resolver cannot tell "does not exist" from "was stripped",
@@ -215,6 +218,13 @@ func startHermeticServer(tb testing.TB, label string) *hermeticServer {
 		s.queries[hermeticRRSetKey{q.Name, q.Qtype}]++
 		if s.silent {
 			s.mu.Unlock()
+			return
+		}
+		if s.refuseRD && r.RecursionDesired {
+			s.mu.Unlock()
+			refused := new(dns.Msg)
+			refused.SetRcode(r, dns.RcodeRefused)
+			_ = w.WriteMsg(refused)
 			return
 		}
 		rrs, known := s.records[hermeticRRSetKey{q.Name, q.Qtype}]

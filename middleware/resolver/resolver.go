@@ -131,6 +131,10 @@ type Resolver struct {
 	// apply. Auto-wired via QueryerSetter. Same atomic.Pointer
 	// reasoning as store.
 	queryer atomic.Pointer[middleware.Queryer]
+	// refreshQueryer is the pipeline without the answer cache, for a
+	// refresh that must reach the authority: it keeps the operator's
+	// policy and skips only the cached answer the refresh would renew.
+	refreshQueryer atomic.Pointer[middleware.Queryer]
 }
 
 // resolveState holds the state for a DNS resolution operation.
@@ -171,10 +175,11 @@ type resolveState struct {
 	// downward-delegation (T2) protection (GHSA-mqfw-f48p-2vc8).
 	cut lease.Lease
 
-	// refresh marks a delegation refresh walk: delegations due for renewal
-	// are passed over in the cache and renewed from the referrals the walk
-	// receives (see refreshDelegation).
-	refresh bool
+	// refresh marks a delegation refresh walk and names the entry it set
+	// out to renew: delegations due for renewal are passed over in the
+	// cache and renewed from the referrals the walk receives (see
+	// refreshDelegation). Nil for every other walk.
+	refresh *refreshTarget
 }
 
 // advance moves past what the query just answered exposed: the labels the
@@ -447,8 +452,8 @@ func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authority
 }
 
 // resolveRooted starts a resolution of req from the root, in refresh mode
-// when refresh is set (see refreshDelegation).
-func (r *Resolver) resolveRooted(ctx context.Context, req *dns.Msg, depth int, refresh bool) (*dns.Msg, error) {
+// for refresh when it is set (see refreshDelegation).
+func (r *Resolver) resolveRooted(ctx context.Context, req *dns.Msg, depth int, refresh *refreshTarget) (*dns.Msg, error) {
 	return r.start(ctx, &resolveState{
 		req:     req,
 		servers: r.rootServers,
@@ -501,8 +506,8 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 	q := rs.req.Question[0]
 
 	if rs.isRoot {
-		m := r.searchCacheFor(q, rs.req.CheckingDisabled, q.Name, rs.refresh)
-		if !rs.refresh && m.deleg != nil && refreshDue(m.deleg, time.Now()) {
+		m := r.searchCacheFor(q, rs.req.CheckingDisabled, q.Name, rs.refresh != nil)
+		if rs.refresh == nil && m.deleg != nil && refreshDue(m.deleg, time.Now()) {
 			r.scheduleDelegationRefresh(m.zone, rs.req.CheckingDisabled, m.deleg)
 		}
 		rs.servers, rs.parentDS, rs.level = m.servers, m.parentDS, m.level
@@ -1105,6 +1110,12 @@ func glueUntil(ttl uint32) time.Time {
 	return time.Now().Add(d)
 }
 
+// newGlueEntry is set's glue entry and the instant it runs out.
+func newGlueEntry(set nsAddrs) (*glueEntry, time.Time) {
+	until := glueUntil(set.ttl)
+	return &glueEntry{addrs: set.addrs, expiresAt: until.UnixNano(), granted: time.Until(until)}, until
+}
+
 // glueGet reads one entry, expiring it lazily: a stale read deletes only
 // the exact entry it saw, so a fresh value published meanwhile survives.
 // The remaining TTL comes back with the addresses so a caller re-adding
@@ -1131,8 +1142,8 @@ func glueGet(c *cache.Cache[*glueEntry], key uint64) ([]netip.Addr, uint32, bool
 func (r *Resolver) addIPv4Cache(nsipv4 map[string]nsAddrs) {
 	for name, set := range nsipv4 {
 		key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET})
-		until := glueUntil(set.ttl)
-		r.glueV4.AddUntil(key, &glueEntry{addrs: set.addrs, expiresAt: until.UnixNano(), granted: time.Until(until)}, until)
+		e, until := newGlueEntry(set)
+		r.glueV4.AddUntil(key, e, until)
 	}
 }
 
@@ -1147,8 +1158,8 @@ func (r *Resolver) removeIPv4Cache(name string) {
 func (r *Resolver) addIPv6Cache(nsipv6 map[string]nsAddrs) {
 	for name, set := range nsipv6 {
 		key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET})
-		until := glueUntil(set.ttl)
-		r.glueV6.AddUntil(key, &glueEntry{addrs: set.addrs, expiresAt: until.UnixNano(), granted: time.Until(until)}, until)
+		e, until := newGlueEntry(set)
+		r.glueV6.AddUntil(key, e, until)
 	}
 }
 
@@ -4273,6 +4284,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 				extra:     rs.extra,
 				requestID: rs.requestID,
 				work:      rs.work,
+				refresh:   rs.refresh,
 			}
 			return r.resolve(ctx, newRS)
 		}
@@ -4294,9 +4306,17 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	// A refresh walk renews a due entry from this referral rather than
 	// following it: the entry is rebuilt below exactly as a missing one is,
 	// and replaces the one found here only if that is still the one cached.
+	// The entry the refresh set out to renew is renewed only as itself: one
+	// removed or replaced since leaves the refresh nothing to do, and
+	// nothing it learns is published in its place.
 	var renew *authority.Delegation
-	if cached, err := r.delegations.Get(key); err == nil {
-		if rs.refresh && refreshDue(cached, time.Now()) {
+	if t := rs.refresh; t != nil && key == t.key {
+		if cached, err := r.delegations.Get(key); err != nil || cached != t.from {
+			return nil, errRefreshSuperseded
+		}
+		renew = t.from
+	} else if cached, err := r.delegations.Get(key); err == nil {
+		if rs.refresh != nil && refreshDue(cached, time.Now()) {
 			renew = cached
 		} else {
 			// Carry the CURRENT referral's deadline into the cached descent.
@@ -4339,7 +4359,9 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 		// Store the absolute (inherited) deadline verbatim. A past deadline
 		// is not cached (SetUntil skips it).
 		if renew != nil {
-			r.delegations.Renew(key, renew, rs.parentDS, authservers, childCut)
+			if r.delegations.Renew(key, renew, rs.parentDS, authservers, childCut) && rs.refresh != nil && key == rs.refresh.key {
+				rs.refresh.renewed.Store(true)
+			}
 		} else {
 			r.delegations.SetUntil(key, rs.parentDS, authservers, childCut)
 		}

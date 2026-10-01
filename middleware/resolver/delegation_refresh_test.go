@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/semihalev/sdns/internal/cache"
 	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/middleware"
+	answercache "github.com/semihalev/sdns/middleware/cache"
 )
 
 // setReferralTTL makes the root hand out z's delegation, its NS set and
@@ -57,6 +59,11 @@ func TestDelegationRefreshedBeforeItsLeaseEnds(t *testing.T) {
 	const ttl = 2 // seconds, the referral's NS and glue TTL
 
 	net := newHermeticNet(t)
+	// The root refuses recursion, as authorities may: walks ask it
+	// iteratively, the refresh included.
+	net.root.mu.Lock()
+	net.root.refuseRD = true
+	net.root.mu.Unlock()
 	zone := net.DelegateInsecure("refresh.test.")
 	setReferralTTL(net, zone, ttl)
 	for _, name := range []string{"a", "b", "c"} {
@@ -239,10 +246,11 @@ func TestLocalRootDelegationRenewedFromTheCopy(t *testing.T) {
 	}
 
 	refresh := localRootState("example.com.", dns.TypeNS, false)
-	refresh.refresh = true
+	target := &refreshTarget{key: key, from: first}
+	refresh.refresh = target
 	r.consultLocalRoot(context.Background(), refresh)
 	renewed, err := r.delegations.Get(key)
-	if err != nil || renewed == first {
+	if err != nil || renewed == first || !target.renewed.Load() {
 		t.Fatalf("refresh did not renew the TLD delegation from the copy (err %v)", err)
 	}
 	if refresh.servers != renewed.Servers {
@@ -251,6 +259,27 @@ func TestLocalRootDelegationRenewedFromTheCopy(t *testing.T) {
 	snap := r.localRoot.Load().Active()
 	if now := time.Now(); leaseLeft(renewed.Lease, now) > leaseLeft(snap.ValidUntil(), now) {
 		t.Fatalf("renewed lease %+v outlives the copy's horizon %+v", renewed.Lease, snap.ValidUntil())
+	}
+
+	// A refresh whose entry was replaced since renews nothing: the newer
+	// entry stands, and the walk takes it.
+	stale := localRootState("example.com.", dns.TypeNS, false)
+	staleTarget := &refreshTarget{key: key, from: first}
+	stale.refresh = staleTarget
+	r.consultLocalRoot(context.Background(), stale)
+	if d, _ := r.delegations.Get(key); d != renewed || staleTarget.renewed.Load() || stale.servers != renewed.Servers {
+		t.Fatal("a refresh overwrote the entry that replaced the one it set out from")
+	}
+
+	// A refresh whose entry was purged installs nothing.
+	r.delegations.Remove(key)
+	gone := localRootState("example.com.", dns.TypeNS, false)
+	gone.refresh = &refreshTarget{key: key, from: renewed}
+	if _, handled := r.consultLocalRoot(context.Background(), gone); handled {
+		t.Fatal("referral consult synthesized an answer")
+	}
+	if _, err := r.delegations.Get(key); err == nil {
+		t.Fatal("a refresh brought back a purged TLD delegation")
 	}
 }
 
@@ -300,4 +329,128 @@ func TestGlueRefreshedWhenReadNearItsEnd(t *testing.T) {
 		}
 	}
 	t.Fatal("glue read near its end was not refreshed")
+}
+
+// TestDelegationRefreshRenewsOnlyItsOwnEntry: a refresh renews the entry it
+// set out from and nothing else. One purged while the refresh waited is not
+// learned again in its place, and one replaced meanwhile is not overwritten.
+func TestDelegationRefreshRenewsOnlyItsOwnEntry(t *testing.T) {
+	withRefreshShare(t, 1) // every live entry is due
+	net := newHermeticNet(t)
+	zone := net.DelegateInsecure("refresh.test.")
+	zone.Serve(mustRR(t, "a.refresh.test. 300 IN A 192.0.2.80"))
+	h := net.Handler()
+	r := h.resolver
+	key := cache.Key(dns.Question{Name: "refresh.test.", Qtype: dns.TypeNS, Qclass: dns.ClassINET}, false)
+
+	resolveA(t, h, "a.refresh.test.")
+	first, err := r.delegations.Get(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	r.delegations.Remove(key)
+	if r.refreshDelegation(context.Background(), "refresh.test.", false, first) {
+		t.Fatal("a refresh of a purged delegation reported a renewal")
+	}
+	if _, err := r.delegations.Get(key); err == nil {
+		t.Fatal("a refresh brought back a purged delegation")
+	}
+
+	resolveA(t, h, "a.refresh.test.")
+	newer, err := r.delegations.Get(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.refreshDelegation(context.Background(), "refresh.test.", false, first) {
+		t.Fatal("a refresh of a replaced delegation reported a renewal")
+	}
+	if d, err := r.delegations.Get(key); err != nil || d != newer {
+		t.Fatal("a refresh overwrote the delegation that replaced its own")
+	}
+
+	if !r.refreshDelegation(context.Background(), "refresh.test.", false, newer) {
+		t.Fatal("a refresh of the live delegation did not renew it")
+	}
+	if d, err := r.delegations.Get(key); err != nil || d == newer {
+		t.Fatal("the live delegation was not renewed")
+	}
+}
+
+// glueWithAnswerCache wires h the way production does for nameserver
+// lookups: the resolver's internal queries go through the answer cache,
+// its refreshes through the pipeline without it.
+func glueWithAnswerCache(t *testing.T, world *hermeticNet, h *DNSHandler) {
+	t.Helper()
+	cfg := world.Config()
+	cfg.CacheSize = 1024
+	h.SetQueryer(pipelineQueryer{handlers: []middleware.Handler{answercache.New(cfg), h}})
+	h.SetPrefetchQueryer(pipelineQueryer{handlers: []middleware.Handler{h}})
+}
+
+// TestGlueRefreshAsksTheAuthority: a glue refresh is not answered from the
+// answer cache, which holds the very addresses being renewed: it reaches
+// the zone that publishes them.
+func TestGlueRefreshAsksTheAuthority(t *testing.T) {
+	world := newHermeticNet(t)
+	helper := world.Delegate("helper.test.")
+	shop := world.DelegateVia("shop.test.", "ns1.helper.test.")
+	for _, name := range []string{"a", "b"} {
+		shop.Serve(mustRR(t, name+".shop.test. 300 IN A 192.0.2.60"))
+	}
+	helper.Serve(mustRR(t, "ns1.helper.test. 300 IN A "+shop.glue.String()))
+	h := world.Handler()
+	glueWithAnswerCache(t, world, h)
+	r := h.resolver
+	shopKey := cache.Key(dns.Question{Name: "shop.test.", Qtype: dns.TypeNS, Qclass: dns.ClassINET}, false)
+	glueKey := cache.Key(dns.Question{Name: "ns1.helper.test.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
+
+	resolveA(t, h, "a.shop.test.")
+	first, ok := r.glueV4.Get(glueKey)
+	if !ok {
+		t.Fatal("the nameserver's address was not cached as glue")
+	}
+	asked := helper.asked("ns1.helper.test.", dns.TypeA)
+
+	withRefreshShare(t, 1)
+	r.delegations.Remove(shopKey)
+	resolveA(t, h, "b.shop.test.")
+	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		if got, ok := r.glueV4.Get(glueKey); ok && got != first {
+			if helper.asked("ns1.helper.test.", dns.TypeA) == asked {
+				t.Fatal("glue renewed from the answer cache without asking its zone")
+			}
+			return
+		}
+	}
+	t.Fatal("glue read near its end was not refreshed")
+}
+
+// TestGlueRefreshLeavesNewerGlue: a glue refresh that finishes after its
+// entry was replaced does not overwrite the newer addresses.
+func TestGlueRefreshLeavesNewerGlue(t *testing.T) {
+	world := newHermeticNet(t)
+	helper := world.Delegate("helper.test.")
+	shop := world.DelegateVia("shop.test.", "ns1.helper.test.")
+	shop.Serve(mustRR(t, "a.shop.test. 300 IN A 192.0.2.60"))
+	helper.Serve(mustRR(t, "ns1.helper.test. 300 IN A "+shop.glue.String()))
+	h := world.Handler()
+	r := h.resolver
+	glueKey := cache.Key(dns.Question{Name: "ns1.helper.test.", Qtype: dns.TypeA, Qclass: dns.ClassINET})
+
+	resolveA(t, h, "a.shop.test.")
+	first, ok := r.glueV4.Get(glueKey)
+	if !ok {
+		t.Fatal("the nameserver's address was not cached as glue")
+	}
+	newer := netip.MustParseAddr("192.0.2.20")
+	r.addIPv4Cache(map[string]nsAddrs{"ns1.helper.test.": {addrs: []netip.Addr{newer}, ttl: 300}})
+
+	if r.refreshGlue(context.Background(), r.glueV4, first, "ns1.helper.test.", dns.TypeA, false) {
+		t.Fatal("a refresh of replaced glue reported a renewal")
+	}
+	got, ok := r.glueV4.Get(glueKey)
+	if !ok || len(got.addrs) != 1 || got.addrs[0] != newer {
+		t.Fatalf("glue %v, want the newer %v kept", got, newer)
+	}
 }
