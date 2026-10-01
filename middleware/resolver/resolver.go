@@ -3360,7 +3360,12 @@ func (r *Resolver) resolveV4Host(ctx context.Context, q dns.Question, authserver
 	authservers.RLock()
 	hasList := len(authservers.List) > 0
 	authservers.RUnlock()
-	if hasList && (!r.dnssec || r.hasTrustAnchors()) {
+	// A refresh renewing an entry stores none: while the entry is live it
+	// is what the address lookup finds, and once it is purged or replaced
+	// the refresh must not install anything under its key, provisionally
+	// or otherwise.
+	renewing, _ := ctx.Value(contextKeyRenewing).(uint64)
+	if hasList && (renewing != key || key == 0) && (!r.dnssec || r.hasTrustAnchors()) {
 		// Temporary cache before lookup. Skip when trust anchors
 		// are unavailable: the DS set could be empty because the
 		// DNSSEC chain was short-circuited, and caching that empty-DS
@@ -3438,6 +3443,9 @@ func (r *Resolver) enqueueV4Enrich(ctx context.Context, q dns.Question, authserv
 	detachedBase := dnssec.InheritNSEC3HashMemos(context.Background(), ctx)
 	if middleware.HasClientECS(ctx) {
 		detachedBase = middleware.MarkClientECS(detachedBase)
+	}
+	if renewing := ctx.Value(contextKeyRenewing); renewing != nil {
+		detachedBase = context.WithValue(detachedBase, contextKeyRenewing, renewing)
 	}
 
 	enqueueEnrich(r.v4Enrich, nsEnrichJob{
@@ -4338,7 +4346,11 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	authservers.CheckingDisable = cd
 	authservers.Zone = q.Name
 
-	if err := r.lookupV4Nss(ctx, q, authservers, key, rs.parentDS, foundv4, nsInfo.hosts, cd, childCut); err != nil {
+	nsCtx := ctx
+	if renew != nil {
+		nsCtx = context.WithValue(ctx, contextKeyRenewing, key)
+	}
+	if err := r.lookupV4Nss(nsCtx, q, authservers, key, rs.parentDS, foundv4, nsInfo.hosts, cd, childCut); err != nil {
 		return nil, err
 	}
 

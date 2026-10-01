@@ -30,6 +30,7 @@ const (
 	contextKeyRequestID  contextKey = iota
 	contextKeyNSL                   // nameserver lookup marker
 	contextKeyDnameDepth            // DNAME alias chain depth
+	contextKeyRenewing              // key of the delegation a refresh is renewing: no provisional entry under it
 )
 
 // contextKeyNSList is the base for the per-qtype nameserver-list keys.

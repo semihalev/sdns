@@ -454,3 +454,60 @@ func TestGlueRefreshLeavesNewerGlue(t *testing.T) {
 		t.Fatalf("glue %v, want the newer %v kept", got, newer)
 	}
 }
+
+// TestRenewingStoresNoProvisionalDelegation: while a refresh builds the
+// delegation it renews, the nameserver-address lookups store no provisional
+// entry under its key, inline or from a deferred enrichment job, so one
+// purged while they ran is not put back for a minute. Lookups for any other
+// delegation still store theirs.
+func TestRenewingStoresNoProvisionalDelegation(t *testing.T) {
+	cfg := makeTestConfig()
+	cfg.DNSSEC = "off"
+	r := newWiredTestResolver(cfg)
+
+	const host = "ns1.lease.example."
+	const key = uint64(0xBEEF)
+	q := dns.Question{Name: "www.lease.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}
+	servers := func() *authority.Servers {
+		s := &authority.Servers{Zone: "lease.example."}
+		s.List = append(s.List, authority.NewServerFromAddrPort(netip.MustParseAddrPort("192.0.2.1:53")))
+		return s
+	}
+	r.addIPv4Cache(map[string]nsAddrs{host: {addrs: []netip.Addr{netip.MustParseAddr("192.0.2.2")}, ttl: 300}})
+	renewing := context.WithValue(context.Background(), contextKeyRenewing, key)
+
+	if _, err := r.resolveV4Host(renewing, q, servers(), key, nil, host, false, lease.Lease{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.delegations.Get(key); err == nil {
+		t.Fatal("a renewing lookup stored a provisional delegation")
+	}
+
+	// Deferred: the job carries the mark. It has run once the address it
+	// resolves is in the server list.
+	deferred := servers()
+	r.enqueueV4Enrich(renewing, q, deferred, key, nil, []string{host}, false, lease.Lease{})
+	for deadline := time.Now().Add(3 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		deferred.RLock()
+		n := len(deferred.List)
+		deferred.RUnlock()
+		if n == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the deferred enrichment never ran")
+		}
+	}
+	if _, err := r.delegations.Get(key); err == nil {
+		t.Fatal("a deferred renewing lookup stored a provisional delegation")
+	}
+
+	// The mark is the renewed key's alone.
+	other := context.WithValue(context.Background(), contextKeyRenewing, key+1)
+	if _, err := r.resolveV4Host(other, q, servers(), key, nil, host, false, lease.Lease{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.delegations.Get(key); err != nil {
+		t.Fatal("a lookup for another delegation lost its provisional entry")
+	}
+}
