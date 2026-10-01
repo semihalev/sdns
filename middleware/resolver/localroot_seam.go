@@ -308,6 +308,14 @@ func (r *Resolver) installLocalRootReferral(
 	if live == nil {
 		return false
 	}
+	// A refresh walk renews a due entry from the copy, the referral it
+	// would have asked the root for, and takes whichever entry is live
+	// afterwards, its own or one a racing writer stored.
+	if rs.refresh && refreshDue(live, time.Now()) && r.delegations.Renew(key, live, ref.DS, servers, cut) {
+		if renewed, err := r.delegations.Get(key); err == nil {
+			live = renewed
+		}
+	}
 
 	rs.servers = live.Servers
 	rs.parentDS = live.DSSet

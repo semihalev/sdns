@@ -24,8 +24,21 @@ type Delegation struct {
 	DSSet   []dns.RR
 	Lease   lease.Lease
 
-	expiry cache.ExpiryMark // the delegation cache's expiry index mark
+	granted time.Duration    // what Lease had left when it was stored
+	expiry  cache.ExpiryMark // the delegation cache's expiry index mark; its flag is the refresh claim
 }
+
+// Granted is how much of its lease the delegation had when it was stored,
+// the measure a refresh judges what is left against.
+func (d *Delegation) Granted() time.Duration { return d.granted }
+
+// ClaimRefresh takes the delegation's one refresh, and reports whether this
+// caller has it: a delegation is renewed by one refresh at a time.
+func (d *Delegation) ClaimRefresh() bool { return d.expiry.CompareAndSwapFlag(false, true) }
+
+// ReleaseRefresh gives the claim back, for a refresh that is over, renewed
+// or not.
+func (d *Delegation) ReleaseRefresh() { d.expiry.SetFlag(false) }
 
 // Cache type.
 type Cache struct {
@@ -129,11 +142,7 @@ func (n *Cache) SetUntilIfAbsent(key uint64, dsSet []dns.RR, servers *Servers, e
 		return nil
 	}
 
-	d := &Delegation{
-		Servers: servers,
-		DSSet:   dsSet,
-		Lease:   expiresAt,
-	}
+	d := n.newDelegation(dsSet, servers, expiresAt)
 	for {
 		cur, ok := n.cache.Get(key)
 		if !ok {
@@ -153,12 +162,33 @@ func (n *Cache) SetUntilIfAbsent(key uint64, dsSet []dns.RR, servers *Servers, e
 	}
 }
 
+// (*Cache).Renew replaces old with a delegation holding the given servers,
+// DS set and lease, if old is still the delegation under key, and reports
+// whether it did. A refresh renews exactly the entry it set out from: one
+// another writer replaced, or a purge removed, meanwhile is left alone.
+// The lease is admitted as SetUntil admits one, capped and never past.
+func (n *Cache) Renew(key uint64, old *Delegation, dsSet []dns.RR, servers *Servers, expiresAt lease.Lease) bool {
+	expiresAt, ok := n.admit(expiresAt)
+	if !ok {
+		return false
+	}
+	return n.cache.CompareAndSwapUntil(key, old, n.newDelegation(dsSet, servers, expiresAt), leaseEnd(expiresAt))
+}
+
 func (n *Cache) store(key uint64, dsSet []dns.RR, servers *Servers, expiresAt lease.Lease) {
-	n.cache.AddUntil(key, &Delegation{
+	n.cache.AddUntil(key, n.newDelegation(dsSet, servers, expiresAt), leaseEnd(expiresAt))
+}
+
+// newDelegation builds an entry for an admitted lease, recording what the
+// lease grants from now.
+func (n *Cache) newDelegation(dsSet []dns.RR, servers *Servers, expiresAt lease.Lease) *Delegation {
+	granted, _ := expiresAt.Remaining(n.now())
+	return &Delegation{
 		Servers: servers,
 		DSSet:   dsSet,
 		Lease:   expiresAt,
-	}, leaseEnd(expiresAt))
+		granted: granted,
+	}
 }
 
 // leaseEnd is the instant a delegation's expiry record is filed for: its

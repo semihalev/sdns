@@ -280,3 +280,74 @@ func TestPruneRemovesExpiredDelegations(t *testing.T) {
 		t.Fatalf("pruned %d, %d left once the hour ran out; want 1 and 0", removed, nscache.Len())
 	}
 }
+
+// TestDelegationGrantedAndRenew pins what a refresh relies on: an entry
+// records what its lease granted when it was stored, capped as the lease is;
+// one refresh holds the claim at a time; and Renew replaces only the very
+// entry the refresh set out from, never one replaced or removed meanwhile.
+func TestDelegationGrantedAndRenew(t *testing.T) {
+	nscache := NewCache()
+	base := time.Now()
+	nscache.now = func() time.Time { return base }
+	servers := &Servers{List: []*Server{NewServer("192.0.2.1:53", IPv4)}}
+	const key = uint64(0x5151)
+
+	nscache.SetUntil(key, nil, servers, lease.Until(base.Add(24*time.Hour)))
+	old, err := nscache.Get(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := old.Granted(); got != 12*time.Hour {
+		t.Fatalf("granted %v, want the capped 12h", got)
+	}
+	if prov := nscache.SetUntilIfAbsent(uint64(0x5152), nil, servers, lease.Until(base.Add(time.Minute))); prov.Granted() != time.Minute {
+		t.Fatalf("provisional granted %v, want 1m", prov.Granted())
+	}
+
+	if !old.ClaimRefresh() {
+		t.Fatal("first claim refused")
+	}
+	if old.ClaimRefresh() {
+		t.Fatal("second claim taken while the first holds it")
+	}
+	old.ReleaseRefresh()
+	if !old.ClaimRefresh() {
+		t.Fatal("claim not taken after release")
+	}
+
+	later := base.Add(11 * time.Hour)
+	nscache.now = func() time.Time { return later }
+	renewed := &Servers{List: []*Server{NewServer("192.0.2.2:53", IPv4)}}
+	if !nscache.Renew(key, old, nil, renewed, lease.Until(later.Add(2*time.Hour))) {
+		t.Fatal("Renew refused the entry it set out from")
+	}
+	cur, err := nscache.Get(key)
+	if err != nil || cur.Servers != renewed {
+		t.Fatalf("renewed entry not stored: %v", err)
+	}
+	if want := later.Add(2 * time.Hour); !cur.Lease.Mono().Until.Equal(want) || cur.Granted() != 2*time.Hour {
+		t.Fatalf("renewed lease %v granted %v, want %v and 2h", cur.Lease.Mono().Until, cur.Granted(), want)
+	}
+	if !cur.ClaimRefresh() {
+		t.Fatal("a renewed entry must start unclaimed")
+	}
+
+	// The old entry is gone: a second refresh from it renews nothing.
+	if nscache.Renew(key, old, nil, servers, lease.Until(later.Add(time.Hour))) {
+		t.Fatal("Renew replaced an entry it did not set out from")
+	}
+	// A removed entry is not brought back.
+	nscache.Remove(key)
+	if nscache.Renew(key, cur, nil, servers, lease.Until(later.Add(time.Hour))) {
+		t.Fatal("Renew brought back a removed entry")
+	}
+	if _, err := nscache.Get(key); err == nil {
+		t.Fatal("removed entry is cached again")
+	}
+	// A past lease renews nothing.
+	nscache.SetUntil(key, nil, servers, lease.Until(later.Add(time.Hour)))
+	cur, _ = nscache.Get(key)
+	if nscache.Renew(key, cur, nil, servers, lease.Until(later.Add(-time.Second))) {
+		t.Fatal("Renew stored a past lease")
+	}
+}

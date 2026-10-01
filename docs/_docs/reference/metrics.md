@@ -6,7 +6,7 @@ order: 3
 description: Every metric sdns exports, what it means, and the queries worth building a dashboard from.
 ---
 
-sdns exports 72 metrics in Prometheus format on the API listener, alongside the
+sdns exports 73 metrics in Prometheus format on the API listener, alongside the
 Go runtime and process collectors.
 
 ```toml
@@ -86,6 +86,7 @@ is served straight from stored bytes rather than being re-encoded.
 | `dns_resolver_dnssec_failures_total` | counter | `reason` | DNSSEC validation failures |
 | `dns_resolver_cache_size` | gauge | `type` | Entries the resolver's own caches hold, `delegation`, `glue_v4` and `glue_v6`, expired ones not yet pruned included |
 | `dns_resolver_cache_pruned_total` | counter | `type` | Expired delegations and glue the resolver's pruner removed |
+| `dns_resolver_refresh_total` | counter | `type`, `result` | Delegations and nameserver glue renewed ahead of their end when used in the last tenth of their lifetime: `renewed`, `failed` (the old entry runs out as before), or `shed` (the refresh queue was full) |
 | `dns_circuit_breaker_trips_total` | counter | | Resolver circuit breaker opened (5 consecutive failures) |
 | `dns_circuit_breaker_resets_total` | counter | | An open breaker closed again |
 | `dns_trust_anchor_refresh_total` | counter | `result` | RFC 5011 refresh attempts, by terminal result |
