@@ -32,8 +32,11 @@ type Delegation struct {
 // the measure a refresh judges what is left against.
 func (d *Delegation) Granted() time.Duration { return d.granted }
 
-// ClaimRefresh takes the delegation's one refresh, and reports whether this
-// caller has it: a delegation is renewed by one refresh at a time.
+// ClaimRefresh takes the delegation's one scheduled refresh, and reports
+// whether this caller has it: a delegation is the target of one refresh at
+// a time. A refresh walk passing through a due ancestor renews that one
+// unclaimed; the compare-and-swap in Renew keeps a second walk doing the
+// same from replacing the first one's result.
 func (d *Delegation) ClaimRefresh() bool { return d.expiry.CompareAndSwapFlag(false, true) }
 
 // ReleaseRefresh gives the claim back, for a refresh that is over, renewed

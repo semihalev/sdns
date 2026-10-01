@@ -56,7 +56,7 @@ func resolveA(t *testing.T, h *DNSHandler, name string) *dns.Msg {
 // is the fresh referral's, never more.
 func TestDelegationRefreshedBeforeItsLeaseEnds(t *testing.T) {
 	withRefreshShare(t, 2)
-	const ttl = 2 // seconds, the referral's NS and glue TTL
+	const ttl = 4 // seconds, the referral's NS and glue TTL
 
 	net := newHermeticNet(t)
 	// The root refuses recursion, as authorities may: walks ask it
@@ -82,10 +82,12 @@ func TestDelegationRefreshedBeforeItsLeaseEnds(t *testing.T) {
 	referrals := net.root.asked("refresh.test.", dns.TypeA) + net.root.asked("refresh.test.", dns.TypeNS)
 	renewedBefore := delegationRefreshes.renewed.Value()
 
-	// Into the last half of the lease: this use schedules the refresh.
-	time.Sleep(time.Until(oldEnd.Add(-700 * time.Millisecond)))
+	// Into the last half of the lease, with time to spare for the refresh
+	// to run before the old end: this use schedules it.
+	time.Sleep(time.Until(oldEnd.Add(-1800 * time.Millisecond)))
 	refreshAt := time.Now()
 	resolveA(t, h, "b.refresh.test.")
+	childNS := zone.asked("refresh.test.", dns.TypeNS)
 
 	var renewed time.Time
 	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
@@ -102,6 +104,12 @@ func TestDelegationRefreshedBeforeItsLeaseEnds(t *testing.T) {
 	}
 	if limit := time.Now().Add(ttl * time.Second); renewed.After(limit) || renewed.Before(refreshAt) {
 		t.Fatalf("renewed lease ends %v, want within the fresh referral's %ds", renewed, ttl)
+	}
+	// The refresh stops once renewed: the zone's own servers are not asked
+	// for an NS set nothing would use.
+	time.Sleep(100 * time.Millisecond)
+	if got := zone.asked("refresh.test.", dns.TypeNS); got != childNS {
+		t.Fatalf("the zone was asked for its NS set after the renewal (%d, was %d)", got, childNS)
 	}
 
 	// Past the old end: the renewed delegation serves, the root is not
@@ -180,7 +188,7 @@ func TestDelegationRefreshInheritsTheParentCut(t *testing.T) {
 	withRefreshShare(t, 2)
 	net := newHermeticNet(t)
 	zone := net.DelegateInsecure("refresh.test.")
-	setReferralTTL(net, zone, 2)
+	setReferralTTL(net, zone, 4)
 	for _, name := range []string{"a", "b"} {
 		zone.Serve(mustRR(t, name+".refresh.test. 300 IN A 192.0.2.80"))
 	}
@@ -196,10 +204,11 @@ func TestDelegationRefreshInheritsTheParentCut(t *testing.T) {
 	oldEnd := first.Lease.Mono().Until
 
 	// The fresh referral would grant a minute; the parent above it, a
-	// "test." delegation served by the same root, has far less left.
+	// "test." delegation served by the same root, has far less left, and
+	// is far from due itself, so the refresh walk starts at it.
 	setReferralTTL(net, zone, 60)
-	time.Sleep(time.Until(oldEnd.Add(-700 * time.Millisecond)))
-	parentEnd := time.Now().Add(1500 * time.Millisecond)
+	time.Sleep(time.Until(oldEnd.Add(-1800 * time.Millisecond)))
+	parentEnd := time.Now().Add(10 * time.Second)
 	parentKey := cache.Key(dns.Question{Name: "test.", Qtype: dns.TypeNS, Qclass: dns.ClassINET}, false)
 	r.delegations.SetUntil(parentKey, nil, &authority.Servers{
 		Zone: "test.",

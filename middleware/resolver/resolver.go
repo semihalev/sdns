@@ -4372,7 +4372,10 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 		// is not cached (SetUntil skips it).
 		if renew != nil {
 			if r.delegations.Renew(key, renew, rs.parentDS, authservers, childCut) && rs.refresh != nil && key == rs.refresh.key {
+				// The refresh has what it came for; asking the zone's own
+				// servers for its NS set would only be discarded.
 				rs.refresh.renewed.Store(true)
+				return nil, errRefreshDone
 			}
 		} else {
 			r.delegations.SetUntil(key, rs.parentDS, authservers, childCut)

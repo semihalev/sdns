@@ -191,6 +191,9 @@ type refreshTarget struct {
 // replaced while it ran: there is nothing left for it to renew.
 var errRefreshSuperseded = errors.New("delegation refresh superseded")
 
+// errRefreshDone ends a refresh walk once its entry is renewed.
+var errRefreshDone = errors.New("delegation refresh done")
+
 // refreshDelegation resolves zone's NS set in refresh mode to renew d, and
 // reports whether it did: the walk treats every delegation on its path that
 // is due for renewal as absent, so it starts at the deepest one that is not,
@@ -210,7 +213,12 @@ func (r *Resolver) refreshDelegation(ctx context.Context, zone string, cd bool, 
 		key:  cache.Key(dns.Question{Name: zone, Qtype: dns.TypeNS, Qclass: dns.ClassINET}, cd),
 		from: d,
 	}
-	if _, err := r.resolveRooted(ctx, req, r.cfg.Maxdepth, target); err != nil && debugLogEnabled() {
+	// A job can wait in the lane; one whose entry is gone or replaced
+	// by then has nothing to ask the parent for.
+	if cur, err := r.delegations.Get(target.key); err != nil || cur != d {
+		return false
+	}
+	if _, err := r.resolveRooted(ctx, req, r.cfg.Maxdepth, target); err != nil && !errors.Is(err, errRefreshDone) && debugLogEnabled() {
 		zlog.Debug("Delegation refresh failed", "zone", zone, "cd", cd, "error", err.Error())
 	}
 	return target.renewed.Load()
