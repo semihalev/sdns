@@ -30,6 +30,7 @@ const (
 	contextKeyRequestID  contextKey = iota
 	contextKeyNSL                   // nameserver lookup marker
 	contextKeyDnameDepth            // DNAME alias chain depth
+	contextKeyRenewing              // key of the delegation a refresh is renewing: no provisional entry under it
 )
 
 // contextKeyNSList is the base for the per-qtype nameserver-list keys.
@@ -357,6 +358,11 @@ func (h *DNSHandler) SetStore(s middleware.Store) { h.resolver.store.Store(&s) }
 // for policy-aware internal lookups (NS A/AAAA, DNAME target).
 // Auto-wired during middleware.Setup via middleware.QueryerSetter.
 func (h *DNSHandler) SetQueryer(q middleware.Queryer) { h.resolver.queryer.Store(&q) }
+
+// SetPrefetchQueryer implements middleware.PrefetchQueryerSetter: the
+// pipeline without the answer cache, which nameserver-address refreshes
+// go through so they reach the authority (see refreshGlue).
+func (h *DNSHandler) SetPrefetchQueryer(q middleware.Queryer) { h.resolver.refreshQueryer.Store(&q) }
 
 // DNSSECCryptoLimiter exposes the resolver-owned concurrency gate through the
 // narrow middleware wiring interface. Optional cache-side hashing uses

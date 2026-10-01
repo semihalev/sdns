@@ -105,6 +105,7 @@ type Resolver struct {
 	maxConcurrent   chan struct{}    // Semaphore for limiting concurrent queries
 	v4Enrich        chan nsEnrichJob // Queued IPv4 NS-address enrichment, drained by a fixed pool
 	v6Enrich        chan nsEnrichJob // Queued IPv6 NS-address enrichment, independent of the v4 lane
+	refreshLane     chan nsEnrichJob // Queued delegation and nameserver-address refreshes
 	probeSlots      chan struct{}    // Global cap on exploration probes outliving their lookup
 	resolutionSlots chan struct{}    // Hard ceiling on in-flight zone lookups; full → fail fast
 	zoneInflight    *zoneInflightLimiter
@@ -130,6 +131,10 @@ type Resolver struct {
 	// apply. Auto-wired via QueryerSetter. Same atomic.Pointer
 	// reasoning as store.
 	queryer atomic.Pointer[middleware.Queryer]
+	// refreshQueryer is the pipeline without the answer cache, for a
+	// refresh that must reach the authority: it keeps the operator's
+	// policy and skips only the cached answer the refresh would renew.
+	refreshQueryer atomic.Pointer[middleware.Queryer]
 }
 
 // resolveState holds the state for a DNS resolution operation.
@@ -169,6 +174,12 @@ type resolveState struct {
 	// sub-delegation can never outlive an ancestor cut, the Phoenix
 	// downward-delegation (T2) protection (GHSA-mqfw-f48p-2vc8).
 	cut lease.Lease
+
+	// refresh marks a delegation refresh walk and names the entry it set
+	// out to renew: delegations due for renewal are passed over in the
+	// cache and renewed from the referrals the walk receives (see
+	// refreshDelegation). Nil for every other walk.
+	refresh *refreshTarget
 }
 
 // advance moves past what the query just answered exposed: the labels the
@@ -428,6 +439,33 @@ func (r *Resolver) parseOutBoundAddrs(cfg *config.Config) {
 
 // (*Resolver).Resolve resolve starts a DNS resolution - public interface with old signature for compatibility.
 func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authority.Servers, root bool, depth int, level int, nomin bool, parentDS []dns.RR, extra ...bool) (*dns.Msg, error) {
+	return r.start(ctx, &resolveState{
+		req:      req,
+		servers:  servers,
+		depth:    depth,
+		level:    level,
+		nomin:    nomin,
+		parentDS: parentDS,
+		isRoot:   root,
+		extra:    extra,
+	})
+}
+
+// resolveRooted starts a resolution of req from the root, in refresh mode
+// for refresh when it is set (see refreshDelegation).
+func (r *Resolver) resolveRooted(ctx context.Context, req *dns.Msg, depth int, refresh *refreshTarget) (*dns.Msg, error) {
+	return r.start(ctx, &resolveState{
+		req:     req,
+		servers: r.rootServers,
+		depth:   depth,
+		isRoot:  true,
+		refresh: refresh,
+	})
+}
+
+// start runs rs under the request's guards and work ledger.
+func (r *Resolver) start(ctx context.Context, rs *resolveState) (*dns.Msg, error) {
+	req := rs.req
 	ctx = dnssec.EnsureNSEC3HashMemo(ctx)
 	ctx, _ = middleware.EnsureResolutionAttemptGuard(ctx)
 	hadWork := middleware.RecursionWorkFrom(ctx) != nil
@@ -452,18 +490,8 @@ func (r *Resolver) Resolve(ctx context.Context, req *dns.Msg, servers *authority
 			reqid = id
 		}
 	}
-	rs := &resolveState{
-		req:       req,
-		servers:   servers,
-		depth:     depth,
-		level:     level,
-		nomin:     nomin,
-		parentDS:  parentDS,
-		isRoot:    root,
-		extra:     extra,
-		requestID: reqid,
-		work:      work,
-	}
+	rs.requestID = reqid
+	rs.work = work
 	resp, err := r.resolve(ctx, rs)
 	if work != nil {
 		if workErr := work.EnforcementError(); workErr != nil {
@@ -478,7 +506,10 @@ func (r *Resolver) resolve(ctx context.Context, rs *resolveState) (*dns.Msg, err
 	q := rs.req.Question[0]
 
 	if rs.isRoot {
-		m := r.searchCache(q, rs.req.CheckingDisabled, q.Name)
+		m := r.searchCacheFor(q, rs.req.CheckingDisabled, q.Name, rs.refresh != nil)
+		if rs.refresh == nil && m.deleg != nil && refreshDue(m.deleg, time.Now()) {
+			r.scheduleDelegationRefresh(m.zone, rs.req.CheckingDisabled, m.deleg)
+		}
 		rs.servers, rs.parentDS, rs.level = m.servers, m.parentDS, m.level
 		// Seed the cut deadline from the deepest cached delegation so any
 		// delegation established below it inherits this bound.
@@ -983,18 +1014,22 @@ type nsEnrichJob struct {
 // suite builds hundreds of resolvers, and goroutine accounting must see a
 // constant, not a multiple. They are separate lanes on purpose: v4
 // addresses are what the walk falls back on when a leader dies, v6 is
-// opportunistic reach, a flood of one must not starve the other.
+// opportunistic reach, a flood of one must not starve the other, and
+// refreshes renew what is cached ahead of its end, work that must neither
+// starve nor be starved by the walk's own.
 var (
-	enrichPoolsOnce sync.Once
-	enrichV4Lane    chan nsEnrichJob
-	enrichV6Lane    chan nsEnrichJob
+	enrichPoolsOnce   sync.Once
+	enrichV4Lane      chan nsEnrichJob
+	enrichV6Lane      chan nsEnrichJob
+	enrichRefreshLane chan nsEnrichJob
 )
 
-func ensureEnrichPools() (v4, v6 chan nsEnrichJob) {
+func ensureEnrichPools() (v4, v6, refresh chan nsEnrichJob) {
 	enrichPoolsOnce.Do(func() {
 		enrichV4Lane = make(chan nsEnrichJob, nsEnrichQueue)
 		enrichV6Lane = make(chan nsEnrichJob, nsEnrichQueue)
-		for _, lane := range []chan nsEnrichJob{enrichV4Lane, enrichV6Lane} {
+		enrichRefreshLane = make(chan nsEnrichJob, nsEnrichQueue)
+		for _, lane := range []chan nsEnrichJob{enrichV4Lane, enrichV6Lane, enrichRefreshLane} {
 			for range nsEnrichWorkers {
 				go func(jobs chan nsEnrichJob) {
 					for job := range jobs {
@@ -1006,13 +1041,13 @@ func ensureEnrichPools() (v4, v6 chan nsEnrichJob) {
 			}
 		}
 	})
-	return enrichV4Lane, enrichV6Lane
+	return enrichV4Lane, enrichV6Lane, enrichRefreshLane
 }
 
 // startEnrichPools points this resolver at the shared lanes. A bare Resolver
 // literal that never calls it keeps nil lanes, and its enrichment sheds.
 func (r *Resolver) startEnrichPools() {
-	r.v4Enrich, r.v6Enrich = ensureEnrichPools()
+	r.v4Enrich, r.v6Enrich, r.refreshLane = ensureEnrichPools()
 }
 
 // enqueueEnrich offers a job to a lane without ever blocking the walk. A nil
@@ -1045,7 +1080,8 @@ type nsAddrs struct {
 type glueEntry struct {
 	addrs     []netip.Addr
 	expiresAt int64
-	mark      cache.ExpiryMark // the glue cache's expiry index mark
+	granted   time.Duration    // the lifetime it was stored with
+	mark      cache.ExpiryMark // the glue cache's expiry index mark; its flag is the refresh claim
 }
 
 func glueMark(e *glueEntry) *cache.ExpiryMark { return &e.mark }
@@ -1074,6 +1110,12 @@ func glueUntil(ttl uint32) time.Time {
 	return time.Now().Add(d)
 }
 
+// newGlueEntry is set's glue entry and the instant it runs out.
+func newGlueEntry(set nsAddrs) (*glueEntry, time.Time) {
+	until := glueUntil(set.ttl)
+	return &glueEntry{addrs: set.addrs, expiresAt: until.UnixNano(), granted: time.Until(until)}, until
+}
+
 // glueGet reads one entry, expiring it lazily: a stale read deletes only
 // the exact entry it saw, so a fresh value published meanwhile survives.
 // The remaining TTL comes back with the addresses so a caller re-adding
@@ -1100,8 +1142,8 @@ func glueGet(c *cache.Cache[*glueEntry], key uint64) ([]netip.Addr, uint32, bool
 func (r *Resolver) addIPv4Cache(nsipv4 map[string]nsAddrs) {
 	for name, set := range nsipv4 {
 		key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET})
-		until := glueUntil(set.ttl)
-		r.glueV4.AddUntil(key, &glueEntry{addrs: set.addrs, expiresAt: until.UnixNano()}, until)
+		e, until := newGlueEntry(set)
+		r.glueV4.AddUntil(key, e, until)
 	}
 }
 
@@ -1116,8 +1158,8 @@ func (r *Resolver) removeIPv4Cache(name string) {
 func (r *Resolver) addIPv6Cache(nsipv6 map[string]nsAddrs) {
 	for name, set := range nsipv6 {
 		key := cache.Key(dns.Question{Name: name, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET})
-		until := glueUntil(set.ttl)
-		r.glueV6.AddUntil(key, &glueEntry{addrs: set.addrs, expiresAt: until.UnixNano()}, until)
+		e, until := newGlueEntry(set)
+		r.glueV6.AddUntil(key, e, until)
 	}
 }
 
@@ -2631,9 +2673,20 @@ type delegationMatch struct {
 	parentDS []dns.RR
 	level    int
 	cut      lease.Lease
+
+	// deleg is the matched entry and zone its owner, nil for the root.
+	deleg *authority.Delegation
+	zone  string
 }
 
 func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) delegationMatch {
+	return r.searchCacheFor(q, cd, origin, false)
+}
+
+// searchCacheFor is searchCache for a walk that may be a refresh: one
+// passes over a delegation due for renewal as if it were absent, so the
+// walk asks its parent again (see refreshDelegation).
+func (r *Resolver) searchCacheFor(q dns.Question, cd bool, origin string, refresh bool) delegationMatch {
 	if q.Qtype == dns.TypeDS {
 		// DS queries are answered by parent zone, move up one label
 		next, end := dns.NextLabel(q.Name, 0)
@@ -2649,12 +2702,15 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) delegatio
 
 	ns, err := r.delegations.Get(key)
 
+	if err == nil && refresh && refreshDue(ns, time.Now()) {
+		err = errRefreshDue
+	}
 	if err == nil {
 		if atomic.LoadUint32(&ns.Servers.ErrorCount) >= 10 {
 			// we have fatal errors from all servers, lets clear cache and try again
 			r.delegations.Remove(key)
 			q.Name = origin
-			return r.searchCache(q, cd, origin)
+			return r.searchCacheFor(q, cd, origin, refresh)
 		}
 		if debugLogEnabled() {
 			zlog.Debug("Nameserver cache hit", "key", key, "query", dnsutil.FormatQuestion(q), "cd", cd)
@@ -2664,6 +2720,8 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) delegatio
 			parentDS: ns.DSSet,
 			level:    dnsname.CompareSuffix(origin, q.Name),
 			cut:      ns.Lease.Keyed(key),
+			deleg:    ns,
+			zone:     q.Name,
 		}
 	}
 
@@ -2684,7 +2742,7 @@ func (r *Resolver) searchCache(q dns.Question, cd bool, origin string) delegatio
 
 	q.Name = q.Name[next:]
 
-	return r.searchCache(q, cd, origin) // recursive walk up DNS tree
+	return r.searchCacheFor(q, cd, origin, refresh) // recursive walk up DNS tree
 }
 
 // onlySignaturesAt reports whether answer is a non-empty set of RRSIGs owned
@@ -3227,6 +3285,7 @@ func (r *Resolver) lookupNSAddrV4(ctx context.Context, qname string, cd bool) (a
 	zlog.Debug("Lookup NS ipv4 address", "qname", qname)
 
 	if addrs, ttl, ok := r.getIPv4Cache(qname); ok {
+		r.maybeRefreshGlue(r.glueV4, qname, dns.TypeA, cd)
 		return addrs, ttl, true, nil
 	}
 
@@ -3258,6 +3317,7 @@ func (r *Resolver) lookupNSAddrV6(ctx context.Context, qname string, cd bool) (a
 	zlog.Debug("Lookup NS ipv6 address", "qname", qname)
 
 	if addrs, ttl, ok := r.getIPv6Cache(qname); ok {
+		r.maybeRefreshGlue(r.glueV6, qname, dns.TypeAAAA, cd)
 		return addrs, ttl, true, nil
 	}
 
@@ -3300,7 +3360,12 @@ func (r *Resolver) resolveV4Host(ctx context.Context, q dns.Question, authserver
 	authservers.RLock()
 	hasList := len(authservers.List) > 0
 	authservers.RUnlock()
-	if hasList && (!r.dnssec || r.hasTrustAnchors()) {
+	// A refresh renewing an entry stores none: while the entry is live it
+	// is what the address lookup finds, and once it is purged or replaced
+	// the refresh must not install anything under its key, provisionally
+	// or otherwise.
+	renewing, _ := ctx.Value(contextKeyRenewing).(uint64)
+	if hasList && (renewing != key || key == 0) && (!r.dnssec || r.hasTrustAnchors()) {
 		// Temporary cache before lookup. Skip when trust anchors
 		// are unavailable: the DS set could be empty because the
 		// DNSSEC chain was short-circuited, and caching that empty-DS
@@ -3378,6 +3443,9 @@ func (r *Resolver) enqueueV4Enrich(ctx context.Context, q dns.Question, authserv
 	detachedBase := dnssec.InheritNSEC3HashMemos(context.Background(), ctx)
 	if middleware.HasClientECS(ctx) {
 		detachedBase = middleware.MarkClientECS(detachedBase)
+	}
+	if renewing := ctx.Value(contextKeyRenewing); renewing != nil {
+		detachedBase = context.WithValue(detachedBase, contextKeyRenewing, renewing)
 	}
 
 	enqueueEnrich(r.v4Enrich, nsEnrichJob{
@@ -4224,6 +4292,7 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 				extra:     rs.extra,
 				requestID: rs.requestID,
 				work:      rs.work,
+				refresh:   rs.refresh,
 			}
 			return r.resolve(ctx, newRS)
 		}
@@ -4242,14 +4311,30 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	// it under CD=1 instead, and a transient/unvalidated CD=1 delegation
 	// (client or internal NS/DS lookup) could then be served to CD=0 queries,
 	// silently stripping AD from a genuinely signed zone.
-	if cached, err := r.delegations.Get(key); err == nil {
-		// Carry the CURRENT referral's deadline into the cached descent.
-		// The cached entry may hold a longer lease than the referral we just
-		// observed (e.g. it was inserted before the parent shortened its NS
-		// TTL); resolveWithCachedNameservers combines this with
-		// cached.ExpiresAt so the shortest applicable cut always wins.
-		rs.cut = childCut
-		return r.resolveWithCachedNameservers(ctx, rs, cached, key, q, cd)
+	// A refresh walk renews a due entry from this referral rather than
+	// following it: the entry is rebuilt below exactly as a missing one is,
+	// and replaces the one found here only if that is still the one cached.
+	// The entry the refresh set out to renew is renewed only as itself: one
+	// removed or replaced since leaves the refresh nothing to do, and
+	// nothing it learns is published in its place.
+	var renew *authority.Delegation
+	if t := rs.refresh; t != nil && key == t.key {
+		if cached, err := r.delegations.Get(key); err != nil || cached != t.from {
+			return nil, errRefreshSuperseded
+		}
+		renew = t.from
+	} else if cached, err := r.delegations.Get(key); err == nil {
+		if rs.refresh != nil && refreshDue(cached, time.Now()) {
+			renew = cached
+		} else {
+			// Carry the CURRENT referral's deadline into the cached descent.
+			// The cached entry may hold a longer lease than the referral we just
+			// observed (e.g. it was inserted before the parent shortened its NS
+			// TTL); resolveWithCachedNameservers combines this with
+			// cached.ExpiresAt so the shortest applicable cut always wins.
+			rs.cut = childCut
+			return r.resolveWithCachedNameservers(ctx, rs, cached, key, q, cd)
+		}
 	}
 
 	if debugLogEnabled() {
@@ -4261,7 +4346,11 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	authservers.CheckingDisable = cd
 	authservers.Zone = q.Name
 
-	if err := r.lookupV4Nss(ctx, q, authservers, key, rs.parentDS, foundv4, nsInfo.hosts, cd, childCut); err != nil {
+	nsCtx := ctx
+	if renew != nil {
+		nsCtx = context.WithValue(ctx, contextKeyRenewing, key)
+	}
+	if err := r.lookupV4Nss(nsCtx, q, authservers, key, rs.parentDS, foundv4, nsInfo.hosts, cd, childCut); err != nil {
 		return nil, err
 	}
 
@@ -4281,7 +4370,16 @@ func (r *Resolver) processDelegation(ctx context.Context, rs *resolveState, resp
 	if !r.dnssec || r.hasTrustAnchors() {
 		// Store the absolute (inherited) deadline verbatim. A past deadline
 		// is not cached (SetUntil skips it).
-		r.delegations.SetUntil(key, rs.parentDS, authservers, childCut)
+		if renew != nil {
+			if r.delegations.Renew(key, renew, rs.parentDS, authservers, childCut) && rs.refresh != nil && key == rs.refresh.key {
+				// The refresh has what it came for; asking the zone's own
+				// servers for its NS set would only be discarded.
+				rs.refresh.renewed.Store(true)
+				return nil, errRefreshDone
+			}
+		} else {
+			r.delegations.SetUntil(key, rs.parentDS, authservers, childCut)
+		}
 		if debugLogEnabled() {
 			zlog.Debug("Nameserver cache insert", "key", key, "query", dnsutil.FormatQuestion(q), "cd", cd)
 		}

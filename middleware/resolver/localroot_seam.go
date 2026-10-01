@@ -304,9 +304,34 @@ func (r *Resolver) installLocalRootReferral(
 	// pairing a winner's servers with this call's DS chain would validate
 	// one delegation's answers against another's keys, so there is no
 	// separate readback to get wrong.
-	live := r.delegations.SetUntilIfAbsent(key, ref.DS, servers, cut)
-	if live == nil {
-		return false
+	// A refresh walk renews a due entry from the copy, the referral it
+	// would have asked the root for, and takes whichever entry is live
+	// afterwards, its own or one a racing writer stored. The entry the
+	// refresh set out to renew is renewed only as itself, and never
+	// installed again once removed.
+	var live *authority.Delegation
+	if t := rs.refresh; t != nil && key == t.key {
+		cur, err := r.delegations.Get(key)
+		if err != nil {
+			return false
+		}
+		live = cur
+		if cur == t.from && r.delegations.Renew(key, cur, ref.DS, servers, cut) {
+			t.renewed.Store(true)
+			if renewed, err := r.delegations.Get(key); err == nil {
+				live = renewed
+			}
+		}
+	} else {
+		live = r.delegations.SetUntilIfAbsent(key, ref.DS, servers, cut)
+		if live == nil {
+			return false
+		}
+		if rs.refresh != nil && refreshDue(live, time.Now()) && r.delegations.Renew(key, live, ref.DS, servers, cut) {
+			if renewed, err := r.delegations.Get(key); err == nil {
+				live = renewed
+			}
+		}
 	}
 
 	rs.servers = live.Servers
