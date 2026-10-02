@@ -14,7 +14,7 @@ feature is off until you uncomment it.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `version` | `"1.8.3"` | Configuration schema version, not the sdns version |
+| `version` | `"1.9.0"` | Configuration schema version, not the sdns version |
 | `directory` | `"db"` | Writable state: trust anchors, blocklists, local root copy |
 | `bind` | `":53"` | UDP and TCP listener; one `"host:port"` or a list |
 | `bindtls` | *(commented)* | DoT listener, usually `":853"`; one address or a list |
