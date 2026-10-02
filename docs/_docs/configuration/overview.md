@@ -49,7 +49,7 @@ the file to turn an upgrade into an outage.
 ## Versioning
 
 ```toml
-version = "1.8.3"
+version = "1.9.0"
 ```
 
 This is the configuration *schema* version, not the sdns version. It only
