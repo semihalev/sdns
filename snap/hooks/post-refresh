@@ -1,25 +1,15 @@
 #!/bin/sh
+# A configuration written by an older snap uses a layout sdns no longer
+# loads. Move it aside and write the standard generated file in its place;
+# the settings carry across by hand.
 set -e
 
-# This hook runs after the snap is refreshed/updated
-
-# Ensure directories exist with correct permissions
-mkdir -p "$SNAP_DATA/etc"
-mkdir -p "$SNAP_DATA/log"
-mkdir -p "$SNAP_DATA/db"
-mkdir -p "$SNAP_DATA/db/blocklists"
-
-# Check if config file exists and backup it
-if [ -f "$SNAP_DATA/sdns.conf" ]; then
-    # Create backup with timestamp
-    backup_file="$SNAP_DATA/sdns.conf.backup.$(date +%Y%m%d-%H%M%S)"
-    cp "$SNAP_DATA/sdns.conf" "$backup_file"
-    echo "Configuration backed up to $backup_file"
+conf="$SNAP_DATA/sdns.conf"
+if [ -f "$conf" ] && grep -q '^\[server\]' "$conf"; then
+    mv "$conf" "$conf.legacy"
 fi
-
-# Update blocklists after refresh
-# The service will handle this automatically on start, but we can trigger it
-echo "Snap refreshed successfully. SDNS will update blocklists on next start."
-
-# Log the update
-echo "$(date): SDNS snap updated to version $(snapctl get version)" >> "$SNAP_DATA/log/snap-updates.log"
+if [ ! -f "$conf" ]; then
+    cd "$SNAP_COMMON"
+    "$SNAP/bin/sdns" -t -c "$conf" >/dev/null
+    sed -i "s|^directory = \"db\"|directory = \"$SNAP_COMMON/db\"|" "$conf"
+fi
