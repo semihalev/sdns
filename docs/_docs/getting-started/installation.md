@@ -71,10 +71,13 @@ trust anchor state then lives in the container's writable layer and is lost on
 the next `docker rm`, which is exactly the failure the volume is there to
 prevent, and which only surfaces at a root KSK rollover.
 
-**`--stop-timeout 20`.** A stop waits at most 10 seconds for in-flight queries
-to drain, whatever `querytimeout` is, and with `cache_persist` on, saving the
-snapshot can take up to 5 seconds more. Docker's default of 10 seconds would
-kill it mid-save.
+**`--stop-timeout 20`.** A stop waits for in-flight queries to drain for
+`querytimeout` (10 seconds when that is omitted or `"0"`), and with
+`cache_persist` on, saving the snapshot can take up to 5 seconds more, so a
+stop takes at most `querytimeout` plus 5 seconds (15 seconds at the default).
+`20` covers that default, with a little room past 15 seconds. Docker's default
+of 10 seconds would kill it mid-save. Raising `querytimeout` means raising
+`--stop-timeout` to at least `querytimeout` plus 5 seconds.
 
 A compose file and the rest of the container story are on the
 [Containers]({{ '/docs/deployment/docker/' | relative_url }}) page.

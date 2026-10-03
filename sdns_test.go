@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestConfigTestReportsOnceWithoutUsage pins what `sdns -t` prints when a
@@ -82,6 +83,29 @@ func TestUsageErrorStillPrintsUsage(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Usage:") {
 		t.Fatalf("an unknown flag did not print the flag list:\n%s", out.String())
+	}
+}
+
+// TestShutdownDrainBudget pins how long a stop waits for in-flight queries.
+// The process used to give up after a fixed 10 seconds, so querytimeout of
+// 30s dropped a query whose upstream answered at 20s. Zero stays 10 seconds,
+// the same default as an omitted or "0" querytimeout, and a shorter positive
+// value is not raised to that old cap.
+func TestShutdownDrainBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   time.Duration
+		want time.Duration
+	}{
+		{name: "reported config", in: 30 * time.Second, want: 30 * time.Second},
+		{name: "omitted or zero", in: 0, want: 10 * time.Second},
+		{name: "shorter than the old cap", in: time.Second, want: time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shutdownDrainBudget(tc.in); got != tc.want {
+				t.Fatalf("shutdownDrainBudget(%v) = %v, want %v", tc.in, got, tc.want)
+			}
+		})
 	}
 }
 

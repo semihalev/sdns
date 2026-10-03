@@ -66,12 +66,13 @@ longer. The load stops after ten seconds whatever it has reached, which bounds
 it under normal disk access, not against a disk that stalls.
 
 **Shutdown takes longer.** The save runs after the listeners have drained,
-which takes at most ten seconds whatever `querytimeout` is, and stops adding
-answers after three more; the process then waits at most two further seconds
-for the file to be finished and exits regardless. A save that does not finish
-in time leaves the previous file in place. Whatever stops the service must
-allow for those fifteen seconds and some margin: the shipped systemd unit sets
-no `TimeoutStopSec`, so the manager's `DefaultTimeoutStopSec` applies.
+which takes `querytimeout` (ten seconds when that is omitted or `"0"`), and
+stops adding answers after three more; the process then waits at most two
+further seconds for the file to be finished and exits regardless. A save that
+does not finish in time leaves the previous file in place. Whatever stops the
+service must allow for `querytimeout` plus five seconds (fifteen seconds at
+the default) and some margin: the shipped systemd unit sets no `TimeoutStopSec`,
+so the manager's `DefaultTimeoutStopSec` applies.
 
 Only a clean shutdown saves. After a crash the next start loads the file from
 the last clean one, aged by the whole time since.
