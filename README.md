@@ -48,7 +48,9 @@ architecture matrix is in the
 # Docker. Loopback because the default access list allows every client; -c and
 # directory = "/var/lib/sdns" in the file because the image has no WORKDIR, so
 # a relative state directory resolves to /db and misses the volume entirely.
-# --stop-timeout covers the shutdown drain plus the cache snapshot save.
+# --stop-timeout 20 covers the default: queries drain for querytimeout (10s
+# when omitted or "0") and saving state adds at most 5s. A longer querytimeout
+# needs at least that sum.
 docker run -d --name sdns \
   -p 127.0.0.1:53:53 -p 127.0.0.1:53:53/udp \
   -v sdns-data:/var/lib/sdns -v "$PWD/sdns.conf:/etc/sdns.conf:ro" \

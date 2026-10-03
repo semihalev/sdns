@@ -151,7 +151,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	srv.Stop()
 
 	// Graceful shutdown with timeout
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownDrainBudget(cfg.QueryTimeout.Duration))
 	defer cancel()
 
 	shutdownDone := make(chan struct{})
@@ -187,6 +187,19 @@ const (
 	persistWalk = 3 * time.Second
 	persistExit = 5 * time.Second
 )
+
+// shutdownDrainBudget is how long runServer waits for listeners to finish
+// draining in-flight queries. A positive querytimeout is that budget. Zero,
+// from an omitted or "0" querytimeout, stays 10 seconds, the same default as
+// (*Server).queryTimeout. A handler that outlives the listener drain leaves
+// Stopped() false on purpose, so this bound is what keeps one stuck request
+// from hanging shutdown.
+func shutdownDrainBudget(queryTimeout time.Duration) time.Duration {
+	if queryTimeout > 0 {
+		return queryTimeout
+	}
+	return 10 * time.Second
+}
 
 // persistState runs persist, which saves what the middlewares keep across
 // restarts, with walk as its budget, and returns by exit at the latest. It
