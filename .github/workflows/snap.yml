@@ -1,0 +1,57 @@
+name: Snap
+
+# A published release goes to the stable channel. A pull request touching
+# the snap only builds it; a manual run republishes a given tag.
+on:
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - 'snap/**'
+      - '.github/workflows/snap.yml'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish, such as v1.9.0'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  snap:
+    name: Snap (${{ matrix.arch }})
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-latest }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+          - { arch: armhf, runner: ubuntu-latest }
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+
+      # Package an older tag with this workflow's packaging, not its own.
+      - name: Use current packaging
+        run: |
+          rm -rf snap
+          git checkout ${{ github.sha }} -- snap
+
+      - uses: snapcore/action-build@v1
+        id: build
+        with:
+          snapcraft-args: --build-for=${{ matrix.arch }}
+
+      - uses: snapcore/action-publish@v1
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_TOKEN }}
+        with:
+          snap: ${{ steps.build.outputs.snap }}
+          release: stable

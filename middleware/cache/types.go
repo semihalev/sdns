@@ -795,10 +795,11 @@ func (m *CacheMetrics) Miss() {
 	cacheMisses.Inc()
 }
 
-// (*CacheMetrics).Eviction eviction records a cache eviction.
-func (m *CacheMetrics) Eviction() {
-	m.evictions.Add(1)
-	cacheEvictions.Inc()
+// (*CacheMetrics).Evictions records n answers evicted to keep a cache
+// within its capacity.
+func (m *CacheMetrics) Evictions(n int) {
+	m.evictions.Add(int64(n))
+	cacheEvictions.Add(int64(n))
 }
 
 // (*CacheMetrics).Prefetch prefetch records a prefetch operation.

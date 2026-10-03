@@ -5,100 +5,75 @@ description: |
   SDNS is a high-performance, recursive DNS resolver server with DNSSEC support,
   focused on preserving privacy. It supports DNS-over-TLS, DNS-over-HTTPS,
   DNS-over-QUIC, and includes features like caching, rate limiting, and blocklists.
-  
+
   Features:
   - DNSSEC validation
   - DNS-over-HTTPS (DoH)
   - DNS-over-TLS (DoT)
   - DNS-over-QUIC (DoQ)
   - Built-in cache with prefetching
-  - Blocklist support with auto-updates
+  - Blocklist support
   - Rate limiting
   - Access control lists
   - Prometheus metrics
   - Extended DNS Errors (EDE) support
 
-grade: stable
 confinement: strict
 base: core22
 
+# armhf is cross-compiled on amd64, since no hosted runner runs 32-bit ARM.
 architectures:
   - build-on: [amd64]
     build-for: [amd64]
   - build-on: [arm64]
     build-for: [arm64]
-  - build-on: [armhf]
+  - build-on: [amd64]
     build-for: [armhf]
-
-layout:
-  /etc/sdns:
-    bind: $SNAP_DATA/etc
 
 parts:
   sdns:
     plugin: nil
-    source: https://github.com/semihalev/sdns.git
-    source-type: git
+    source: .
     build-packages:
       - git
       - ca-certificates
-      - wget
-      - gcc
+      - curl
     stage-packages:
       - ca-certificates
     override-pull: |
       craftctl default
-      # Fetch all tags and branches
-      cd $CRAFT_PART_SRC
-      git fetch --all --tags --prune
-      
-      # Get the latest tag (excluding pre-releases if they contain '-')
-      latest_tag=$(git tag -l | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n1)
-      
-      if [ -z "$latest_tag" ]; then
-        echo "No valid release tag found, using latest commit"
-        latest_tag="HEAD"
+      # A release tag builds a stable snap of that release; anything else
+      # is a development build.
+      cd "$CRAFT_PROJECT_DIR"
+      git config --global --add safe.directory "$CRAFT_PROJECT_DIR"
+      if tag=$(git describe --tags --exact-match 2>/dev/null); then
+        craftctl set version="${tag#v}"
+        craftctl set grade=stable
       else
-        echo "Building from tag: $latest_tag"
-        git checkout "$latest_tag"
+        craftctl set version="$(git describe --tags --always | sed 's/^v//')"
+        craftctl set grade=devel
       fi
-      
-      # Set version
-      if [ "$latest_tag" = "HEAD" ]; then
-        # For HEAD, use commit date and short hash
-        version="$(git log -1 --format=%cd --date=format:%Y%m%d)+git$(git rev-parse --short HEAD)"
-      else
-        # For tags, remove 'v' prefix if present
-        version="$(echo $latest_tag | sed 's/^v//')"
-      fi
-      
-      craftctl set version="$version"
-      craftctl set grade="stable"
     override-build: |
-      # Install Go 1.23.4
-      case "${CRAFT_ARCH_BUILD_FOR}" in
-        amd64) GOARCH="amd64" ;;
-        arm64) GOARCH="arm64" ;;
-        armhf) GOARCH="armv6l" ;;
-        *) echo "Unsupported architecture: ${CRAFT_ARCH_BUILD_FOR}"; exit 1 ;;
+      case "${CRAFT_ARCH_BUILD_ON}" in
+        amd64) host=amd64 ;;
+        arm64) host=arm64 ;;
+        *) echo "unsupported build host: ${CRAFT_ARCH_BUILD_ON}"; exit 1 ;;
       esac
-      
-      wget -q "https://go.dev/dl/go1.27.0.linux-${GOARCH}.tar.gz"
-      tar -C /usr/local -xzf "go1.27.0.linux-${GOARCH}.tar.gz"
-      rm "go1.27.0.linux-${GOARCH}.tar.gz"
-      
+      case "${CRAFT_ARCH_BUILD_FOR}" in
+        amd64) target=amd64 ;;
+        arm64) target=arm64 ;;
+        armhf) target=arm ;;
+        *) echo "unsupported target: ${CRAFT_ARCH_BUILD_FOR}"; exit 1 ;;
+      esac
+
+      go=$(curl -fsSL 'https://go.dev/VERSION?m=text' | head -n1)
+      curl -fsSL "https://go.dev/dl/${go}.linux-${host}.tar.gz" | tar -C /usr/local -xz
       export PATH=/usr/local/go/bin:$PATH
-      export GOROOT=/usr/local/go
-      
-      # Change to source directory
-      cd $CRAFT_PART_SRC
-      
-      # Generate code
+
       go generate
-      
-      # Build sdns
-      mkdir -p $CRAFT_PART_INSTALL/bin
-      go build -o $CRAFT_PART_INSTALL/bin/sdns
+      mkdir -p "$CRAFT_PART_INSTALL/bin"
+      CGO_ENABLED=0 GOOS=linux GOARCH=$target GOARM=6 \
+        go build -trimpath -ldflags "-s -w" -o "$CRAFT_PART_INSTALL/bin/sdns"
     prime:
       - bin/sdns
       - etc/ssl/certs/*
@@ -117,7 +92,7 @@ apps:
       - network-observe
     environment:
       HOME: $SNAP_DATA
-      
+
   sdns-cli:
     command: bin/sdns -c $SNAP_DATA/sdns.conf
     plugs:
@@ -125,11 +100,3 @@ apps:
       - network-bind
     environment:
       HOME: $SNAP_DATA
-
-hooks:
-  install:
-    plugs: [network]
-  configure:
-    plugs: [network]
-  post-refresh:
-    plugs: [network]

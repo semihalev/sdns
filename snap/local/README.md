@@ -8,59 +8,29 @@ This directory contains the snap packaging files for SDNS.
 sudo snap install sdns
 ```
 
+The stable channel is published by the Snap workflow whenever a release is
+published on GitHub.
+
 ## Configuration
 
-SDNS can be configured using snap configuration options:
-
-### Basic Configuration
-
-```bash
-# Change DNS port (default: 53)
-sudo snap set sdns port=5353
-
-# Change bind address (default: 0.0.0.0)
-sudo snap set sdns bind="127.0.0.1"
-
-# Enable/disable DNSSEC (default: true)
-sudo snap set sdns dnssec=false
-```
-
-### Advanced Features
+The install hook writes the standard generated configuration, the same file
+`sdns` writes anywhere else, with `directory` pointed at the state directory
+every snap revision shares. Edit it, check it, and restart:
 
 ```bash
-# Enable DNS-over-HTTPS
-sudo snap set sdns doh=true
-
-# Enable DNS-over-TLS
-sudo snap set sdns dot=true
-
-# Enable DNS-over-QUIC
-sudo snap set sdns doq=true
-
-# Set log level (debug, info, warn, error)
-sudo snap set sdns log.level=debug
-
-# Set cache size
-sudo snap set sdns cache.size=50000
-
-# Set rate limit (requests per second, 0 = unlimited)
-sudo snap set sdns ratelimit=100
+sudo nano /var/snap/sdns/current/sdns.conf
+sudo sdns.sdns-cli -t
+sudo snap restart sdns
 ```
 
-### TLS Configuration
-
-For DoH/DoT/DoQ, you need to provide TLS certificates:
-
-```bash
-sudo snap set sdns tls.certificate=/path/to/cert.pem
-sudo snap set sdns tls.key=/path/to/key.pem
-```
+A configuration written by an older snap, in the legacy `[server]` layout, is
+moved aside to `sdns.conf.legacy` on refresh and a fresh one is generated.
+Carry your settings across by hand.
 
 ## File Locations
 
 - Configuration: `/var/snap/sdns/current/sdns.conf`
-- Logs: `/var/snap/sdns/current/log/`
-- Blocklists: `/var/snap/sdns/current/db/blocklists/`
+- State (trust anchors, blocklists, cache snapshot): `/var/snap/sdns/common/db/`
 
 ## Service Management
 

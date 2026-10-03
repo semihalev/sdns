@@ -29,7 +29,7 @@ dig @127.0.0.1 CH HINFO example.com
 
 ```
 ;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 29636
-;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 4
+;; flags: qr rd ra; QUERY: 1, ANSWER: 0, AUTHORITY: 4, ADDITIONAL: 1
 
 ;; AUTHORITY SECTION:
 example.com.  0  CH  HINFO  "Host" "IPv4:199.43.135.53:53 rtt:142ms rank:151ms health:[GOOD]"
@@ -39,7 +39,9 @@ example.com.  0  CH  HINFO  "Host" "IPv6:[2001:500:8d::53]:53 rtt:148ms rank:160
 ```
 
 The records are in the **authority** section, not the answer section, and carry
-TTL 0. There is no answer to a question like this.
+TTL 0. There is no answer to a question like this. The lookup is for the exact
+name; when sdns holds no delegation for it, the reply lists the root servers
+with `.` as the owner.
 
 ### Reading a line
 
@@ -47,7 +49,7 @@ TTL 0. There is no answer to a question like this.
 ordering sorts on, and it is deliberately not the same number: a server that has
 never been measured is priced at a seed value rather than treated as instant,
 and an old measurement drifts back toward that seed. Printing both is what makes
-the order explicable, when a server with the lowest `rtt` is not first, its
+the order explicable: when a server with the lowest `rtt` is not first, its
 `rank` says why.
 
 `health` has four states:
@@ -105,10 +107,12 @@ Every other API route checks the token. The pprof routes do not, because pprof
 tooling does not send an `Authorization` header, so they stay open even when a
 token is set.
 
-That makes the advice elsewhere on this site incomplete for this case: a token
-is enough for the blocklist and purge endpoints, and it is **not** enough once
-pprof is on. With `SDNS_PPROF=true`, keep the API listener on loopback or behind
-an authenticating proxy. A reachable pprof endpoint hands out heap contents and
+The token is never the whole protection: the API is plain HTTP, so a token
+sent to a reachable address travels in the clear and can be replayed, and it is
+only a second layer behind loopback, a TLS-terminating authenticating proxy, a
+VPN or a source-restricted firewall. With pprof on it does not even cover every
+route. With `SDNS_PPROF=true`, keep the API listener on loopback or behind an
+authenticating proxy. A reachable pprof endpoint hands out heap contents and
 lets anyone force a 30-second CPU profile on your resolver.
 
 Leave it off unless you are actively profiling.
@@ -126,7 +130,7 @@ dig @127.0.0.1 problem.example A +dnssec
 
 **2. Is it policy rather than resolution?** A blocked or rewritten name is not a
 failure. Check `dns_blocklist_hits_total`, and if you run policy zones check
-`rpz_action_total`, in shadow mode it tells you what a match *would* have done
+`rpz_action_total`; in shadow mode it tells you what a match *would* have done
 without anything having happened.
 
 **3. Is the failure being cached back at you?** The RFC 9520 failure cache holds
@@ -140,7 +144,7 @@ curl http://127.0.0.1:8080/api/v1/purge/problem.example./A
 
 **4. Is it DNSSEC?** `dns_resolver_dnssec_failures_total` broken out by `reason`
 separates a genuinely broken signer from a validation problem of your own. To
-confirm the name resolves when validation is not applied, ask with `+cd`, if
+confirm the name resolves when validation is not applied, ask with `+cd`. If
 `+cd` succeeds and the plain query does not, it is validation.
 
 **5. Are the authorities reachable?** This is what `SDNS_DEBUGNS` is for. All
@@ -162,5 +166,6 @@ failure: the next question for the same name resolves normally.
 dig @127.0.0.1 CH TXT version.bind +short
 ```
 
-Works while `chaos = true`, which is the default. Across a fleet this is the
-difference between knowing a deploy landed and assuming it did.
+Works while `chaos = true`. The generated configuration file sets it; omitted,
+it is false. Across a fleet this is the difference between knowing a deploy
+landed and assuming it did.

@@ -1344,6 +1344,43 @@ func TestPassThrough_FilteredAAAAClearsAD(t *testing.T) {
 	}
 }
 
+// TestFilteredAAAAWithoutSynthesisClearsAD pins the case where every
+// AAAA is stripped and the A lookup fails: the filtered reply goes out
+// as it is, and the AD the validator set on the unfiltered RRset must
+// not go with it.
+func TestFilteredAAAAWithoutSynthesisClearsAD(t *testing.T) {
+	d := New(baseConfig())
+	d.queryer = &stubQueryer{err: errors.New("a lookup failed")}
+
+	upstream := new(dns.Msg)
+	upstream.SetQuestion("foo.example.org.", dns.TypeAAAA)
+	upstream.Response = true
+	upstream.AuthenticatedData = true
+	upstream.SetEdns0(4096, true)
+	upstream.Answer = []dns.RR{&dns.AAAA{
+		Hdr:  dns.RR_Header{Name: "foo.example.org.", Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 60},
+		AAAA: net.ParseIP("::ffff:c000:221"),
+	}}
+	ch, mw := makeChain(t, d, &stubAnswerer{msg: upstream}, "203.0.113.5:53", "foo.example.org.", dns.TypeAAAA)
+	d.ServeDNS(context.Background(), ch)
+
+	resp := mw.Msg()
+	if resp == nil {
+		t.Fatal("no reply written")
+	}
+	if len(resp.Answer) != 0 {
+		t.Errorf("len(resp.Answer) = %d, want 0", len(resp.Answer))
+	}
+	if resp.AuthenticatedData {
+		t.Error("AD must clear when the stripped reply is served")
+	}
+	if ede := dnsutil.GetEDE(resp); ede == nil {
+		t.Error("EDE 4 should be attached when AD was set on the upstream")
+	} else if ede.InfoCode != dns.ExtendedErrorCodeForgedAnswer {
+		t.Errorf("ede.InfoCode = %v, want %v", ede.InfoCode, dns.ExtendedErrorCodeForgedAnswer)
+	}
+}
+
 // TestPassThrough_NoStripPreservesAD confirms a clean pass-through
 // (no AAAA stripped) does NOT clear AD, the RRset is exactly
 // what the validator signed.

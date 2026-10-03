@@ -13,9 +13,13 @@ cachesize = 256000
 prefetch  = 10        # percent; 0 disables
 ```
 
-`cachesize` is a record count, not a byte budget. The default holds a busy
-resolver's working set comfortably; raising it costs memory roughly in
-proportion.
+`cachesize` counts cached answers, whole messages, not records, and it is not a
+byte budget. The default holds a busy resolver's working set comfortably;
+raising it costs memory roughly in proportion. It must be `0` or at least
+1024: `sdns -t` refuses 1 to 1023, and `0`, or leaving the key out, gives 1024.
+Two smaller caches are sized from it on top: the RFC 8020 subtree cuts take up
+to `cachesize / 16` entries and the RFC 8198 proofs `cachesize / 32` (at least
+64).
 
 `prefetch` refreshes an entry in the background when a query arrives and the
 entry has less than that percentage of its original TTL left. It trades a small
@@ -23,7 +27,7 @@ amount of upstream traffic for hits that stay warm on popular names.
 
 The value must be `0`, which turns prefetching off, or between 10 and 90.
 Anything else is a configuration error rather than being clamped, so `sdns -t`
-rejects it.
+rejects it. A file that leaves the key out gets `0`.
 
 ## Across restarts
 
@@ -62,13 +66,12 @@ longer. The load stops after ten seconds whatever it has reached, which bounds
 it under normal disk access, not against a disk that stalls.
 
 **Shutdown takes longer.** The save runs after the listeners have drained,
-which may itself take up to ten seconds, and stops adding answers after three
-more; the process then waits at most two further seconds for the file to be
-finished and exits regardless. A save that does not finish in time leaves the
-previous file in place. Whatever stops the service must allow for that: the
-shipped systemd unit sets no `TimeoutStopSec`, so the manager's
-`DefaultTimeoutStopSec` applies, and it needs headroom over those fifteen
-seconds.
+which takes at most ten seconds whatever `querytimeout` is, and stops adding
+answers after three more; the process then waits at most two further seconds
+for the file to be finished and exits regardless. A save that does not finish
+in time leaves the previous file in place. Whatever stops the service must
+allow for those fifteen seconds and some margin: the shipped systemd unit sets
+no `TimeoutStopSec`, so the manager's `DefaultTimeoutStopSec` applies.
 
 Only a clean shutdown saves. After a crash the next start loads the file from
 the last clean one, aged by the whole time since.
@@ -80,7 +83,8 @@ it was cached. It is not the smallest TTL of everything consulted on the way to
 the answer, a short-lived delegation record on the path does not shorten the
 answer.
 
-There is one deliberate ceiling: a learned delegation lease. When the parent
+There are two deliberate ceilings. Every answer is held for at most 24 hours,
+whatever its TTL. The other is a learned delegation lease. When the parent
 granted a delegation for a bounded time, no answer under that delegation is
 served past the point the parent's grant expires. That is why a long-TTL record
 under a short-lived delegation can come back with less than you expected, the
@@ -134,8 +138,20 @@ The delegation lease is a hard ceiling here too, so this cannot revive data past
 a known parent-granted cut. It is failure-triggered and positive-only: a stale
 NXDOMAIN is never served. `serve_stale_mode = "immediate"` instead answers from
 an expired entry at once and refreshes it in the background, under the same
-bounds; it trades freshness for latency and is opt-in. The full design is on the
+bounds; it trades freshness for latency and is opt-in. It needs
+`serve_stale = true`, and `sdns -t` refuses it otherwise. Do not use
+`"immediate"` on a resolver that validates domain control, such as for
+certificate issuance: it serves an answer past its TTL even when a fresh one
+was reachable. The full design is on the
 [Serve stale]({{ '/docs/features/serve-stale/' | relative_url }}) page.
+
+## Questions without recursion desired
+
+A query with RD=0 is answered from the cache only. A hit is served as usual,
+with the client's RD echoed and no prefetch started; a miss goes no further,
+and gets SERVFAIL with an Extended DNS Error saying the name is not in the cache
+and recursion was not desired. A query for the root is the exception, and is
+resolved, since another resolver priming from this one asks for it that way.
 
 ## Negative caching
 
@@ -199,28 +215,37 @@ that bound is the parent's, not this cache's to round, so the answer goes out
 with a TTL of zero rather than a second the parent never granted.
 
 The two mechanisms that *reuse* a denial for names it was never asked about are
-bounded the same way, and were already. Both are on by default and both are
-covered under
-[Resolution and DNSSEC]({{ '/docs/configuration/resolution/' | relative_url }}):
+bounded the same way, and were already. Both are on by default, and both are
+off with `dnssec = "off"` and in whole-server forwarder mode; they are covered
+under
+[Resolution and DNSSEC]({{ '/docs/configuration/resolution/' | relative_url }}).
 RFC 8020 lets one NXDOMAIN answer every name beneath it, and RFC 8198 answers
 later denials from a validated NSEC or NSEC3 record already held. For these,
 sdns takes the smallest value across every component of the proof, the SOA,
 the records in the authority section, the signatures over them, and the
-delegation lease, and applies no floor on top, because a floor there would let
-a cache setting extend an authenticated denial past the proof that authorised
-it. Answering one name from another's denial is a claim about a whole subtree,
-and it expires with the weakest thing supporting it. They are counted by
-`nxdomain_cut_hits_total` and `aggressive_negative_hits_total`.
+delegation lease, caps it at `expire` (below), and applies no floor on top,
+because a floor there would let a cache setting extend an authenticated denial
+past the proof that authorised it. Answering one name from another's denial is
+a claim about a whole subtree, and it expires with the weakest thing
+supporting it. They are counted by `nxdomain_cut_hits_total` and
+`aggressive_negative_hits_total`.
 
-## Failure caching
+## Reused denial lifetime and failure caching
 
 ```toml
-expire = 600      # legacy; retained for compatibility
+expire = 600      # seconds
 ```
 
-`expire` is a legacy error-cache ceiling kept so old configuration files still
-load. Recursive resolution failures are governed by the RFC 9520 failure cache
-in the `[recursion_firewall]` block instead, see the
+`expire` caps how long a reused denial lives: an RFC 8020 subtree cut and an
+RFC 8198 NSEC or NSEC3 proof are each held for at most this many seconds. With
+the default 600, no cut and no synthesized denial outlives ten minutes,
+whatever the zone's SOA and signatures allow. Fixed caps sit above it: 24
+hours for a cut and three hours for a proof, which are also what `0`, or
+leaving the key out, leaves in place. With `dnssec = "off"` or in forwarder
+mode neither mechanism runs, so `expire` has nothing to cap.
+
+`expire` does not govern resolution failures. Those are held by the RFC 9520
+failure cache in the `[recursion_firewall]` block, see the
 [recursion firewall]({{ '/docs/features/recursion-firewall/' | relative_url }}).
 
 ## Purging
@@ -240,13 +265,17 @@ dns_cache_size              current entries
 dns_cache_hits_total        hits
 dns_cache_misses_total      misses
 dns_cache_hit_rate          percentage, 0-100
-dns_cache_evictions_total   entries dropped under pressure
+dns_cache_evictions_total   answers evicted to make room at capacity
 dns_cache_prefetches_total  background refreshes
-dns_cache_stale_answers_total  answers served past expiry
-dns_cache_wire_fastpath_total  hits served straight from stored bytes
-dns_cache_snapshot_entries_total  answers saved and restored across a restart
-dns_cache_snapshot_seconds     how long the last save and restore took
+dns_cache_stale_answers_total  answers served past expiry after a failure
+dns_cache_stale_immediate_answers_total  answers served past expiry at once, serve_stale_mode "immediate"
+dns_cache_wire_fastpath_total  hits attempted on the byte serving path, by outcome
+failure_cache_hits_total    cached RFC 9520 resolution failures served
+dns_cache_snapshot_entries_total  answers saved at shutdown and loaded at startup, by op and result
+dns_cache_snapshot_seconds     how long the last save or load took, by op and outcome
 ```
 
-A rising `dns_cache_evictions_total` with a falling hit rate is the signal that
+`dns_cache_evictions_total` counts only answers pushed out because the cache
+was full; answers removed because they expired, or replaced by a fresher copy,
+are not evictions. A rising count with a falling hit rate is the signal that
 `cachesize` is too small for the working set.

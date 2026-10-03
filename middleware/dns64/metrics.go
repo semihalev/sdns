@@ -21,7 +21,7 @@ var (
 	// signals operators may want to monitor.
 	Passthrough = metric.NewCounterVec(nil, prometheus.CounterOpts{
 		Name: "dns64_passthrough_total",
-		Help: "AAAA queries DNS64 left untouched, by reason",
+		Help: "Queries DNS64 left untouched, by reason; internal, no_rd, cd_bit and client_excluded count queries of every type",
 	}, []string{"reason"})
 
 	// Pre-resolved Passthrough handles, closed set; new reason

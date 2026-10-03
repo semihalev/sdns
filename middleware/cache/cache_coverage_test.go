@@ -80,9 +80,8 @@ func Test_Cache_Metrics_All(t *testing.T) {
 	m.Hit()
 	m.Hit()
 	m.Miss()
-	m.Eviction()
-	m.Eviction()
-	m.Eviction()
+	m.Evictions(1)
+	m.Evictions(2)
 	m.Prefetch()
 
 	hits, misses, evictions, prefetches := m.Stats()

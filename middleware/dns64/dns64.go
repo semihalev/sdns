@@ -461,20 +461,14 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 	// modified) version. If nothing survives, every AAAA was
 	// excluded, or there were none to begin with, fall through
 	// to the synthesis path.
+	var stripped int
 	if m.Rcode == dns.RcodeSuccess {
-		filtered, hadAAAA, kept, stripped := w.filterUpstreamAAAA(m)
+		filtered, hadAAAA, kept, n := w.filterUpstreamAAAA(m)
+		stripped = n
 		if hadAAAA && kept > 0 {
 			passthroughAAAAPresent.Inc()
 			if stripped > 0 {
-				// We modified the RRset, so any AD bit the
-				// validator set no longer covers what the client
-				// is about to see. Clear it; if the upstream had
-				// vouched for the response, advertise the reason
-				// via EDE 4 so a curious client can see why.
-				filtered.AuthenticatedData = false
-				if m.AuthenticatedData {
-					dnsutil.SetEDE(filtered, dns.ExtendedErrorCodeForgedAnswer, "DNS64 filtered IPv4-mapped AAAA")
-				}
+				clearFilteredAD(filtered, m)
 			}
 			return w.ResponseWriter.WriteMsg(filtered)
 		}
@@ -492,10 +486,25 @@ func (w *responseWriter) WriteMsg(m *dns.Msg) error {
 		// A lookup failed or yielded nothing usable; preserve the
 		// original (already AAAA-filtered) answer rather than
 		// papering over it. Reason has already been counted.
+		if stripped > 0 {
+			clearFilteredAD(m, m)
+		}
 		return w.ResponseWriter.WriteMsg(m)
 	}
 	Synthesised.Inc()
 	return w.ResponseWriter.WriteMsg(synth)
+}
+
+// clearFilteredAD marks out, a reply whose AAAA RRset was filtered, as
+// no longer what the validator vouched for. We modified the RRset, so
+// any AD bit the validator set no longer covers what the client is
+// about to see. Clear it; if the upstream had vouched for the response,
+// advertise the reason via EDE 4 so a curious client can see why.
+func clearFilteredAD(out, upstream *dns.Msg) {
+	if upstream.AuthenticatedData {
+		dnsutil.SetEDE(out, dns.ExtendedErrorCodeForgedAnswer, "DNS64 filtered IPv4-mapped AAAA")
+	}
+	out.AuthenticatedData = false
 }
 
 func (w *responseWriter) writeRecursionWorkFailure(err error) error {

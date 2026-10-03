@@ -24,9 +24,11 @@ order. `go build` alone gives you just the binary.
 | Target | Does |
 |---|---|
 | `make all` | generate, tidy, test, build |
-| `make test` | the full test suite |
-| `go generate ./...` | regenerate generated files |
-| `go build` | the binary only |
+| `make test` | the full test suite, with `-race` and coverage |
+| `make generate` | `go generate ./...`, regenerates generated files |
+| `make tidy` | `go mod tidy` |
+| `make build` | `go build`, the binary only |
+| `make clean` | removes the binary and `coverage.out` |
 
 ## Running one test
 
@@ -43,9 +45,17 @@ race here is a correctness bug, not a flake.
 gofmt -w .
 golangci-lint run
 make test
+go test -count=1 -run 'Alloc|ServeRawHitClasses' ./...
 ```
 
-CI runs the same linter configuration, so a clean local run is the same answer.
+`make test` runs with `-race`, and the race detector allocates, so the
+allocation pins do not run there. The last command runs them without it, as
+CI's allocation gate does on a pinned Go 1.27.0, since allocation counts move
+between toolchains.
+
+CI runs the latest golangci-lint release on the latest stable Go, with the same
+`.golangci.yml`. A different local linter version can disagree with it, so
+when the two differ, CI's answer is the one that counts.
 
 ## Conventions
 
@@ -62,9 +72,10 @@ depends on that.
 test of this code; it is a test of the machine it runs on. Stand up a loopback
 authority instead.
 
-**Every new behaviour gets a test.** Including the ones that are about what
-does *not* happen, an allocation that must not occur, a code path that must
-not be reachable. Those are the ones that silently regress.
+**Every new behaviour gets a test.** That includes the ones about what does
+*not* happen: an allocation that must not occur, a code path that must not be
+reachable. Those are the ones that silently regress. Name an allocation pin so
+the gate above selects it, with `Alloc` in the test name.
 
 ## Regenerating the packaged configuration
 

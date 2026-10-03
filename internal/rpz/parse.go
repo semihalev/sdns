@@ -16,7 +16,7 @@ import (
 // trigger types a later phase evaluates must load today.
 const (
 	// SkipTrigger is a trigger encoding a phase this build does not
-	// evaluate yet (rpz-ip, rpz-nsdname, rpz-nsip).
+	// evaluate yet (rpz-nsdname, rpz-nsip).
 	SkipTrigger = "trigger-unsupported"
 	// SkipOwnerEncoding is a trigger owner the draft's encoding cannot
 	// decode: a bad prefix length, a malformed reversed address, a

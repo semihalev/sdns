@@ -27,9 +27,18 @@ answers  = ["*.example.lan. 60 IN A 100.64.0.2"]
 ```
 
 Answers are zone-file lines. Wildcards work, and an exact owner overrides a
-covering wildcard. Views are evaluated in declaration order, and they run early
-in the chain, ahead of the blocklist, RPZ and the cache, so a view answer is
-not subject to policy or caching.
+covering wildcard. A wildcard matches names below its suffix only:
+`*.example.lan.` does not match `example.lan.` itself.
+
+The first view, in declaration order, whose networks contain the client is the
+only one consulted. If it has no record of the asked type for the name, the
+query resolves normally, and later views are not tried. Matching is by exact
+type: a view with only A records lets an AAAA question for the same name
+resolve publicly.
+
+Views run early in the chain, after the hosts file and ahead of the blocklist,
+RPZ and the cache, so a view answer is not subject to policy or caching. A
+name the hosts file answers never reaches the views.
 
 The example above is the common case: one internal name that must resolve to
 different addresses depending on which network the client is on.
@@ -56,7 +65,7 @@ Servers take the same forms as `forwarderservers`, so DoT and DoH work per zone.
 ### This is forwarding, not delegation
 
 The query goes out with RD=1 to a resolver that answers on your behalf, in the
-RFC 8499 sense. The upstreams must be **recursive resolvers**, not the zone's
+RFC 9499 sense. The upstreams must be **recursive resolvers**, not the zone's
 authoritative servers.
 
 ### A forwarded zone is not validated here
@@ -107,16 +116,30 @@ in turn weakens the bound on
 fallbackservers = ["8.8.8.8:53"]
 ```
 
-Used when normal resolution has returned SERVFAIL for any reason (a lame
-delegation, an unreachable upstream, a network fault), not only when the root
-is unreachable.
-Unlike `forwarderservers` this does not change the normal mode of operation.
+Used when normal resolution of a query with RD=1 has returned SERVFAIL because
+it could not get an answer (a lame delegation, an unreachable upstream, a
+network fault), not only when the root is unreachable. Unlike
+`forwarderservers` this does not change the normal mode of operation.
 
-Three limits worth knowing. Fallback servers are queried over plain UDP with a
-hard five-second ceiling per endpoint. Their answers are cached like any other.
-And, the one that matters most, a fallback answer is **not** validated here:
-it is written as the upstream asserted it, so configuring `fallbackservers`
-means a resolution that failed locally can be answered by an upstream you are
-trusting rather than checking. Note also that a per-zone forward that fails writes SERVFAIL, which is
-itself a fallback trigger, so with `fallbackservers` set, an internal zone's
+Some SERVFAILs are passed to the client unchanged, without trying a fallback:
+
+- a query with RD=0;
+- a DNSSEC validation failure, so a bogus answer is never sent to a fallback
+  server to be answered unvalidated;
+- a request the recursion firewall stopped in `enforce` mode;
+- a request whose own time has run out;
+- a query shed while it waited on the retry of an expired cached resolution
+  failure (RFC 9520), since a fallback query would bypass that bound;
+- a SERVFAIL answered from the RFC 9520 failure cache: the cache sits ahead of
+  the fallback in the chain, so while a failure is cached, its queries get it
+  without a fallback attempt.
+
+Three limits worth knowing. Fallback servers are queried over plain UDP, and
+over TCP when a reply comes back truncated, with a hard five-second ceiling per
+endpoint. Their answers are cached like any other. And, the one that matters
+most, a fallback answer is **not** validated here: it is written as the
+upstream asserted it, so configuring `fallbackservers` means a resolution that
+failed locally can be answered by an upstream you are trusting rather than
+checking. Note also that a per-zone forward that fails writes SERVFAIL, which
+is itself a fallback trigger, so with `fallbackservers` set, an internal zone's
 questions can reach them.

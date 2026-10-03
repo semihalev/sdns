@@ -3,7 +3,7 @@ layout: doc
 title: EDNS Client Subnet
 category: Features
 order: 7
-description: Forwarding a slice of the client's address so geo-aware services can answer for the right location.
+description: Forwarding the client subnet a trusted sender supplies, clamped, so geo-aware services can answer for the right location.
 ---
 
 ```toml
@@ -17,6 +17,11 @@ ECS (RFC 7871) passes part of the client's IP address to the authoritative
 server, so CDNs and geo-aware load balancers can return an answer appropriate to
 where the client actually is.
 
+sdns never builds an ECS option from the address a query arrives from. It only
+forwards ECS that the sender put in its own query, after clamping it. The
+typical sender is a load balancer or a stub forwarder that sits in front of
+sdns and knows the real client's address.
+
 sdns strips ECS by default, following the privacy guidance in RFC 7871 §11. This
 section is strictly opt-in, every option below is ignored while `enabled` is
 false, and client-supplied ECS is removed before forwarding.
@@ -28,10 +33,10 @@ forward_v4 = 24
 forward_v6 = 56
 ```
 
-The maximum source-prefix length sent upstream. A client that sends a narrower,
-more specific prefix is clamped to this value, so the resolver never leaks more
-locality than you intended, including when the client asked it to. `/24` and
-`/56` match common practice.
+The maximum source-prefix length sent upstream. An ECS option with a longer,
+more specific prefix is clamped to this value, and its address is truncated to
+the clamped length, so the resolver never forwards more locality than you
+intended. `/24` and `/56` match common practice.
 
 ## Who gets ECS
 
@@ -39,10 +44,12 @@ locality than you intended, including when the client asked it to. `/24` and
 client_networks = ["10.0.0.0/8"]
 ```
 
-CIDRs eligible for forwarding. Empty, the default, means every client that
-reaches this resolver. Populating it is the useful configuration: forward ECS
-for known internal sources such as load balancers, CDN edges and corporate
-networks, and strip it for the open internet.
+The senders trusted to supply ECS. The list is matched against the address
+the query arrives from (the transport peer), not against the subnet inside the
+ECS option. Empty, the default, trusts every sender that reaches this resolver.
+Populating it is the useful configuration: list the load balancers and stub
+forwarders that set ECS on behalf of their clients, and ECS from anyone else is
+stripped.
 
 ## The scope-keyed cache
 
@@ -59,7 +66,13 @@ client it was not meant for.
 
 `cache_limit_ttl` caps the TTL of any scoped entry, geo answers go stale
 faster than a general TTL suggests, and a misconfigured upstream should not be
-able to pin an audience-specific answer for hours.
+able to pin an audience-specific answer for hours. Omitted, or `0`, there is no
+cap; the generated configuration file sets `5m`.
+
+Scoped entries are rate limited together: with `ratelimit` set, every
+ECS-scoped answer draws from one shared bucket rather than from the hashed
+buckets ordinary answers spread across, see
+[Rate limits]({{ '/docs/configuration/access-control/' | relative_url }}#rate-limits).
 
 `min_scope_v4` and `min_scope_v6` widen a narrower SCOPE before it becomes part
 of the key. That is what bounds cardinality: without a floor, a resolver with

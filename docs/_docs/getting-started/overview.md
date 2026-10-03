@@ -19,7 +19,7 @@ query, change it, or hand it to the next:
 
 ```
 recovery → metrics → dnstap → accesslist → ratelimit → reflex → edns
-  → accesslog → chaos → hostsfile → views → blocklist → rpz → as112
+  → accesslog → chaos → ddr → hostsfile → views → blocklist → rpz → as112
   → kubernetes → dns64 → cache → failover → resolver → forwarder
 ```
 
@@ -40,7 +40,8 @@ Together they get you to a validating resolver you can query.
 If you are looking for one specific setting, the **Configuration** pages group
 every key by what it does. The
 [configuration key index]({{ '/docs/reference/config-keys/' | relative_url }})
-lists all of them alphabetically with their defaults.
+lists all of them, grouped by block and roughly in the order of the generated
+file, with their defaults.
 
 If you are deciding whether a feature fits your deployment, the **Features**
 pages describe what each one does, what it costs, and what it deliberately does
@@ -48,9 +49,12 @@ not do.
 
 ## Two conventions worth knowing up front
 
-**Features ship off.** Every capability added after a release is disabled, or in
-a counting-only shadow mode, until you enable it. An upgrade does not change how
-your resolver answers.
+**Features ship off.** Every capability added after a release, with its own
+configuration section or key, is disabled, or in a counting-only shadow mode,
+until you enable it. Protocol conformance fixes and internal behaviour are not
+features: they apply on upgrade, and the release notes list them. 1.9.0, for
+example, answers queries without RD from the cache, refuses AXFR and IXFR, and
+answers classes other than IN and CHAOS with NOTIMP.
 
 **The configuration file is checked as a whole.** `sdns -t -c file` parses the
 file the way the server will and reports every problem it finds at once, rather

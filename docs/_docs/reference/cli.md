@@ -9,7 +9,12 @@ description: Flags, subcommands, environment variables and exit codes.
 ```
 sdns [flags]
 sdns version
+sdns completion [bash|zsh|fish|powershell]
+sdns help [command]
 ```
+
+`completion` and `help` are the command-line library's built-ins: one prints a
+shell completion script, the other the usage text.
 
 ## Flags
 
@@ -17,6 +22,7 @@ sdns version
 |---|---|---|
 | `-c`, `--config` | `sdns.conf` | Path to the configuration file. If it does not exist, one is generated there and used. |
 | `-t`, `--test` | off | Validate the configuration and exit. |
+| `-h`, `--help` | off | Print the usage text and exit. |
 
 ## `sdns version`
 
@@ -71,18 +77,20 @@ directory and uses it:
 ./sdns
 ```
 
-The generated file documents every setting in place. Read it once. It is the
-authoritative description of the version you are running.
+The generated file documents nearly every setting in place. Read it once. It is
+the authoritative description of the version you are running; the few keys it
+leaves out are in the
+[configuration key index]({{ '/docs/reference/config-keys/' | relative_url }}).
 
-## Schema version
+## Configuration version
 
-The `version` key at the top of the file is the schema version, not the sdns
-version, and only changes when the schema does.
+The `version` key at the top of the file is set to the release of the sdns
+that generated the file.
 
 A file whose version does not match produces a warning and is then loaded
 exactly as written. sdns does **not** rewrite it and does **not** keep a
-backup.
+backup. After an upgrade the warning is informational if `sdns -t` passes.
 
-Upgrading across a schema change is therefore manual: generate a fresh file,
-pointing `-t` at a path that does not exist writes one, carry your settings
-across, and use `sdns -t` to catch keys that have gone away.
+Picking up new settings is therefore manual. Generate a fresh file (pointing
+`-t` at a path that does not exist writes one), carry your settings across,
+and use `sdns -t` to catch keys that have gone away.

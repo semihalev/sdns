@@ -159,10 +159,14 @@ done
 # version anywhere else is a value nobody will remember to bump.
 echo "pinned versions"
 before=$fail
-# README.md is excluded on purpose: it is plain markdown on GitHub with no
-# templating, so it uses :latest and points at the site for the current tag.
 hard=$(grep -rnE 'ghcr\.io/semihalev/sdns:[0-9]' docs/_docs docs/index.html 2>/dev/null || true)
 [ -n "$hard" ] && note "hard-coded image tag (use site.sdns_version): $(echo "$hard" | cut -d: -f1-2 | tr '\n' ' ')"
+# README.md is plain markdown on GitHub with no templating, so it names the
+# minor series literally; that has to be the series of the site's version.
+series=$(grep -oE '^sdns_version: *v?[0-9]+\.[0-9]+' docs/_config.yml | grep -oE '[0-9]+\.[0-9]+')
+while read -r tag; do
+    [ "$tag" = "$series" ] || note "README.md pins image tag $tag, the current series is $series"
+done < <(grep -oE 'ghcr\.io/semihalev/sdns:[0-9][0-9.]*' README.md | sed 's/.*://')
 [ "$fail" -eq "$before" ] && echo "  no hard-coded image tags"
 
 echo

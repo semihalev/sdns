@@ -6,9 +6,10 @@ order: 4
 description: What was measured, on what, how, and what the numbers do not say.
 ---
 
-Measured at commit `8b36b91` (the 1.8.0 serving-path work, PR #572). These
-figures are not re-run on a version bump, so they stay attached to the release
-that was measured rather than following the current one.
+Measured on sdns 1.8.0-rc2 (`8b36b91`, the 1.8.0 serving-path work, PR #572),
+the commit just before the 1.8.0 release. These figures are not re-run on a
+version bump, so they stay attached to the release that was measured rather
+than following the current one.
 
 This document exists to make one set of claims precisely, with the method and
 configurations needed to check them, not to advertise a bigger number than the
@@ -63,7 +64,7 @@ generator's own CPU cost, identically for every contender.
 
 | Resolver | Version | Serving configuration |
 |---|---|---|
-| sdns | 1.8.0 @ `8b36b91` | stock generated config (bind/API/paths only); full middleware chain runs per query |
+| sdns | 1.8.0-rc2 (`8b36b91`) | stock generated config (bind/API/paths only); full middleware chain runs per query |
 | PowerDNS Recursor | 5.4.1 | `threads=8`, `reuseport=yes`, `dnssec=validate`; warm hits served by the packet cache |
 | Unbound | 1.24.2 | `num-threads: 8`, `so-reuseport: yes`, cache slabs = 8, `msg-cache-size: 256m`, `rrset-cache-size: 512m`, `minimal-responses: yes` |
 | Knot Resolver | 6.2.0 | 8 `kresd` instances on one port (SO_REUSEPORT), shared 512 MB LMDB cache |
@@ -80,7 +81,7 @@ tuning pass; a specialist could likely move any of these numbers some percent.
 
 | Resolver | median qps | best qps |
 |---|---|---|
-| **sdns 1.8.0** | **424k** | **444k** |
+| **sdns 1.8.0-rc2** | **424k** | **444k** |
 | PowerDNS Recursor 5.4.1 | 371k | 390k |
 | Unbound 1.24.2 | 343k | 346k |
 | Knot Resolver 6.2.0 | 191k | 192k |
@@ -94,7 +95,7 @@ answers (NXDOMAIN from cached denial) 409k, cached SERVFAIL 399k.
 
 | Resolver | median qps | best qps |
 |---|---|---|
-| **sdns 1.8.0** | **226k** | **273k** |
+| **sdns 1.8.0-rc2** | **226k** | **273k** |
 | Knot Resolver 6.2.0 | 142k | 146k |
 | Unbound 1.24.2 | 136k | 149k |
 | PowerDNS Recursor 5.4.1 | 56k | 57k |
@@ -114,13 +115,13 @@ process here is bound to specific cores:
 
 | resolver | median qps | busy cores | qps per busy core |
 |---|---|---|---|
-| **sdns 1.8.0 @ GOMAXPROCS=8** | **394k** | 7.9 | ~50k |
+| **sdns 1.8.0-rc2 @ GOMAXPROCS=8** | **394k** | 7.9 | ~50k |
 | PowerDNS Recursor 5.4.1, 8 threads | 371k | 6.6 | ~56k |
-| Unbound 1.24.2, 8 threads | 343k | 6.0 | ~55k |
-| Knot Resolver 6.2.0, 8 workers | 191k | 6.7 | ~27k |
+| Unbound 1.24.2, 8 threads | 343k | 6.0 | ~57k |
+| Knot Resolver 6.2.0, 8 workers | 191k | 6.7 | ~28.5k |
 
 (Unbound configured with 16 threads still consumed only ~8 busy cores and
-reached 362k / ~45k per core, its observed CPU envelope stays in this
+reached 362k / ~45k per core; its observed CPU envelope stays in this
 class even when its configuration leaves it.)
 
 **Scaled up.** Each resolver allowed more workers:
@@ -133,27 +134,26 @@ class even when its configuration leaves it.)
 | sdns, runtime default (32) | 418k | 446k | 13.8 | ~30k |
 | Knot Resolver, 16 instances | 253k | 253k | 11.6 | ~22k |
 
-Three findings worth stating plainly. First, in the same concurrency
-class sdns leads while running its full middleware chain against
-PowerDNS's packet echo. Second, per-core efficiency is a property of each
-configuration, not an intrinsic constant, PowerDNS's echo does the least
-work per query of the four and earns the best per-core number for it.
-Third, sdns's own scaling curve bends: ~50k qps/core at 8 procs falling
-to ~30k at the runtime default of 32, and doubling the concurrency from
-8 to 16 buys only ~17% more throughput, on this host, bounding Go's
-parallelism below the runtime default is a material win. The shape is
-consistent with scheduler, shared-state and cache-coherence costs; an
-affinity-controlled check (the process bound to one NUMA node with
-`numactl`) measured no improvement over the unbound runs, so memory
-placement alone does not explain the bend. Flattening the curve is
-tracked as future engine work.
+Three findings worth stating plainly. First, in the same concurrency class
+sdns leads while running its full middleware chain against PowerDNS's packet
+echo. Second, per-core efficiency is a property of each configuration, not an
+intrinsic constant: in the 8-way class PowerDNS's echo and Unbound are level
+at ~56k to 57k per busy core, and in the scaled-up runs PowerDNS has the best
+per-core number. Third, sdns's own scaling curve bends: ~50k qps/core at 8
+procs falling to ~30k at the runtime default of 32, and doubling the
+concurrency from 8 to 16 buys only ~17% more throughput. On this host,
+bounding Go's parallelism below the runtime default is a material win. The
+shape is consistent with scheduler, shared-state and cache-coherence costs; an
+affinity-controlled check (the process bound to one NUMA node with `numactl`)
+measured no improvement over the unbound runs, so memory placement alone does
+not explain the bend. Flattening the curve is tracked as future engine work.
 
 ### Run-to-run spread
 
 20-second runs on a busy OS have real variance; the full series behind the
-medians spanned roughly ±7% for sdns UDP (423 to 444k), ±6% for PowerDNS
-(346 to 390k), ±3% for Unbound, ±2% for Knot, and ±15% for sdns TCP (195 to 273k).
-Single-run numbers from any resolver should be read with that in mind.
+medians spanned roughly ±2.5% for sdns UDP (423 to 444k), ±6% for PowerDNS
+(346 to 390k), ±3% for Unbound, ±2% for Knot, and ±17% for sdns TCP (195 to
+273k). Single-run numbers from any resolver should be read with that in mind.
 
 ## Cold cache: resolution rather than serving
 
@@ -171,7 +171,7 @@ minimisation defaults, which is what a deployment actually runs.
 ### Method
 
 - **Corpus:** `queryfile-50000`, 50,000 names, one full pass per run. It
-  resolves to roughly 67% NOERROR, 32% NXDOMAIN and 1.7% unresolvable. A
+  resolves to roughly 66% NOERROR, 32% NXDOMAIN and 2% unresolvable. A
   corpus that is largely dead names is the wrong instrument for the serving
   benchmark and the right one here, because dead names still cost a full
   delegation walk.
@@ -216,7 +216,7 @@ request"*, and names values: MAX_MINIMISE_COUNT with a RECOMMENDED value of
 
 | | default | step bound |
 |---|---|---|
-| sdns 1.8.0 | on, `qname_max_minimize_count = 10`, `qname_minimize_one_label = 4` | RFC 9156's recommended values |
+| sdns 1.8.1-pre (`42d06f3`) | on, `qname_max_minimize_count = 10`, `qname_minimize_one_label = 4` | RFC 9156's recommended values |
 | PowerDNS 5.4.1 | `qname_minimization: true` | `qname_max_minimize_count: 10`, `qname_minimize_one_label: 4` |
 | Unbound 1.24.2 | `qname-minimisation: yes`, strict `no` | the RFC's parameter names are Unbound's own: 10 and 4 |
 | Knot 6.2.0 | on | label by label |
@@ -234,7 +234,7 @@ engine comparison:
 
 | minimisation off | queries/sec | avg latency | unanswered | lost | spread |
 |---|---|---|---|---|---|
-| **sdns 1.8.0** | **905** | **0.107 s** | 883 (1.77%) | **0 / 0 / 0** | 1.9% |
+| **sdns 1.8.1-pre (`42d06f3`)** | **905** | **0.107 s** | 883 (1.77%) | **0 / 0 / 0** | 1.9% |
 | PowerDNS Recursor 5.4.1 | 799 | 0.118 s | 860 (1.72%) | 0 / 0 / 0 | 1.5% |
 | Knot Resolver 6.2.0 | 534 | 0.135 s | 910 (1.82%) | 218 / 206 / 236 | 5.3% |
 | Unbound 1.24.2 | 399 | 0.137 s | 905 (1.81%) | 567 / 581 / 554 | 2.4% |
@@ -243,7 +243,7 @@ And as shipped, every resolver on its own minimisation defaults:
 
 | as shipped | queries/sec | avg latency | unanswered | lost | spread |
 |---|---|---|---|---|---|
-| **sdns 1.8.0** | **658** | **0.145 s** | 898 (1.80%) | **2 / 1 / 1** | 3.9% |
+| **sdns 1.8.1-pre (`42d06f3`)** | **658** | **0.145 s** | 898 (1.80%) | **2 / 1 / 1** | 3.9% |
 | PowerDNS Recursor 5.4.1 | 636 | 0.149 s | 912 (1.82%) | 0 / 0 / 0 | 5.0% |
 | Knot Resolver 6.2.0 | 436 | 0.173 s | 928 (1.86%) | 248 / 245 / 235 | 4.3% |
 | Unbound 1.24.2 | 243 | 0.188 s | 1424 (2.85%) | 1106 / 1067 / 1152 | 5.8% |
@@ -255,9 +255,10 @@ which from a client is worse than a SERVFAIL, not better. Summed, the
 minimisation-off run lands all four between 1.72% and 1.82%: they resolved
 the same corpus to the same outcomes, and the residue is names that genuinely
 do not resolve. That is what makes it a like-for-like comparison rather than
-four different amounts of work. In the as-shipped run three of the four hold
-that band; Unbound's unanswered rises to 2.85%, which is its own minimisation
-policy's cost on this corpus, reported rather than corrected.
+four different amounts of work. In the as-shipped run sdns and PowerDNS hold
+that band and Knot is just outside it at 1.86%; Unbound's unanswered rises to
+2.85%, which is its own minimisation policy's cost on this corpus, reported
+rather than corrected.
 
 Average latency is reported for completed queries only, so a resolver that
 abandons a query improves its own average by doing so; the wall clock and the
