@@ -51,7 +51,9 @@ replacement that fails to load leaves the previous certificate in place.
 one to enable if you want ordinary devices to use your resolver privately.
 
 **DoH** is what browsers speak. It shares port 443 with HTTPS, which is the
-point. It is indistinguishable from ordinary web traffic on the wire.
+point. It is indistinguishable from ordinary web traffic on the wire. A web
+page on any origin may query it: every reply allows any origin, and the
+preflight a page sends before a POST is answered with GET and POST allowed.
 
 **DoQ** is the newest and least widely supported. It avoids the head-of-line
 blocking DoT inherits from TCP. sdns follows RFC 9250 as written: it offers

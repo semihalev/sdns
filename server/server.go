@@ -259,6 +259,18 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// A page that POSTs application/dns-message, which is not a
+	// safelisted content type, sends a CORS preflight first; refused,
+	// the browser never sends the query. Max-Age spares a round trip
+	// before every query.
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Max-Age", "86400")
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
 	// HTTP/1 and HTTP/2 ride a TCP connection. HTTP/3 accepts early data,
 	// a request that arrives before the QUIC handshake completes, whose
 	// source nothing has proved yet.
