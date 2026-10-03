@@ -49,8 +49,8 @@ bind port 53. Do not run sdns as root to solve this.
 derived at startup partly from the file-descriptor limit, so a low limit
 silently gives you a smaller connection cap than the machine could handle.
 
-`ConditionPathExists=/var/lib/sdns` stops the unit rather than starting a
-resolver with nowhere to write.
+`ConditionPathExists=/var/lib/sdns` makes systemd skip the start, without
+marking the unit failed, rather than start a resolver with nowhere to write.
 
 ## Files
 
@@ -95,15 +95,16 @@ sudo -u sdns sh -c 'cd /var/lib/sdns && /usr/bin/sdns -t -c /etc/sdns.conf' && s
 ```
 
 Run the check **as the service user**. As root it reads files the `sdns` user
-cannot, a TLS key with tight ownership passes the test and then fails at
+cannot, so a TLS key with tight ownership passes the test and then fails at
 startup. Run it **from `/var/lib/sdns`** too: the relative
 `directory = "db"` is checked against the current directory, so from anywhere
 else the test validates the wrong path.
 
-A stop waits up to 10 seconds for in-flight queries to drain. With
-`cache_persist` on, saving the snapshot can add up to 5 more, so a stop can
-take up to 15 seconds. The unit sets no `TimeoutStopSec`, and systemd's
-default of 90 seconds covers that.
+A stop waits up to `querytimeout` (10 seconds by default) for in-flight
+queries to drain. With `cache_persist` on, saving the snapshot can add up to 5
+more, so a stop takes at most `querytimeout` plus 5 seconds. The unit sets no
+`TimeoutStopSec`, so systemd's `DefaultTimeoutStopSec` applies; its usual 90
+seconds covers that unless `querytimeout` is raised past about a minute.
 
 Make the validation gate part of the restart, not a thing you remember to run.
 It reports every problem in the file at once and exits nonzero on any of them,
@@ -132,7 +133,7 @@ SDNS_DEBUGNS=false   # serve the CHAOS-class nameserver debug view
 ```
 
 `SDNS_PPROF=true` exposes Go's profiling endpoints on the API address, and
-`bearertoken` does not cover them, pprof tooling sends no `Authorization`
+`bearertoken` does not cover them: pprof tooling sends no `Authorization`
 header, so those routes stay open even when a token is set. Leave it off unless
 you are actively profiling, and keep the listener on loopback while it is on.
 

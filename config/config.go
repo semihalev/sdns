@@ -187,7 +187,7 @@ type Config struct {
 	// plan (memory, CPUs, descriptor limit); nothing is preallocated,
 	// admission is capped, slabs are created on demand and parked in an
 	// idle cache between requests.
-	IngressWorkers  int // Fixed handler workers per listener (default: derived from CPUs and memory)
+	IngressWorkers  int // Fixed handler workers of the plain UDP listener (default: derived from CPUs and memory)
 	IngressQueue    int // Ready-queue depth before a job is served on its own goroutine (default 64)
 	IngressTCPConns int // Concurrent inbound TCP/DoT connection cap (default: derived from available memory)
 
@@ -704,7 +704,8 @@ bind = ":53"
 # binddoq = ":853"
 
 # TLS certificate file path (PEM format)
-# Required for DoT, DoH, and DoQ servers
+# Required for DoT, DoH, and DoQ servers. Reloaded on SIGHUP and when this
+# file's modification time moves forward; a key change alone needs SIGHUP
 # tlscertificate = "server.crt"
 
 # TLS private key file path (PEM format)
@@ -715,12 +716,13 @@ bind = ":53"
 # Network Configuration
 # ============================
 
-# Outbound IPv4 addresses for DNS queries
+# Outbound IPv4 addresses for recursive queries to authoritative servers
 # Multiple addresses enable random source IP selection per request
+# Forwarders, forward zones and fallback servers do not use them
 outboundips = [
 ]
 
-# Outbound IPv6 addresses for DNS queries
+# Outbound IPv6 addresses for recursive queries to authoritative servers
 # Multiple addresses enable random source IP selection per request
 outboundip6s = [
 ]
@@ -777,7 +779,8 @@ dnssec = "on"
 # Aggressively reuse locally validated NSEC/NSEC3 records to answer
 # later negative queries without another authoritative lookup (RFC 8198).
 # Set false as an operational kill switch. Exact negative caching and
-# RFC 8020 NXDOMAIN subtree cuts remain active.
+# RFC 8020 NXDOMAIN subtree cuts remain active. Both reuse mechanisms are
+# off regardless with dnssec = "off" or forwarderservers set.
 rfc8198 = true
 
 # Cache recursive resolution failures and failed-authority state (RFC 9520).
@@ -944,7 +947,7 @@ nullroutev6 = "::0"
 # ============================
 
 # Client access control list (ACL)
-# CIDR notation for allowed client IP ranges
+# CIDR notation for allowed client IP ranges; an empty list allows everyone
 accesslist = [
     "0.0.0.0/0",    # Allow all IPv4
     "::0/0"         # Allow all IPv6
@@ -972,7 +975,8 @@ querytimeout = "10s"
 # RFC 9520 failure_cache_* settings below.
 expire = 600
 
-# Maximum number of cached answers (DNS messages, not records); at least 1024
+# Maximum number of cached answers (DNS messages, not records); at least
+# 1024, or 0 for 1024
 cachesize = 256000
 
 # Save the answer cache to the working directory at a clean shutdown and load
@@ -993,25 +997,26 @@ maxdepth = 30
 # Server Resources
 # ============================
 
-# The serving bounds (worker pool, in-flight query cap, TCP/DoT
-# connection cap) are derived at startup from this machine's memory,
-# CPUs and file-descriptor limit, and logged as each listener starts.
-# The keys below override the derived defaults; leave them unset unless
-# a measurement says otherwise.
+# The serving bounds (the UDP worker pool, the TCP/DoT connection cap)
+# are derived at startup from this machine's memory, CPUs and
+# file-descriptor limit, and logged as each listener starts. The keys
+# below override them; leave them unset unless a measurement says
+# otherwise.
 
-# Fixed handler workers per listener
+# Fixed handler workers for the plain DNS UDP listener
 # ingressworkers = 256
 
-# Ready-queue depth before a query is served on its own goroutine
+# Ready-queue depth of the plain DNS UDP listener before a query is
+# served on its own goroutine; 64 while unset
 # ingressqueue = 64
 
 # Concurrent inbound TCP/DoT connection cap
 # ingresstcpconns = 1024
 
-# Return a traffic burst's memory to the operating system after a long
-# idle (several minutes quiescent). The trim is one synchronous GC over
-# the whole process, so it is meant for memory-constrained devices,
-# containers on routers, small VPSes, not for busy servers.
+# Return a traffic burst's memory to the operating system after about
+# two minutes idle. The trim is one synchronous GC over the whole
+# process, so it is meant for memory-constrained devices, containers on
+# routers, small VPSes, not for busy servers.
 # memorytrim = true
 
 # ============================
@@ -1019,8 +1024,9 @@ maxdepth = 30
 # ============================
 
 # Cache hit rate limit (queries per second). Cached answers share hashed
-# token buckets of this rate; a hit over its bucket's limit is dropped
-# without a reply. Misses are not limited by it.
+# token buckets of this rate, every ECS-scoped answer one bucket; a hit
+# over its bucket's limit is dropped without a reply. Misses are not
+# limited by it.
 # 0 = disabled
 ratelimit = 0
 
@@ -1053,7 +1059,7 @@ blocklist = [
 ]
 
 # Domain whitelist
-# Domains listed here bypass all blocking
+# Domains listed here bypass the blocklist; RPZ policy still applies
 whitelist = [
     # Examples:
     # "important.example.com",
@@ -1168,8 +1174,8 @@ tcpmaxconnections = 100
 # Tracks IP behavior to identify spoofed source IPs
 reflexenabled = false
 
-# Enable blocking mode (if false, only logs suspicious queries)
-# Set to false for testing before enabling full blocking
+# Enable blocking mode (if false, only logs suspicious queries, at debug
+# level). Set to false for testing before enabling full blocking
 reflexblockmode = true
 
 # Enable learning mode (log detections but don't block)

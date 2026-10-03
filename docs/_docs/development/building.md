@@ -45,7 +45,13 @@ race here is a correctness bug, not a flake.
 gofmt -w .
 golangci-lint run
 make test
+go test -count=1 -run 'Alloc|ServeRawHitClasses' ./...
 ```
+
+`make test` runs with `-race`, and the race detector allocates, so the
+allocation pins do not run there. The last command runs them without it, as
+CI's allocation gate does on a pinned Go 1.27.0, since allocation counts move
+between toolchains.
 
 CI runs the latest golangci-lint release on the latest stable Go, with the same
 `.golangci.yml`. A different local linter version can disagree with it, so
@@ -66,9 +72,10 @@ depends on that.
 test of this code; it is a test of the machine it runs on. Stand up a loopback
 authority instead.
 
-**Every new behaviour gets a test.** Including the ones that are about what
-does *not* happen, an allocation that must not occur, a code path that must
-not be reachable. Those are the ones that silently regress.
+**Every new behaviour gets a test.** That includes the ones about what does
+*not* happen: an allocation that must not occur, a code path that must not be
+reachable. Those are the ones that silently regress. Name an allocation pin so
+the gate above selects it, with `Alloc` in the test name.
 
 ## Regenerating the packaged configuration
 

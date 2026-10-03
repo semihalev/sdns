@@ -17,8 +17,9 @@ api = "127.0.0.1:8080"
 curl http://127.0.0.1:8080/metrics
 ```
 
-Names and help strings on this page were read from a running instance, not
-from the source, so they are what your scrape will actually see.
+Names, types and labels on this page match what a scrape returns. The Meaning
+column describes what the code actually counts, which is sometimes more
+precise than the metric's help text.
 
 ## A note on what appears when
 
@@ -26,9 +27,9 @@ Label values a package registers up front are exported at zero from startup.
 Label values that come from traffic materialise on first use: a series that has
 never been incremented, `rpz_action_total` before any policy match,
 `dns_queries_total` before the first query, is absent from the scrape rather
-than present at zero.
-Alerts should therefore use `absent()` deliberately or tolerate the gap, and a
-dashboard panel that is empty on a fresh process is not necessarily broken.
+than present at zero. Alerts should therefore use `absent()` deliberately or
+tolerate the gap, and a dashboard panel that is empty on a fresh process is not
+necessarily broken.
 
 Registration is not uniform: some metrics appear only once their feature is
 configured, the RPZ zone gauges need a policy zone loaded, while others, DNS64
@@ -58,7 +59,7 @@ is what `domainmetricslimit` exists for.
 |---|---|---|---|
 | `dns_cache_hits_total` | counter | | Cache hits |
 | `dns_cache_misses_total` | counter | | Cache misses |
-| `dns_cache_hit_rate` | gauge | | Hit rate as a **percentage**, 0 to 100, not a 0 to 1 ratio |
+| `dns_cache_hit_rate` | gauge | | Hit rate as a **percentage**, 0 to 100, not a 0 to 1 ratio, averaged over everything since the process started; for the current rate use the query below |
 | `dns_cache_size` | gauge | `type` | Entries currently held |
 | `dns_cache_evictions_total` | counter | | Answers evicted from the answer cache to stay within `cachesize`; expired answers removed are `dns_cache_pruned_total` |
 | `dns_cache_prefetches_total` | counter | | Background refreshes of popular entries |
@@ -122,9 +123,8 @@ Buckets: `dns_recursion_fanout_ratio` is 1 to 128, `dnssec_work_per_request` is
 
 These are the numbers to read before switching the
 [recursion firewall]({{ '/docs/features/recursion-firewall/' | relative_url }})
-from shadow to enforce. In shadow mode,
-`dns_recursion_firewall_exhaustions_total` is exactly the set of requests
-enforce would have failed. If it is nonzero for ordinary traffic, the limit is
+from shadow to enforce. In shadow mode, `dns_recursion_firewall_exhaustions_total`
+is exactly the set of requests enforce would have failed. If it is nonzero for ordinary traffic, the limit is
 too low for your workload.
 
 The `mode` label, `shadow` or `enforce`, distinguishes observed from enforced,
@@ -200,9 +200,10 @@ with fewer rules than intended.
 | `dns_localroot_copy_age_seconds` | gauge | | Age since the copy in use was transferred; `-1` when none is active |
 | `dns_localroot_disk_total` | counter | `op`, `result` | Saved copy reads at startup (`op="load"`) and writes after each transfer (`op="write"`), by result |
 
-`dns_localroot_copy_age_seconds` is the one to alert on. Climbing steadily means
-refreshes are failing and the copy is walking toward its SOA expire, after which
-you silently go back to querying the root servers.
+`dns_localroot_copy_age_seconds` is the one to alert on. A steady climb means
+refreshes are failing and the copy is walking toward its horizon, the earlier
+of its SOA expire and the earliest signature expiration in the zone, after
+which you silently go back to querying the root servers.
 
 ## Forwarding and failover
 
@@ -349,5 +350,5 @@ dns_localroot_copy_age_seconds > 86400
 | `rate(dns_recovery_panics_total[10m]) > 0` | Should never fire |
 | `rate(dns_forwarder_response_mismatch_total[10m]) > 0` | Poisoning signal |
 | `dns_localroot_copy_age_seconds > 86400` | Refreshes failing; falls back silently |
-| `rate(dns_cache_evictions_total[10m]) > 0 and dns_cache_hit_rate < 80` | `cachesize` below the working set |
-| `rate(dns_udp_ingress_overflow_total[5m])` sustained | Capacity, not correctness |
+| `sum by (instance) (rate(dns_cache_evictions_total[10m])) > 0 and sum by (instance) (rate(dns_cache_hits_total[10m])) / (sum by (instance) (rate(dns_cache_hits_total[10m])) + sum by (instance) (rate(dns_cache_misses_total[10m]))) < 0.8` | `cachesize` below the working set |
+| `rate(dns_udp_ingress_overflow_total[5m])` sustained on a hit-heavy server | Worker pool too small for the traffic; capacity, not correctness |

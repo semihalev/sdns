@@ -50,18 +50,27 @@ quietly measuring five handlers fewer than production still reports a number.
 is how a harness replaces the tail with a stub while keeping everything ahead of
 it real.
 
-## Registering
+## Adding one to the chain
 
-```go
-func init() {
-    middleware.Register("myfilter", func(cfg *config.Config) middleware.Handler {
-        return New(cfg)
-    })
-}
+An in-tree middleware lives in `middleware/<name>`, as a package of that name
+with a `New(cfg *config.Config)` constructor. Add the name to `middlewareList`
+in `gen.go` at the position it belongs, then regenerate:
+
+```bash
+go generate
 ```
 
-`Register` appends to the end. When placement matters:
+That rewrites `middleware/defaults`, so the binary, the benchmarks and every
+harness pick up the new chain together.
 
+Do not register from an `init` function. The registry starts empty, and the
+default chain is registered only when the server sets up, after every `init`
+has run: a `Register` call in `init` lands at index 0, ahead of `recovery` and
+access control, and `RegisterBefore(name, ctor, "cache")` panics because
+`cache` is not registered yet. The placement calls are for code that runs after
+the default chain is in place, which is how the plugin loader uses them:
+
+- `Register(name, ctor)` appends to the end.
 - `RegisterAt(name, ctor, idx)`, at an index; out of range panics.
 - `RegisterBefore(name, ctor, before)`, immediately before a named middleware;
   panics if the target is not registered.
@@ -97,5 +106,5 @@ Build a chain with just your handler and a stub behind it, feed it a
 `*dns.Msg`, and assert on what came back. `middleware.HandlerFunc` adapts a
 plain function into a `Handler`, which is enough for the stub.
 
-No assertion library, and no network, see
+No assertion library and no network; see
 [Building and testing]({{ '/docs/development/building/' | relative_url }}).

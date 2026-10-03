@@ -129,7 +129,10 @@ Some SERVFAILs are passed to the client unchanged, without trying a fallback:
 - a request the recursion firewall stopped in `enforce` mode;
 - a request whose own time has run out;
 - a query shed while it waited on the retry of an expired cached resolution
-  failure (RFC 9520), since a fallback query would bypass that bound.
+  failure (RFC 9520), since a fallback query would bypass that bound;
+- a SERVFAIL answered from the RFC 9520 failure cache: the cache sits ahead of
+  the fallback in the chain, so while a failure is cached, its queries get it
+  without a fallback attempt.
 
 Three limits worth knowing. Fallback servers are queried over plain UDP, and
 over TCP when a reply comes back truncated, with a hard five-second ceiling per

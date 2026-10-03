@@ -84,13 +84,13 @@ leaves out are in the
 
 ## Configuration version
 
-The `version` key at the top of the file is bumped with every release and
-equals the sdns version that generated the file.
+The `version` key at the top of the file is set to the release of the sdns
+that generated the file.
 
 A file whose version does not match produces a warning and is then loaded
 exactly as written. sdns does **not** rewrite it and does **not** keep a
 backup. After an upgrade the warning is informational if `sdns -t` passes.
 
-Picking up new settings is therefore manual: generate a fresh file,
-pointing `-t` at a path that does not exist writes one, carry your settings
-across, and use `sdns -t` to catch keys that have gone away.
+Picking up new settings is therefore manual. Generate a fresh file (pointing
+`-t` at a path that does not exist writes one), carry your settings across,
+and use `sdns -t` to catch keys that have gone away.

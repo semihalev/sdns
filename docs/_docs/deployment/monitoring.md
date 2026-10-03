@@ -48,7 +48,7 @@ curl -X POST http://127.0.0.1:8080/api/v1/block/set/batch \
 ```
 
 The block endpoints are registered whether or not you configured a blocklist,
-the default chain always builds the handler.
+because the default chain always builds the handler.
 
 The routes that change state, block `set` and `remove`, the batches and purge,
 refuse a request a browser sends on behalf of another site with 403: a web page
@@ -96,10 +96,11 @@ dns_cache_size
 ```
 
 The two removal counters mean different things. `dns_cache_evictions_total`
-counts answers evicted to make room, so it moving at all says the cache is full.
-`dns_cache_pruned_total` counts expired answers the background pruner removed
-because nothing could serve them again, which is normal housekeeping. Evictions
-climbing while the hit rate falls means `cachesize` is below the working set.
+counts answers evicted to make room, so any movement at all says the cache is
+full. `dns_cache_pruned_total` counts expired answers the background pruner
+removed because nothing could serve them again, which is normal housekeeping.
+Evictions climbing while the hit rate falls means `cachesize` is below the
+working set.
 
 The resolver keeps its own caches of delegations and nameserver glue:
 `dns_resolver_cache_size` and `dns_resolver_cache_pruned_total` report them by
@@ -121,23 +122,23 @@ dns_recursion_firewall_exhaustions_total
 `dns_recursion_fanout_ratio`, outbound attempts per resolution tree (one
 recursive resolution with the sub-resolutions it spawns, not one client query),
 is the single most useful number for spotting a query pattern designed to cost
-you work. It
-sits low and flat in normal operation.
+you work. It sits low and flat in normal operation.
 
 **Is anything being dropped at the door?**
 
 ```
 dns_udp_ingress_drops_total
-dns_udp_ingress_overflow_total
 dns_tcp_ingress_drops_total
 dns_listener_errors_total
 ```
 
-Overflow means queries arrived faster than the workers accepted them. That is a
-capacity signal, not a bug.
+`dns_udp_ingress_overflow_total` is not a drop. It counts UDP queries served on
+their own goroutine because no worker in the fixed pool was free. A resolver
+serving misses spends much of its time there, and that is fine; one meant to
+be serving cache hits should see it near zero.
 
-**Everything else.** All 73 metrics, with their types, labels, help strings,
-ready-made PromQL and the alerts worth having, live in the
+**Everything else.** All 73 metrics, with their types, labels, ready-made
+PromQL and the alerts worth having, live in the
 [metrics reference]({{ '/docs/reference/metrics/' | relative_url }}).
 
 ## Query logging
@@ -148,8 +149,11 @@ Two mechanisms, for two purposes.
 accesslog = "/var/log/sdns/access.log"
 ```
 
-Common Log Format, one line per query, human-readable. On a busy resolver this
-is the largest thing the process writes; it is off by default for that reason.
+The file is created on first use, but its directory must already exist and be
+writable by the service user; nothing creates `/var/log/sdns`, and `sdns -t`
+refuses the setting until it exists. Common Log Format, one line per query,
+human-readable. On a busy resolver this is the largest thing the process
+writes; it is off by default for that reason.
 
 ```toml
 dnstapsocket        = "/var/run/sdns/dnstap.sock"

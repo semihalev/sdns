@@ -9,11 +9,11 @@ description: What the generated file contains and the few keys worth setting str
 Starting sdns without a configuration writes `sdns.conf` in the current
 working directory and uses it. The `.deb` and `.rpm` packages install
 `/etc/sdns.conf`, and their systemd unit runs `sdns --config=/etc/sdns.conf`.
-The unit's `WorkingDirectory=/var/lib/sdns` decides only where a relative
-`directory` lands: the default `"db"` becomes `/var/lib/sdns/db`. The
-generated file documents nearly every setting in place, so it is worth reading
-once rather than copying fragments from elsewhere; the few keys it leaves out
-are in the
+The unit's `WorkingDirectory=/var/lib/sdns` is where every relative path in
+the file lands, `tlscertificate`, `hostsfile` and zone files included: the
+default `directory = "db"` becomes `/var/lib/sdns/db`. The generated file
+documents nearly every setting in place, so it is worth reading once rather
+than copying fragments from elsewhere; the few keys it leaves out are in the
 [configuration key index]({{ '/docs/reference/config-keys/' | relative_url }}).
 
 ## The keys that matter first
@@ -45,11 +45,12 @@ are resolved through the same lookup a dial uses, CIDRs and enumerations are
 checked, TLS files are opened, and policy zones are compiled with the loaders
 the server runs. It reports **every** problem it finds, not just the first.
 
-A key that no setting claims fails `-t`, a typo, or a setting an older sdns
-understood. Startup only warns about those, so upgrading with a stale key in
+A key that no setting claims, a typo or a setting an older sdns understood,
+fails `-t`. Startup only warns about those, so upgrading with a stale key in
 the file does not turn into an outage.
 
 ## Next
 
 - [Configuration reference]({{ '/docs/configuration/overview/' | relative_url }}): every key, grouped by what it does
-- [Running as a service]({{ '/docs/deployment/service/' | relative_url }}): systemd, containers, file permissions
+- [Running as a service]({{ '/docs/deployment/service/' | relative_url }}): the systemd unit, file permissions, stopping cleanly
+- [Containers]({{ '/docs/deployment/docker/' | relative_url }}): Docker and Compose, the state volume

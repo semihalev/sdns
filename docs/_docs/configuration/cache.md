@@ -16,7 +16,7 @@ prefetch  = 10        # percent; 0 disables
 `cachesize` counts cached answers, whole messages, not records, and it is not a
 byte budget. The default holds a busy resolver's working set comfortably;
 raising it costs memory roughly in proportion. It must be `0` or at least
-1024, and `sdns -t` refuses 1 to 1023; `0`, or leaving the key out, gives 1024.
+1024: `sdns -t` refuses 1 to 1023, and `0`, or leaving the key out, gives 1024.
 Two smaller caches are sized from it on top: the RFC 8020 subtree cuts take up
 to `cachesize / 16` entries and the RFC 8198 proofs `cachesize / 32` (at least
 64).
@@ -27,7 +27,7 @@ amount of upstream traffic for hits that stay warm on popular names.
 
 The value must be `0`, which turns prefetching off, or between 10 and 90.
 Anything else is a configuration error rather than being clamped, so `sdns -t`
-rejects it.
+rejects it. A file that leaves the key out gets `0`.
 
 ## Across restarts
 
@@ -66,13 +66,14 @@ longer. The load stops after ten seconds whatever it has reached, which bounds
 it under normal disk access, not against a disk that stalls.
 
 **Shutdown takes longer.** The save runs after the listeners have drained,
-which may itself take up to ten seconds, and stops adding answers after three
-more; the process then waits at most two further seconds for the file to be
-finished and exits regardless. A save that does not finish in time leaves the
-previous file in place. Whatever stops the service must allow for that: the
+which may itself take up to `querytimeout` (ten seconds by default), and stops
+adding answers after three more; the process then waits at most two further
+seconds for the file to be finished and exits regardless. A save that does not
+finish in time leaves the previous file in place. Whatever stops the service
+must allow for that, `querytimeout` plus five seconds and some margin: the
 shipped systemd unit sets no `TimeoutStopSec`, so the manager's
-`DefaultTimeoutStopSec` applies, and it needs headroom over those fifteen
-seconds.
+`DefaultTimeoutStopSec` applies, and with the default `querytimeout` it needs
+headroom over fifteen seconds.
 
 Only a clean shutdown saves. After a crash the next start loads the file from
 the last clean one, aged by the whole time since.
@@ -216,19 +217,20 @@ that bound is the parent's, not this cache's to round, so the answer goes out
 with a TTL of zero rather than a second the parent never granted.
 
 The two mechanisms that *reuse* a denial for names it was never asked about are
-bounded the same way, and were already. Both are on by default and both are
-covered under
-[Resolution and DNSSEC]({{ '/docs/configuration/resolution/' | relative_url }}):
+bounded the same way, and were already. Both are on by default, and both are
+off with `dnssec = "off"` and in whole-server forwarder mode; they are covered
+under
+[Resolution and DNSSEC]({{ '/docs/configuration/resolution/' | relative_url }}).
 RFC 8020 lets one NXDOMAIN answer every name beneath it, and RFC 8198 answers
 later denials from a validated NSEC or NSEC3 record already held. For these,
 sdns takes the smallest value across every component of the proof, the SOA,
 the records in the authority section, the signatures over them, and the
 delegation lease, caps it at `expire` (below), and applies no floor on top,
-because a floor there would let
-a cache setting extend an authenticated denial past the proof that authorised
-it. Answering one name from another's denial is a claim about a whole subtree,
-and it expires with the weakest thing supporting it. They are counted by
-`nxdomain_cut_hits_total` and `aggressive_negative_hits_total`.
+because a floor there would let a cache setting extend an authenticated denial
+past the proof that authorised it. Answering one name from another's denial is
+a claim about a whole subtree, and it expires with the weakest thing
+supporting it. They are counted by `nxdomain_cut_hits_total` and
+`aggressive_negative_hits_total`.
 
 ## Reused denial lifetime and failure caching
 
@@ -240,8 +242,9 @@ expire = 600      # seconds
 RFC 8198 NSEC or NSEC3 proof are each held for at most this many seconds. With
 the default 600, no cut and no synthesized denial outlives ten minutes,
 whatever the zone's SOA and signatures allow. Fixed caps sit above it: 24
-hours for a cut and three hours for a proof, which are also what `0` leaves in
-place.
+hours for a cut and three hours for a proof, which are also what `0`, or
+leaving the key out, leaves in place. With `dnssec = "off"` or in forwarder
+mode neither mechanism runs, so `expire` has nothing to cap.
 
 `expire` does not govern resolution failures. Those are held by the RFC 9520
 failure cache in the `[recursion_firewall]` block, see the
@@ -270,8 +273,8 @@ dns_cache_stale_answers_total  answers served past expiry after a failure
 dns_cache_stale_immediate_answers_total  answers served past expiry at once, serve_stale_mode "immediate"
 dns_cache_wire_fastpath_total  hits attempted on the byte serving path, by outcome
 failure_cache_hits_total    cached RFC 9520 resolution failures served
-dns_cache_snapshot_entries_total  answers read back at startup, by result
-dns_cache_snapshot_seconds     how long the startup load took
+dns_cache_snapshot_entries_total  answers saved at shutdown and loaded at startup, by op and result
+dns_cache_snapshot_seconds     how long the last save or load took, by op and outcome
 ```
 
 `dns_cache_evictions_total` counts only answers pushed out because the cache

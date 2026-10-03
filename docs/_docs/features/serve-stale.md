@@ -38,16 +38,25 @@ leaves the delegation lease as the only one.
 ## What a stale answer looks like
 
 Every record in a stale answer carries a TTL of 30 seconds, or what is left of
-the delegation lease if that is shorter. When less than one second of the
-lease is left, the stale answer is declined, since a TTL of 0 is not allowed.
-A client that sent EDNS gets EDE 3 (Stale Answer). The AD bit is cleared when
-any signature in the answer has passed its expiration.
+the delegation lease if that is shorter. A stale alias whose target is
+completed from fresh records carries the shortest TTL among those records when
+that is lower still. When less than one second is left, the stale answer is
+declined, since a TTL of 0 is not allowed. A client that sent EDNS gets EDE 3
+(Stale Answer). The AD bit is kept only when the answer carries signatures and
+every one of them is inside its validity period, and a query with CD=1 never
+gets it.
+
+A SERVFAIL the [recursion firewall]({{ '/docs/features/recursion-firewall/' | relative_url }})
+produced in `enforce` mode is not replaced by a stale answer, and neither is a
+failure that belongs to the one request, such as its client cancelling it.
 
 ## Across restarts
 
-With `cache_persist`, an entry whose TTL ran out while sdns was down is not
-restored. Stale-eligible entries therefore do not survive a restart: after one,
-only answers still inside their TTL can be served stale later.
+With `cache_persist`, the save at shutdown writes only answers with at least
+ten seconds of TTL left, so an entry already expired is never in the file, and
+an entry whose TTL ran out while sdns was down is not restored. Stale-eligible
+entries therefore do not survive a restart: after one, only answers still
+inside their TTL can be served stale later.
 
 ## Immediate mode
 
@@ -76,7 +85,8 @@ What immediate mode serves, and when it declines and resolves instead:
   resolved rather than answered stale.
 - Only for a client's own question with the RD bit set. A question that does not
   desire recursion, and a lookup the resolver makes for itself, never get one.
-- Not for ECS-scoped entries, which have no background refresh.
+- Not for a query that carries a client subnet with `[ecs]` on, nor for
+  ECS-scoped entries, which have no background refresh; such a query resolves.
 - Not for an alias chain the entry cannot complete by itself, and not when a
   signature in the answer has lapsed.
 

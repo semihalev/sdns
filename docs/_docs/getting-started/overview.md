@@ -40,8 +40,8 @@ Together they get you to a validating resolver you can query.
 If you are looking for one specific setting, the **Configuration** pages group
 every key by what it does. The
 [configuration key index]({{ '/docs/reference/config-keys/' | relative_url }})
-lists all of them, grouped by block in the order of the generated file, with
-their defaults.
+lists all of them, grouped by block and roughly in the order of the generated
+file, with their defaults.
 
 If you are deciding whether a feature fits your deployment, the **Features**
 pages describe what each one does, what it costs, and what it deliberately does

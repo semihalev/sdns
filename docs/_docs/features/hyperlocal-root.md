@@ -83,6 +83,6 @@ A `fallback` consultation is one the copy did not answer, so the walk went to
 the real root servers: no verified copy was active, or the copy held no proof
 for the question.
 
-`dns_localroot_copy_age_seconds` is the one to alert on. It climbing steadily
-means refreshes are failing and the copy is walking toward its horizon, at
-which point you silently go back to querying the root servers.
+`dns_localroot_copy_age_seconds` is the one to alert on. A steady climb means
+refreshes are failing and the copy is walking toward its horizon, at which
+point you silently go back to querying the root servers.

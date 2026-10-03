@@ -18,7 +18,7 @@ First and foremost, thank you for considering contributing to SDNS! It's people 
 
 ## Conventions
 
-*   Format with `gofmt -w .`, then run `golangci-lint run` and `make test`. All three should be clean before you open a pull request.
+*   Format with `gofmt -w .`, then run `golangci-lint run`, `make test` and `go test -count=1 -run 'Alloc|ServeRawHitClasses' ./...` (the allocation pins, which do not run under `-race`). All of them should be clean before you open a pull request.
 *   Tests use plain `testing` idioms. Do not add an assertion library.
 *   Tests must not need the live network. Run them against loopback fixtures, such as a loopback authority, instead of resolving real names.
 

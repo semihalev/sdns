@@ -31,6 +31,10 @@ an unknown. Watch `rpz_action_total` for a day; the counts are exactly what
 enforcement would have done. When the numbers look like what you intended,
 switch to `enforce`.
 
+Policy applies to the recursive service: client queries with RD=1 in class IN.
+A query with RD=0, a question in another class, and the lookups sdns makes on
+its own behalf are not checked against it.
+
 ## What can trigger a rule
 
 **The query name.** The classic trigger: a rule owned by `evil.example.rpz.zone.`
@@ -91,7 +95,9 @@ policy = "given"
 ```
 
 Files are reloaded automatically when replaced, so a download cron is enough to
-keep a feed current, no restart and no signal.
+keep a feed current, no restart and no signal. A replacement that fails to
+load, or that compiles no rules at all, is logged and counted in
+`rpz_reload_errors_total`, and the previous rules keep serving.
 
 `origin` matters for downloaded feeds. Many publish their SOA as `@` with the
 rules relative to it, leaving the apex for the consuming server to supply. Those
@@ -116,7 +122,10 @@ applying rather than starting to deny.
 
 `tsig_key` is `name:algorithm:base64-secret` and signs the transfer when the
 provider requires it. A transfer whose serial has gone backwards is refused at
-the probe rather than being applied.
+the probe rather than being applied. A transfer that fails, compiles no rules,
+or whose SOA declares an expire of zero is not installed either: it is logged,
+the installed copy keeps serving until its own expire, and the next attempt
+comes after the SOA retry interval.
 
 ## Watching it
 
@@ -125,13 +134,20 @@ rpz_action_total        matches by zone and action
 rpz_zone_rules          rules currently loaded per zone
 rpz_zone_rules_skipped  rules the loader could not use
 rpz_zone_serial         serial of each AXFR zone, -1 for file zones and withdrawn feeds
-rpz_reload_errors_total failed reloads or transfers
+rpz_reload_errors_total failed or empty file loads, AXFR feeds withdrawn at expire
 ```
+
+`rpz_reload_errors_total` does not count a failed transfer: the feed retries
+on its SOA schedule, and a run of failures shows up as the counter moving once,
+when the copy passes its expire and is withdrawn. Watch the log, or
+`rpz_zone_serial` standing still, for the failures themselves.
 
 Rules under `rpz-nsdname` and `rpz-nsip` are not evaluated. The loader skips
 them and counts them in `rpz_zone_rules_skipped` with
 `reason="trigger-unsupported"`, so a feed that carries them shows a steady
 count there from its first load. The zone still works, without those rules.
+A feed made only of such rules compiles no rules at all, so `sdns -t` refuses
+it as a file zone, and as an AXFR zone it is never installed.
 
 `rpz_zone_rules_skipped` climbing after a feed update usually means the feed
 started emitting a record type or an encoding this loader does not accept; the

@@ -44,9 +44,10 @@ example.com.  <span class="c-val">3600</span> IN RRSIG A 13 2 3600 (...)
     <div class="section-label">Measured</div>
     <h2>Throughput and cost, with the conditions attached</h2>
     <p>
-      Every figure below was produced by a documented run on one host, against
-      the same corpus, with the methodology and the fairness notes written
-      down. Read how they were taken before you trust them.
+      Every throughput figure below was produced by a documented run on one
+      host, with the corpus, the methodology and the fairness notes for each
+      written down; the allocation figure is pinned by a test. Read how they
+      were taken before you trust them.
     </p>
 
     <div class="metrics">
@@ -72,7 +73,7 @@ example.com.  <span class="c-val">3600</span> IN RRSIG A 13 2 3600 (...)
       </div>
     </div>
     <p class="metrics-note">
-      sdns 1.8.0 at <code>8b36b91</code>, 2×Xeon E5-2620 v4 (32 logical cores).
+      sdns 1.8.0-rc2 (<code>8b36b91</code>), 2×Xeon E5-2620 v4 (32 logical cores).
       The cold figure was measured on the same host at sdns 1.8.1-pre (<code>42d06f3</code>),
       in the configuration sdns ships, with QNAME minimisation on;
       turning it off measures 905/s and gives up privacy the resolver is meant to keep.
@@ -93,7 +94,7 @@ example.com.  <span class="c-val">3600</span> IN RRSIG A 13 2 3600 (...)
         <tr><th>Resolver</th><th style="text-align:right">UDP median</th><th style="text-align:right">TCP median</th></tr>
       </thead>
       <tbody>
-        <tr class="self"><td>sdns 1.8.0</td><td class="num">424k</td><td class="num">226k</td></tr>
+        <tr class="self"><td>sdns 1.8.0-rc2</td><td class="num">424k</td><td class="num">226k</td></tr>
         <tr><td>PowerDNS Recursor 5.4.1</td><td class="num">371k</td><td class="num">56k</td></tr>
         <tr><td>Unbound 1.24.2</td><td class="num">343k</td><td class="num">136k</td></tr>
         <tr><td>Knot Resolver 6.2.0</td><td class="num">191k</td><td class="num">142k</td></tr>
@@ -118,6 +119,7 @@ example.com.  <span class="c-val">3600</span> IN RRSIG A 13 2 3600 (...)
       <div class="rfc"><span class="rfc-num">RFC 8020</span><span class="rfc-what">NXDOMAIN cuts the subtree</span></div>
       <div class="rfc"><span class="rfc-num">RFC 8198</span><span class="rfc-what">Aggressive NSEC use</span></div>
       <div class="rfc"><span class="rfc-num">RFC 8310</span><span class="rfc-what">DoT upstreams authenticated by name</span></div>
+      <div class="rfc"><span class="rfc-num">RFC 8467</span><span class="rfc-what">Padding of encrypted replies</span></div>
       <div class="rfc"><span class="rfc-num">RFC 8484</span><span class="rfc-what">DNS over HTTPS</span></div>
       <div class="rfc"><span class="rfc-num">RFC 8767</span><span class="rfc-what">Serving stale answers</span></div>
       <div class="rfc"><span class="rfc-num">RFC 8806</span><span class="rfc-what">Local root zone</span></div>

@@ -53,7 +53,13 @@ without another authoritative lookup. `rfc9520` caches resolution failures and
 failed-authority state. Both default to on and both are kill switches rather
 than tuning knobs, turning either off costs upstream traffic and, in the case
 of `rfc9520`, standards conformance. Exact negative caching and RFC 8020
-NXDOMAIN subtree cuts stay active regardless.
+NXDOMAIN subtree cuts stay active with `rfc8198 = false`.
+
+With `dnssec = "off"`, or in whole-server forwarder mode (`forwarderservers`
+set), sdns turns off both RFC 8020 subtree cuts and RFC 8198 reuse, whatever
+`rfc8198` says. Both reuse a denial for names it was never asked about, which
+needs validation sdns performed itself; a forwarder's AD bit is only a claim on
+the wire. Exact negative caching still applies.
 
 If a trust anchor file is ever corrupted, the authoritative source for the root
 KSKs is [data.iana.org/root-anchors](https://data.iana.org/root-anchors/).
@@ -113,7 +119,7 @@ Keeps TCP connections to root and TLD servers alive between queries. Off by
 default. It helps when a large share of upstream traffic is truncated into TCP;
 it costs sockets otherwise. `tcpmaxconnections = 0` uses the built-in 100.
 
-## AS112 empty zones
+## Locally served empty zones
 
 ```toml
 emptyzones = []
@@ -138,7 +144,7 @@ the `_dns.resolver.arpa` SVCB records when
 
 ## Query classes
 
-When sdns resolves recursively, it resolves class IN only. A CHAOS question the
-`chaos` setting does not answer gets REFUSED, and any other class gets NOTIMP
-with Extended DNS Error 21 (Not Supported). See
+sdns answers class IN only, on every path, forwarder mode and forwarded zones
+included. A CHAOS question the `chaos` setting does not answer gets REFUSED,
+and any other class gets NOTIMP with Extended DNS Error 21 (Not Supported). See
 [Identification]({{ '/docs/configuration/server/' | relative_url }}#identification).

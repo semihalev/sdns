@@ -3,7 +3,7 @@ layout: doc
 title: EDNS Client Subnet
 category: Features
 order: 7
-description: Forwarding, clamped, the client subnet a trusted sender supplies so geo-aware services can answer for the right location.
+description: Forwarding the client subnet a trusted sender supplies, clamped, so geo-aware services can answer for the right location.
 ---
 
 ```toml
@@ -66,8 +66,13 @@ client it was not meant for.
 
 `cache_limit_ttl` caps the TTL of any scoped entry, geo answers go stale
 faster than a general TTL suggests, and a misconfigured upstream should not be
-able to pin an audience-specific answer for hours. Omitted, there is no cap;
-the generated configuration file sets `5m`.
+able to pin an audience-specific answer for hours. Omitted, or `0`, there is no
+cap; the generated configuration file sets `5m`.
+
+Scoped entries are rate limited together: with `ratelimit` set, every
+ECS-scoped answer draws from one shared bucket rather than from the hashed
+buckets ordinary answers spread across, see
+[Rate limits]({{ '/docs/configuration/access-control/' | relative_url }}#rate-limits).
 
 `min_scope_v4` and `min_scope_v6` widen a narrower SCOPE before it becomes part
 of the key. That is what bounds cardinality: without a floor, a resolver with

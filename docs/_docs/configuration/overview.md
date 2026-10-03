@@ -25,7 +25,7 @@ them.
 | [Resolution and DNSSEC]({{ '/docs/configuration/resolution/' | relative_url }}) | Root servers, validation, QNAME minimisation, timeouts, depth |
 | [Cache and TTLs]({{ '/docs/configuration/cache/' | relative_url }}) | Cache size, prefetch, stale answers, failure caching |
 | [Access control and blocking]({{ '/docs/configuration/access-control/' | relative_url }}) | ACLs, rate limits, blocklists, hosts file, reflection defence |
-| [Configuration key index]({{ '/docs/reference/config-keys/' | relative_url }}) | Every key in the order the generated file lists it, with its default |
+| [Configuration key index]({{ '/docs/reference/config-keys/' | relative_url }}) | Every key, with its default and what leaving it out means |
 
 Feature blocks (`[rpz]`, `[recursion_firewall]`, `[ecs]`, `[dns64]`, `[ddr]`,
 `[kubernetes]`, `[[views]]`, `[[forward_zone]]`, `[plugins]`) are documented on
@@ -55,14 +55,29 @@ the file to turn an upgrade into an outage.
 version = "1.9.0"
 ```
 
-This is the configuration file's version. It is bumped with every release and
-equals the sdns version that generated the file.
+This is the configuration file's version, the configuration version of the sdns
+that generated the file. Recent releases set it to their own version number;
+some older ones left it at an earlier release's.
 
 When the file's version differs from the running sdns it logs a warning and
 loads the file **unchanged**. After an upgrade the warning is informational if
 `sdns -t` passes. Nothing is migrated and no backup is written. Generate a
 fresh configuration alongside the new binary and carry your settings across by
 hand; `sdns -t` reports any key that no longer exists.
+
+## State directory
+
+```toml
+directory = "db"
+```
+
+Where sdns keeps what it writes: the RFC 5011 trust anchor database
+(`trust-anchor.db` and `trust-anchor-tombstones.db`), downloaded blocklists in
+`blacklists/`, the local root copy (`root.zone`, with `hyperlocal_root`) and
+the cache snapshot (`cache.snapshot`, with `cache_persist`). A missing
+directory is created, but not a missing parent. A relative path is relative to
+the process working directory, so a service should give an absolute one. It is
+required: a file that leaves it out or empty is refused.
 
 ## Durations and sizes
 

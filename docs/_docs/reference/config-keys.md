@@ -17,8 +17,23 @@ markers stand in for a value:
 
 A key you leave out of your own file takes its zero value (`false`, `0` or
 empty), with the meaning the row gives that value, unless the row says
-otherwise. For `chaos` and `cachesize` the shipped value and the omitted value
-differ.
+otherwise. Many keys ship a value other than their zero value, so leaving one
+out is not the same as keeping the default. The ones where that is easy to
+miss:
+
+- `accesslist` omitted, or `[]`, allows every client.
+- `api` omitted disables the API; `prefetch` omitted turns prefetching off;
+  `chaos` omitted turns the CHAOS answers off.
+- `expire` omitted leaves only the fixed caps of 24 hours and 3 hours.
+- `cachesize` omitted gives 1024 answers.
+- `reflexblockmode` omitted only logs, at debug level.
+- `domainmetricslimit` omitted tracks every domain, without a limit.
+- `ecs.cache_limit_ttl` omitted leaves scope-keyed entries uncapped.
+- `directory` and `rootservers` are refused when omitted, and so is `rootkeys`
+  while sdns validates recursively.
+
+`dnssec` (`"on"`), `rfc8198` and `rfc9520` (`true`) and `loglevel` (`"info"`)
+take the shipped value when omitted.
 
 The page that explains each top-level key is listed under
 [Where each key is explained](#where-each-key-is-explained).
@@ -27,71 +42,71 @@ The page that explains each top-level key is listed under
 
 | Key | Default | Meaning |
 |---|---|---|
-| `version` | `"1.9.0"` | The sdns release that generated the file; a different value only logs a notice at startup |
+| `version` | `"1.9.0"` | The configuration version of the sdns that generated the file; a different value only logs a warning at startup |
 | `directory` | `"db"` | Writable state: `trust-anchor.db`, `trust-anchor-tombstones.db`, `root.zone` with `hyperlocal_root`, `cache.snapshot` with `cache_persist`, and the downloaded blocklists in `blacklists/` |
 | `bind` | `":53"` | UDP and TCP listener; one `"host:port"` or a list. Unset or empty still listens on `":53"` |
 | `bindtls` | *(commented)* | DoT listener, usually `":853"`; one address or a list; not started while unset |
 | `binddoh` | *(commented)* | DoH listener, usually `":443"`; one address or a list; also opens UDP on the same address for HTTP/3, so it cannot share a port with `binddoq`; not started while unset |
 | `binddoq` | *(commented)* | DoQ listener, usually `":853"`; one address or a list; not started while unset |
-| `tlscertificate` | *(commented)* | PEM certificate; required when `bindtls`, `binddoh` or `binddoq` is set, unused otherwise; reloaded on `SIGHUP` and when the file changes |
+| `tlscertificate` | *(commented)* | PEM certificate; required when `bindtls`, `binddoh` or `binddoq` is set, unused otherwise; reloaded on `SIGHUP` and when the certificate file's modification time moves forward (a key change alone needs `SIGHUP`) |
 | `tlsprivatekey` | *(commented)* | PEM private key; required with `tlscertificate` |
-| `outboundips` | `[]` | IPv4 source addresses for outbound queries; each must be an address of this machine |
-| `outboundip6s` | `[]` | IPv6 source addresses for outbound queries; each must be an address of this machine; used only with IPv6 access on |
-| `rootservers` | full list | IPv4 root servers |
+| `outboundips` | `[]` | IPv4 source addresses for recursive queries to authoritative servers (not forwarders, forward zones or fallback servers); each must be an address of this machine |
+| `outboundip6s` | `[]` | IPv6 source addresses for recursive queries to authoritative servers; each must be an address of this machine; used only with IPv6 access on |
+| `rootservers` | full list | IPv4 root servers; refused when no root server is configured |
 | `root6servers` | full list | IPv6 root servers |
 | `dnssec` | `"on"` | `"on"` or `"off"`; omitted means `"on"` |
-| `rootkeys` | published KSKs | Root trust anchors in DNSKEY presentation format |
-| `rfc8198` | `true` | Aggressive NSEC/NSEC3 reuse; kill switch only |
-| `rfc9520` | `true` | Cache resolution failures; kill switch only |
+| `rootkeys` | published KSKs | Root trust anchors in DNSKEY presentation format; refused when empty while sdns validates recursively or with `hyperlocal_root` |
+| `rfc8198` | `true` | Aggressive NSEC/NSEC3 reuse; kill switch only, omitted means `true`. Off regardless with `dnssec = "off"` or `forwarderservers` set |
+| `rfc9520` | `true` | Cache resolution failures; kill switch only, omitted means `true` |
 | `serve_stale` | `false` | Serve expired answers when resolution fails |
 | `serve_stale_max_ttl` | `"24h"` | Measured from TTL expiry; `"0"` removes this bound; omitted means `"24h"` |
 | `serve_stale_mode` | `"failure"` | `"failure"` serves stale only after resolution fails; `"immediate"` serves it at once and refreshes in the background, needs `serve_stale = true` (`sdns -t` refuses it otherwise) |
 | `fallbackservers` | `[]` | Tried after a SERVFAIL from normal resolution |
 | `forwarderservers` | `[]` | Set to make sdns a forwarder instead of a recursor. Each entry is `"ip:port"`, `"tls://ip:port"`, `"tls://ip:port#name"` (the certificate must be valid for `name`, a host name, not an IP address; RFC 8310) or an `"https://"` DoH URL. See [Views and forwarding]({{ '/docs/features/views/' | relative_url }}) |
-| `api` | `"127.0.0.1:8080"` | HTTP API and metrics; `""` disables |
+| `api` | `"127.0.0.1:8080"` | HTTP API and metrics; `""` or omitted disables |
 | `bearertoken` | *(commented)* | Requires `Authorization: Bearer` on API requests |
-| `loglevel` | `"info"` | `error`, `warn`, `info`, `debug` |
+| `loglevel` | `"info"` | `error`, `warn`, `info`, `debug`; omitted means `"info"` |
 | `accesslog` | *(commented)* | CLF query log path; empty disables |
 | `blocklists` | `[]` | Blocklist URLs, downloaded once at startup; restart to refresh |
 | `blocklistdir` | `""` | Deprecated; created under `directory` |
 | `blocklist` | `[]` | Manually blocked names |
-| `whitelist` | `[]` | Names that bypass all blocking |
+| `whitelist` | `[]` | Names the blocklist never blocks; RPZ policy still applies to them |
 | `nullroute` | `"0.0.0.0"` | Answer for blocked A queries |
 | `nullroutev6` | `"::0"` | Answer for blocked AAAA queries |
-| `accesslist` | `["0.0.0.0/0", "::0/0"]` | Clients allowed to query, narrow this |
+| `accesslist` | `["0.0.0.0/0", "::0/0"]` | Clients allowed to query, narrow this; `[]` or omitted allows every client |
 | `hostsfile` | `""` | Serve entries from a hosts file |
 | `timeout` | `"2s"` | Per upstream query; `"0"` or omitted means `"2s"` |
 | `querytimeout` | `"10s"` | For one whole client query; `"0"` or omitted means `"10s"` |
-| `expire` | `600` | Seconds; lifetime cap of RFC 8020 subtree cuts and RFC 8198 proofs (fixed caps of 24 hours and 3 hours sit above it). Resolution failures use `failure_cache_*` |
+| `expire` | `600` | Seconds; lifetime cap of RFC 8020 subtree cuts and RFC 8198 proofs (fixed caps of 24 hours and 3 hours sit above it; `0` or omitted leaves only those). Neither mechanism runs with `dnssec = "off"` or `forwarderservers` set. Resolution failures use `failure_cache_*` |
 | `cachesize` | `256000` | Cached answers (messages), not records; `0` or omitted means 1024, 1 to 1023 is refused. Adds `cachesize / 16` RFC 8020 cut entries and `cachesize / 32` RFC 8198 proof entries |
 | `cache_persist` | `false` | Save the answer cache at a clean shutdown and restore it at startup |
-| `prefetch` | `10` | Refresh threshold percent; `0`, or 10 to 90, other values are rejected |
+| `prefetch` | `10` | Refresh threshold percent; `0` or omitted disables; 10 to 90, other values are rejected |
 | `maxdepth` | `30` | Recursion depth ceiling; `0` or omitted means 30 |
-| `maxconcurrentqueries` | `10000` *(not generated)* | Upstream fan-out semaphore; separate from the ingress bounds; `0` means 10000 |
+| `maxconcurrentqueries` | `10000` *(not generated)* | Queries the resolver may have outstanding to authoritative servers at once; separate from the ingress bounds; `0` means 10000. See [Server and listeners]({{ '/docs/configuration/server/' | relative_url }}#server-resources) |
 | `ipv6access` | probed *(not generated)* | Forced on when the startup IPv6-transit probe succeeds; set `true` to override a probe that misjudges the network |
-| `cookiesecret` | random *(not generated)* | DNS cookie secret (RFC 7873, RFC 9018); 32 hex digits are the SipHash key itself, required to share cookies with other servers of an anycast set, other DNS software included; any other text is hashed to a key sdns alone understands; empty generates 16 random bytes at startup, so cookies change on every restart. See [Access control]({{ '/docs/configuration/access-control/' | relative_url }}#cookie-secret) |
-| `ingressworkers` | *(commented)* | Handler workers per listener; derived at startup while unset |
-| `ingressqueue` | *(commented)* | Ready-queue depth; derived at startup while unset |
+| `cookiesecret` | random *(not generated)* | DNS cookie secret (RFC 7873, RFC 9018); 32 hex digits are the SipHash key itself, which is what sharing cookies with other DNS software in an anycast set needs; any other text is hashed to a key, the same one for the same text, so sdns servers sharing one string share cookies; empty generates 16 random bytes at startup, so cookies change on every restart. See [Access control]({{ '/docs/configuration/access-control/' | relative_url }}#cookie-secret) |
+| `ingressworkers` | *(commented)* | Handler workers of the plain DNS UDP listener only; derived at startup while unset |
+| `ingressqueue` | *(commented)* | Ready-queue depth of the plain DNS UDP listener only; 64 while unset |
 | `ingresstcpconns` | *(commented)* | TCP/DoT connection cap; derived at startup while unset |
-| `memorytrim` | *(commented)* | Return burst memory to the OS after a long idle; off while unset |
-| `ratelimit` | `0` | Cache hits per second for each of 997 shared buckets that cached answers hash into; a hit over the rate is dropped without a reply; misses are not limited; `0` disables |
+| `memorytrim` | *(commented)* | Return burst memory to the OS after about two minutes idle; off while unset |
+| `ratelimit` | `0` | Cache hits per second for each of 997 shared buckets that cached answers hash into (every ECS-scoped answer shares one bucket); a hit over the rate is dropped without a reply; misses are not limited; `0` disables |
 | `clientratelimit` | `0` | Queries per minute per client address; loopback clients exempt; `0` disables |
 | `domainmetrics` | `false` | Per-domain query counters |
-| `domainmetricslimit` | `1000` | Domains tracked; `0` is unlimited |
+| `domainmetricslimit` | `1000` | Domains tracked; `0` or omitted is unlimited |
 | `nsid` | `""` | Server identifier (RFC 5001) |
 | `chaos` | `true` | Answer `version.bind` and friends in the CHAOS class; omitted means `false` |
 | `qname_max_minimize_count` | `10` | Minimised queries per lookup; `0` disables; omitted falls back to `qname_min_level`, and so disables when that is unset too; negative is refused |
 | `qname_minimize_one_label` | `4` | How many add a single label; `0` selects 4; while minimisation is on, negative or larger than `qname_max_minimize_count` is refused |
-| `qname_min_level` | *(none)* | Superseded; read only when the above is unset |
+| `qname_min_level` | *(not generated)* | Superseded; read only when the above is unset |
 | `hyperlocal_root` | `false` | Serve the root from a verified local copy |
 | `hyperlocal_root_sources` | *(commented)* | Override the transfer hosts; the built-in list applies while unset |
-| `emptyzones` | `[]` | AS112 zones; empty uses the built-in set |
+| `emptyzones` | `[]` | Locally served empty zones (RFC 6303); empty uses the built-in set |
 | `tcpkeepalive` | `false` | Pool TCP connections to root and TLD servers |
 | `roottcptimeout` | `"5s"` | Idle timeout for root connections; `"0"` or omitted means `"5s"` |
 | `tldtcptimeout` | `"10s"` | Idle timeout for TLD connections; `"0"` or omitted means `"10s"` |
 | `tcpmaxconnections` | `100` | Pooled connections; `0` uses 100 |
 | `reflexenabled` | `false` | Amplification/reflection detection |
-| `reflexblockmode` | `true` | `false` logs without blocking, at debug level only |
+| `reflexblockmode` | `true` | `false`, or omitted, logs without blocking, at debug level only |
 | `reflexlearningmode` | `false` | `true` logs without blocking, for tuning |
 | `reflexthreshold` | *(commented)* | Suspicion score 0.0 to 1.0; 0.7 applies while unset |
 | `dnstapsocket` | *(commented)* | Unix socket for binary query logging; dnstap is off while unset |
@@ -103,11 +118,13 @@ The page that explains each top-level key is listed under
 
 ### Where each key is explained
 
+- [Configuration overview]({{ '/docs/configuration/overview/' | relative_url }}):
+  `version`, `directory`.
 - [Server and listeners]({{ '/docs/configuration/server/' | relative_url }}):
   `bind`, `bindtls`, `binddoh`, `binddoq`, `tlscertificate`, `tlsprivatekey`,
   `outboundips`, `outboundip6s`, `api`, `bearertoken`, `loglevel`,
   `accesslog`, the `dnstap*` keys, `nsid`, `chaos`, `ingressworkers`,
-  `ingressqueue`, `ingresstcpconns`, `memorytrim`.
+  `ingressqueue`, `ingresstcpconns`, `memorytrim`, `maxconcurrentqueries`.
 - [Resolution and DNSSEC]({{ '/docs/configuration/resolution/' | relative_url }}):
   `rootservers`, `root6servers`, `ipv6access`, `dnssec`, `rootkeys`,
   `rfc8198`, `rfc9520`, the `qname_*` keys, `timeout`, `querytimeout`,
@@ -173,7 +190,7 @@ See [Response Policy Zones]({{ '/docs/features/rpz/' | relative_url }}).
 | `cluster_domain` | `"cluster.local"` | |
 | `kubeconfig` | *(commented)* | |
 | `demo` | `false` | **Never enable in production**, answers synthesised names that look real, and works independently of `enabled` |
-| `killer_mode` | *(none)* | Deprecated and ignored; still parsed so old files load |
+| `killer_mode` | *(not generated)* | Deprecated and ignored; still parsed so old files load |
 | `ttl.service` | `30` | `0` or omitted means 30 |
 | `ttl.pod` | `30` | `0` or omitted means 30 |
 | `ttl.srv` | `30` | `0` or omitted means 30 |
@@ -211,7 +228,7 @@ See [Encrypted transports]({{ '/docs/features/encrypted-transports/' | relative_
 | `forward_v4` | `24` | `0` selects 24 |
 | `forward_v6` | `56` | `0` selects 56 |
 | `client_networks` | `[]` (all clients) | |
-| `cache_limit_ttl` | `"5m"` | TTL ceiling on scope-keyed entries |
+| `cache_limit_ttl` | `"5m"` | TTL ceiling on scope-keyed entries; `0` or omitted leaves them uncapped |
 | `min_scope_v4` | `24` | Scope floor for the cache key; `0` uses `forward_v4` |
 | `min_scope_v6` | `56` | Scope floor for the cache key; `0` uses `forward_v6` |
 
@@ -242,7 +259,7 @@ label, and the keys inside it are:
 | Key | Meaning |
 |---|---|
 | `path` | Path to the `.so` built with `-buildmode=plugin` |
-| `config` | Inline table handed to the plugin's `New` |
+| `config` | Inline table the plugin reads from the configuration its `New` receives, as `cfg.Plugins[name].Config` |
 
 ```toml
 [plugins]
@@ -251,5 +268,5 @@ label, and the keys inside it are:
     config = {key_1 = "value_1", key_2 = 2, key_3 = true}
 ```
 
-Load order affects processing order. See
+Plugins run ahead of the cache, in no defined order among themselves. See
 [Plugins]({{ '/docs/development/plugins/' | relative_url }}).

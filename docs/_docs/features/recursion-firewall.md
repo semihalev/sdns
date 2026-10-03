@@ -84,8 +84,8 @@ upstream once per client query.
 ## Watching it
 
 ```
-dns_recursion_firewall_exhaustions_total  budget crossings, by limit
-dns_recursion_fanout_ratio                outbound transport attempts per resolution tree
+dns_recursion_firewall_exhaustions_total  budget crossings, by reason (the limit crossed) and mode
+dns_recursion_fanout_ratio                histogram of outbound transport attempts per resolution tree
 dns_resolution_shed_total                 lookups shed at an in-flight capacity ceiling, by scope
 ```
 
@@ -93,6 +93,7 @@ dns_resolution_shed_total                 lookups shed at an in-flight capacity 
 refused before any upstream work because too many were already in flight,
 server-wide (`global`) or toward one zone (`zone`).
 
-In shadow mode, `dns_recursion_firewall_exhaustions_total` is exactly the set of
-requests `enforce` would have failed. If it is nonzero for ordinary traffic, the
-limit is too low for your workload, raise it before enforcing, not after.
+In shadow mode, `dns_recursion_firewall_exhaustions_total{mode="shadow"}` is
+exactly the set of requests `enforce` would have failed. If it is nonzero for
+ordinary traffic, the limit is too low for your workload; raise it before
+enforcing, not after.

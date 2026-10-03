@@ -30,7 +30,8 @@ Leave `kubeconfig` empty to use the in-cluster service account when running
 inside the cluster. Outside it, `$KUBECONFIG` is used when set (a
 colon-separated list is merged), and `~/.kube/config` otherwise. Set
 `kubeconfig` to a path to use a specific file; an explicit path wins over the
-in-cluster service account.
+in-cluster service account. `sdns -t` checks that an explicit path is a
+regular file it can open, so a typo is caught before a restart.
 
 sdns connects once, at startup. If that first connection fails (no usable
 config, or the API does not answer), it logs `Failed to connect to Kubernetes

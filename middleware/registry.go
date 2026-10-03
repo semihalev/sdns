@@ -142,8 +142,8 @@ func (r *Registry) loadPlugins(cfg *config.Config) {
 }
 
 // DefaultRegistry is the package-level registry used by the top-level
-// Register / RegisterAt / RegisterBefore wrappers. Middleware packages
-// register into it from their init hooks.
+// Register / RegisterAt / RegisterBefore wrappers. defaults.Register
+// fills it at startup from the generated middleware list.
 var DefaultRegistry = NewRegistry()
 
 // Register is a package-level shortcut for DefaultRegistry.Register.
