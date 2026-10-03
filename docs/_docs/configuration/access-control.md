@@ -13,26 +13,35 @@ accesslist = ["127.0.0.1/32", "::1/128", "192.168.0.0/16"]
 ```
 
 CIDR ranges allowed to query this resolver. Queries from anywhere else are
-refused before any resolution work happens, the access list runs near the front
-of the middleware chain, ahead of the cache and the resolver.
+dropped without a reply before any resolution work happens: the access list
+runs near the front of the middleware chain, ahead of the cache and the
+resolver.
 
 The shipped default is `["0.0.0.0/0", "::0/0"]`, which allows everyone. That is
 right for a resolver on loopback and wrong for one on a public address. An open
 recursive resolver on the internet will be found and used for reflection
 attacks, so narrow this before you bind to a reachable address.
 
-Watch `dns_accesslist_denied_total` to see whether anything is being refused.
+Watch `dns_accesslist_denied_total` to see whether anything is being dropped.
 
 ## Rate limits
 
 ```toml
-ratelimit       = 0     # queries per second, whole server; 0 disables
+ratelimit       = 0     # cache hits per second, per answer bucket; 0 disables
 clientratelimit = 0     # queries per minute, per client IP; 0 disables
 ```
 
 Both are off by default. `clientratelimit` is the more useful of the two on a
-resolver serving known clients, it contains one misbehaving host without
-capping the server. `ratelimit` is a blunt ceiling on everything.
+resolver serving known clients: it contains one misbehaving host without
+capping the server.
+
+`ratelimit` is not a server-wide ceiling. It limits how often cached answers
+are served. Each cached answer is mapped, by a hash of its cache key, to one of
+997 shared token buckets, each refilling at `ratelimit` tokens a second with a
+burst of the same size; answers that hash to the same bucket share it. A cache
+hit over its bucket's rate is dropped without a reply. Cache misses, and
+everything answered before the cache, are not limited by it, and these drops
+are not counted in `dns_ratelimit_exceeded_total`.
 
 `clientratelimit` keeps two buckets per client address. Queries whose source is
 proved, by a TCP or QUIC handshake or by a valid DNS server cookie (RFC 7873),
@@ -42,9 +51,25 @@ the quota of that client's real traffic. Clients behind one NAT address share
 its quota. A UDP client over its quota that sent a cookie gets a BADCOOKIE
 reply carrying a server cookie, at most one a second; its retry with that
 cookie is served from the proved bucket. Anything else over the quota is
-dropped.
+dropped. Loopback clients are exempt.
 
-Refusals increment `dns_ratelimit_exceeded_total`.
+Each query over a client's quota, dropped or answered with a BADCOOKIE
+challenge, increments `dns_ratelimit_exceeded_total`.
+
+### Cookie secret
+
+```toml
+cookiesecret = ""
+```
+
+The server cookies above are RFC 9018 cookies, a SipHash over the client
+cookie, a timestamp and the client's address, keyed by `cookiesecret`. The key
+is not in the generated file. Exactly 32 hex digits are used as the key itself.
+Any other text is hashed into a key. Left empty, sdns generates 16 random bytes
+at startup, so the cookies it hands out change on every restart and clients
+relearn them.
+Members of an anycast set must share one fixed 32-hex-digit value, so a cookie
+one member issued is valid at the others.
 
 ## Reflection and amplification defence
 
@@ -60,9 +85,11 @@ Off by default.
 
 The two modes matter. With `reflexlearningmode = true` detections are logged and
 nothing is blocked, which is how you calibrate the threshold against your own
-traffic. `reflexblockmode = false` also only logs. Turn on blocking after you
-have watched the detections for a while and are satisfied they are not your own
-clients. The threshold is a score between 0 and 1, and lower is more aggressive.
+traffic. `reflexblockmode = false` also only logs, but at debug level, so at
+`loglevel = "info"` its detections do not appear in the log. Turn on blocking
+after you have watched the detections for a while and are satisfied they are
+not your own clients. The threshold is a score between 0 and 1, and lower is
+more aggressive.
 
 ## Blocking names
 
@@ -76,7 +103,9 @@ nullroute   = "0.0.0.0"
 nullroutev6 = "::0"
 ```
 
-`blocklists` are URLs downloaded and refreshed periodically; `blocklist` is a
+`blocklists` are URLs downloaded once at startup, into the `blacklists`
+directory under `directory`; there is no periodic refresh, so restart sdns to
+fetch newer copies. `blocklist` is a
 manual list in the configuration file; `whitelist` bypasses all blocking and
 wins over both. A blocked A query answers `nullroute` and a blocked AAAA answers
 `nullroutev6`.
@@ -104,7 +133,9 @@ automatically.
 hostsfile = "/etc/hosts"
 ```
 
-Serves entries from a hosts file directly. Empty disables it. For answers scoped
+Serves entries from a hosts file directly. Empty disables it. A name the file
+lists with addresses of one family only gets NODATA for the other family; the
+query is not sent upstream. For answers scoped
 to particular client networks rather than served to everyone, use
 [views]({{ '/docs/features/views/' | relative_url }}).
 

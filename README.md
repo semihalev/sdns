@@ -39,7 +39,7 @@ go install github.com/semihalev/sdns@latest
 ```
 
 Pre-built binaries for Linux, macOS, Windows and the BSDs, plus `.deb` and
-`.rpm` packages, are on the
+`.rpm` packages for Linux amd64 (x86_64), are on the
 [releases](https://github.com/semihalev/sdns/releases/latest) page. The full
 architecture matrix is in the
 [installation guide](https://sdns.dev/docs/getting-started/installation/).
@@ -51,7 +51,7 @@ architecture matrix is in the
 docker run -d --name sdns \
   -p 127.0.0.1:53:53 -p 127.0.0.1:53:53/udp \
   -v sdns-data:/var/lib/sdns -v "$PWD/sdns.conf:/etc/sdns.conf:ro" \
-  ghcr.io/semihalev/sdns:latest -c /etc/sdns.conf
+  ghcr.io/semihalev/sdns:1.9 -c /etc/sdns.conf
 
 # macOS
 brew install semihalev/tap/sdns && brew services start sdns
@@ -65,10 +65,12 @@ yay -S sdns-git
 
 Images are published to
 [ghcr.io/semihalev/sdns](https://github.com/semihalev/sdns/pkgs/container/sdns)
-and [c1982/sdns](https://hub.docker.com/r/c1982/sdns) on every tagged release.
-Pin a tag in production rather than following `latest`, the
+and [c1982/sdns](https://hub.docker.com/r/c1982/sdns). Every tagged release
+publishes its full version (`1.9.0`) and its minor series (`1.9`). `latest` is
+built from every push to the main branch, not from a release, so pin a release
+tag in production. The
 [installation page](https://sdns.dev/docs/getting-started/installation/) names
-the current one, since this file cannot.
+the current one.
 
 ## Quick start
 
@@ -97,11 +99,21 @@ for the handful of settings worth changing straight away, in particular
 minimisation (RFC 9156), aggressive NSEC use (RFC 8198), NXDOMAIN subtree cuts
 (RFC 8020), failure caching (RFC 9520), and Extended DNS Errors (RFC 8914).
 Optionally the root zone served from a ZONEMD-verified local copy (RFC 8806),
-or expired answers as a last resort when resolution fails (RFC 8767).
+or expired answers (RFC 8767), either when resolution fails or, with
+`serve_stale_mode = "immediate"`, at once while a background refresh runs.
+
+**Post-quantum.** DNSSEC validation of ML-DSA-44 signatures (algorithm 18).
+Every TLS transport, served and upstream, offers the X25519MLKEM768 hybrid key
+exchange that Go's TLS stack enables by default; sdns does not restrict the
+curve list.
 
 **Transports.** UDP, TCP, DoT (RFC 7858), DoH with HTTP/3 (RFC 8484), DoQ
-(RFC 9250). Warm wire-eligible cache hits are served allocation-free, with
-batched `recvmmsg`/`sendmmsg` on Linux.
+(RFC 9250). Each listener takes one address or a list. Discovery of Designated
+Resolvers (RFC 9462) under `[ddr]` lets plain DNS clients find the encrypted
+listeners. DoT upstreams can be authenticated by name, `tls://ip:port#name`
+(RFC 8310). DNS cookies (RFC 7873, RFC 9018), with a `cookiesecret` that can be
+shared across an anycast set. Warm wire-eligible cache hits are served
+allocation-free, with batched `recvmmsg`/`sendmmsg` on Linux.
 
 **Policy.** Response Policy Zones with name, client-address and answer-address
 triggers, file and TSIG-signed AXFR feeds, and a shadow mode whose counters
@@ -115,7 +127,9 @@ mode, Kubernetes cluster DNS, DNS64 synthesis (RFC 6147), EDNS Client Subnet
 **Operations.** Prometheus metrics, an HTTP API, dnstap, a recursion firewall
 that bounds the work one request may cause, serving bounds derived from the
 machine at startup, and a validation gate that reports every configuration
-problem at once.
+problem at once. Warm restart: `cache_persist` saves the answer cache at a
+clean shutdown and loads it at the next start, and the local root copy is kept
+in `root.zone`.
 
 The [documentation](https://sdns.dev/docs/) covers each of these, including
 what they cost and what they deliberately do not do.
@@ -136,8 +150,10 @@ go build     # binary only
 Conventions a patch is expected to follow (plain `testing` idioms with no
 assertion library, no live-network tests, `gofmt` and `golangci-lint` clean)
 are on the [building and testing](https://sdns.dev/docs/development/building/)
-page. The middleware interface and the plugin contract are documented
-[there too](https://sdns.dev/docs/development/middleware/).
+page. The middleware interface is documented on the
+[middleware](https://sdns.dev/docs/development/middleware/) page, and the
+plugin contract on the [plugins](https://sdns.dev/docs/development/plugins/)
+page.
 
 ## Contributing
 

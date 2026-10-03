@@ -76,9 +76,10 @@ Position is a design decision, not a detail:
 
 - **Before `cache`** if it must see queries the cache would otherwise answer.
   Policy and filtering belong here. This is where dynamic plugins are
-  inserted. Note that this is not "every query": access control, rate limiting,
-  the hosts file, views, the blocklist and RPZ all run earlier and any of them
-  can end the chain first.
+  inserted. Note that this is not "every query": everything listed ahead of
+  `cache` in the default chain (access control, rate limiting, reflex, edns,
+  chaos, DDR, the hosts file, views, the blocklist, RPZ, AS112, kubernetes and
+  DNS64) runs earlier, and any of them can end the chain first.
 - **After `cache`** if it only concerns queries that actually need resolving.
 - **Before `accesslist`** essentially never; nothing should run ahead of access
   control except recovery and instrumentation.

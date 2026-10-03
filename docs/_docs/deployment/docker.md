@@ -14,13 +14,30 @@ docker run -d --name sdns \
   -p 127.0.0.1:53:53 -p 127.0.0.1:53:53/udp \
   -v sdns-data:/var/lib/sdns \
   -v /etc/sdns.conf:/etc/sdns.conf:ro \
-  ghcr.io/semihalev/sdns:latest -c /etc/sdns.conf
+  --stop-timeout 20 \
+  ghcr.io/semihalev/sdns:{{ site.sdns_version | remove_first: 'v' }} -c /etc/sdns.conf
 ```
+
+Pin a release tag: the full version for an exact release, or the minor series
+(such as `1.9`) for the newest patch of that line. `latest` is rebuilt from every push to the `main` branch, so it
+tracks development, not releases.
+
+`--stop-timeout 20` gives a stop room to finish. sdns waits up to 10 seconds for
+in-flight queries to drain, and with `cache_persist` on, saving the snapshot can
+add up to 5 more. Docker's default of 10 seconds would kill it mid-save.
 
 ## Persist the state directory
 
-`directory` in the configuration must point at a volume. It holds the RFC 5011
-trust anchor database, cached blocklists and the local root copy. Without a
+`directory` in the configuration must point at the volume:
+
+```toml
+directory = "/var/lib/sdns"
+```
+
+It holds the RFC 5011 trust anchor database (`trust-anchor.db` and
+`trust-anchor-tombstones.db`), downloaded blocklists (`blacklists/`), the
+local root copy (`root.zone`, with `hyperlocal_root`) and the cache snapshot
+(`cache.snapshot`, with `cache_persist`). Without a
 volume, every restart re-fetches all of it and, more importantly, throws away
 the trust anchor state that tracks root KSK rollovers.
 
@@ -39,9 +56,10 @@ else. Both `-p 53:53` and `-p 53:53/udp` are required.
 ```yaml
 services:
   sdns:
-    image: ghcr.io/semihalev/sdns:latest
+    image: ghcr.io/semihalev/sdns:{{ site.sdns_version | remove_first: 'v' }}
     container_name: sdns
     restart: unless-stopped
+    stop_grace_period: 20s
     command: ["-c", "/etc/sdns.conf"]
     ports:
       - "127.0.0.1:53:53"
@@ -72,6 +90,11 @@ HTTP/3 have no declaration**. They are UDP. `docker run -P` will not publish
 them; name them explicitly (`-p 853:853/udp`, `-p 8053:8053/udp`) if you serve
 either.
 
+The generated configuration sets `api = "127.0.0.1:8080"`. Inside a container
+that is the container's own loopback, so publishing 8080 reaches nothing. To
+use the API from outside, the configuration must set `api = ":8080"`, and then
+it needs the protection below.
+
 Publish only what you actually serve. The API listener in particular is plain
 HTTP with no TLS, so a bearer token sent to it crosses the network in the clear
 and can be replayed. Keep it unpublished, or publish it to loopback only; if it
@@ -84,10 +107,14 @@ The image has no shell, but it does have the binary:
 
 ```bash
 docker run --rm -v ./sdns.conf:/etc/sdns.conf:ro \
-  ghcr.io/semihalev/sdns:latest -t -c /etc/sdns.conf
+  -v sdns-data:/var/lib/sdns \
+  ghcr.io/semihalev/sdns:{{ site.sdns_version | remove_first: 'v' }} -t -c /etc/sdns.conf
 ```
 
-Exit code 0 means the file is good.
+Exit code 0 means the file is good. Mount the state volume here too: the test
+checks that `directory` exists or can be created, and the image has no
+`/var/lib`, so without the volume `directory = "/var/lib/sdns"` fails the
+check.
 
 ## Memory-constrained hosts
 

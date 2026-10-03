@@ -35,6 +35,20 @@ something about the zone, and stale-serving does not get to ignore it.
 own TTL expired, defaulting to 24 hours. An explicit `"0"` removes this bound and
 leaves the delegation lease as the only one.
 
+## What a stale answer looks like
+
+Every record in a stale answer carries a TTL of 30 seconds, or what is left of
+the delegation lease if that is shorter. When less than one second of the
+lease is left, the stale answer is declined, since a TTL of 0 is not allowed.
+A client that sent EDNS gets EDE 3 (Stale Answer). The AD bit is cleared when
+any signature in the answer has passed its expiration.
+
+## Across restarts
+
+With `cache_persist`, an entry whose TTL ran out while sdns was down is not
+restored. Stale-eligible entries therefore do not survive a restart: after one,
+only answers still inside their TTL can be served stale later.
+
 ## Immediate mode
 
 ```toml

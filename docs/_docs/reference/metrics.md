@@ -22,9 +22,11 @@ from the source, so they are what your scrape will actually see.
 
 ## A note on what appears when
 
-Counters with labels materialise on first use. A metric that has never been
-incremented, `rpz_action_total` before any policy match, `dns_queries_total`
-before the first query, is absent from the scrape rather than present at zero.
+Label values a package registers up front are exported at zero from startup.
+Label values that come from traffic materialise on first use: a series that has
+never been incremented, `rpz_action_total` before any policy match,
+`dns_queries_total` before the first query, is absent from the scrape rather
+than present at zero.
 Alerts should therefore use `absent()` deliberately or tolerate the gap, and a
 dashboard panel that is empty on a fresh process is not necessarily broken.
 
@@ -58,15 +60,15 @@ is what `domainmetricslimit` exists for.
 | `dns_cache_misses_total` | counter | | Cache misses |
 | `dns_cache_hit_rate` | gauge | | Hit rate as a **percentage**, 0 to 100, not a 0 to 1 ratio |
 | `dns_cache_size` | gauge | `type` | Entries currently held |
-| `dns_cache_evictions_total` | counter | | Entries dropped under pressure |
+| `dns_cache_evictions_total` | counter | | Answers evicted from the answer cache to stay within `cachesize`; expired answers removed are `dns_cache_pruned_total` |
 | `dns_cache_prefetches_total` | counter | | Background refreshes of popular entries |
 | `dns_cache_stale_answers_total` | counter | | Expired positive answers served after a resolution failure |
 | `dns_cache_stale_immediate_answers_total` | counter | | Expired positive answers served at once and refreshed in the background (`serve_stale_mode = "immediate"`) |
 | `dns_cache_pruned_total` | counter | | Expired answers the background pruner removed because nothing could serve them again |
 | `dns_cache_wire_fastpath_total` | counter | `outcome` | Hits attempted on the byte serving path, by outcome |
 | `dns_cache_ecs_lookups_total` | counter | `outcome` | ECS-aware lookups, by outcome |
-| `dns_cache_snapshot_entries_total` | counter | `op`, `result` | With `cache_persist`, answers saved at shutdown and loaded at startup, and those passed over, by reason |
-| `dns_cache_snapshot_seconds` | gauge | `op`, `outcome` | Duration of the last save or load |
+| `dns_cache_snapshot_entries_total` | counter | `op`, `result` | With `cache_persist`, answers read at startup (`op="load"`), by `result`: `loaded`, `expired`, `refused`. The save runs after the API has shut down, so its figures are only in the `Cache saved` log line |
+| `dns_cache_snapshot_seconds` | gauge | `op`, `outcome` | Duration of the startup load (`op="load"`), by `outcome`: `ok`, `discarded` |
 | `failure_cache_hits_total` | counter | | RFC 9520 cached resolution failures served |
 | `nxdomain_cut_hits_total` | counter | | Descendant NXDOMAINs served from validated RFC 8020 cuts |
 | `aggressive_negative_hits_total` | counter | `proof`, `rcode` | RFC 8198 answers synthesised from validated denial proofs |
@@ -125,8 +127,8 @@ from shadow to enforce. In shadow mode,
 enforce would have failed. If it is nonzero for ordinary traffic, the limit is
 too low for your workload.
 
-The `mode` label distinguishes enforced from observed, so a shadow soak and the
-enforcing run afterwards are directly comparable.
+The `mode` label, `shadow` or `enforce`, distinguishes observed from enforced,
+so a shadow soak and the enforcing run afterwards are directly comparable.
 
 ## Ingress and transports
 
@@ -154,7 +156,8 @@ the fixed pool accepted them and were served on their own goroutines.
 a connection past `dns_ingress_plan{bound="doq_conns"}`; `load`, a stream with
 every slab busy, reset with `DOQ_EXCESSIVE_LOAD` so the client can retry;
 `protocol`, a connection closed for an RFC 9250 protocol error, such as a
-non-zero message ID; `ignored`, a response sent as a query.
+non-zero message ID; `ignored`, a response sent as a query; `panic`, a stream
+whose handler panicked, reset with `DOQ_INTERNAL_ERROR`.
 
 ## Policy and access
 
@@ -191,10 +194,10 @@ with fewer rules than intended.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `dns_localroot_answers_total` | counter | `kind` | Walk consultations answered from the local copy |
+| `dns_localroot_answers_total` | counter | `kind` | Root consultations by `kind`: `referral`, `denial`, `ds`, `apex` answered from the local copy, or `fallback` when the real root servers were used |
 | `dns_localroot_transfers_total` | counter | `outcome` | Transfer attempts, by outcome |
 | `dns_localroot_serial` | gauge | | Serial of the active copy; `-1` when none is active |
-| `dns_localroot_copy_age_seconds` | gauge | | Age since last successful refresh; `-1` when none is active |
+| `dns_localroot_copy_age_seconds` | gauge | | Age since the copy in use was transferred; `-1` when none is active |
 | `dns_localroot_disk_total` | counter | `op`, `result` | Saved copy reads at startup (`op="load"`) and writes after each transfer (`op="write"`), by result |
 
 `dns_localroot_copy_age_seconds` is the one to alert on. Climbing steadily means
@@ -221,10 +224,10 @@ performance one. It should be zero.
 | `dns_hostsfile_hits_total` | counter | | Lookups that matched |
 | `dns_kubernetes_queries_total` | counter | | Queries entering the Kubernetes middleware |
 | `dns_kubernetes_answered_total` | counter | | Queries it answered authoritatively |
-| `dns_kubernetes_errors_total` | counter | | Lookup or response-build errors |
-| `dns_kubernetes_write_errors_total` | counter | | Failed writes to the client (subset of the above) |
+| `dns_kubernetes_errors_total` | counter | | Failed writes to the client; counts the same events as `dns_kubernetes_write_errors_total` |
+| `dns_kubernetes_write_errors_total` | counter | | Failed writes to the client |
 | `dns64_synthesised_total` | counter | | AAAA queries answered with synthesised records |
-| `dns64_passthrough_total` | counter | `reason` | AAAA queries DNS64 left untouched |
+| `dns64_passthrough_total` | counter | `reason` | Queries DNS64 left untouched; `internal`, `no_rd`, `cd_bit` and `client_excluded` count queries of every type, the other reasons AAAA queries |
 | `dns64_a_lookup_failures_total` | counter | `reason` | Failures of the secondary A lookup |
 | `dns64_ptr_translated_total` | counter | | `ip6.arpa` PTRs answered with a CNAME to `in-addr.arpa` |
 
@@ -302,7 +305,7 @@ sum(rate(dns_queries_total{rcode="SERVFAIL"}[5m]))
   / sum(rate(dns_queries_total[5m]))
 ```
 
-**Fan-out p99, how much work the heaviest one percent of queries causes**
+**Fan-out p99, how much work the heaviest one percent of resolution trees causes**
 
 ```promql
 histogram_quantile(0.99, sum(rate(dns_recursion_fanout_ratio_bucket[5m])) by (le))
@@ -312,7 +315,7 @@ histogram_quantile(0.99, sum(rate(dns_recursion_fanout_ratio_bucket[5m])) by (le
 
 ```promql
 histogram_quantile(0.99,
-  sum(rate(dnssec_work_per_request_bucket{operation="nsec3_hash"}[5m])) by (le))
+  sum(rate(dnssec_work_per_request_bucket{operation="nsec3_hashes"}[5m])) by (le))
 ```
 
 **What enforcement would have failed, while still in shadow**

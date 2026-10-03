@@ -37,7 +37,7 @@ collections:
 #
 # The seo types are set because jekyll-seo-tag treats everything as a
 # BlogPosting, and with no date in the front matter it stamps datePublished and
-# dateModified with the build time, so each deploy announced all 29 documents
+# dateModified with the build time, so each deploy announced all 28 documents
 # as freshly written. Reference documentation is not a blog.
 defaults:
   - scope:

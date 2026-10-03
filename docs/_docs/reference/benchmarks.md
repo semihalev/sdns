@@ -116,8 +116,8 @@ process here is bound to specific cores:
 |---|---|---|---|
 | **sdns 1.8.0 @ GOMAXPROCS=8** | **394k** | 7.9 | ~50k |
 | PowerDNS Recursor 5.4.1, 8 threads | 371k | 6.6 | ~56k |
-| Unbound 1.24.2, 8 threads | 343k | 6.0 | ~55k |
-| Knot Resolver 6.2.0, 8 workers | 191k | 6.7 | ~27k |
+| Unbound 1.24.2, 8 threads | 343k | 6.0 | ~57k |
+| Knot Resolver 6.2.0, 8 workers | 191k | 6.7 | ~28.5k |
 
 (Unbound configured with 16 threads still consumed only ~8 busy cores and
 reached 362k / ~45k per core, its observed CPU envelope stays in this
@@ -151,8 +151,8 @@ tracked as future engine work.
 ### Run-to-run spread
 
 20-second runs on a busy OS have real variance; the full series behind the
-medians spanned roughly ±7% for sdns UDP (423 to 444k), ±6% for PowerDNS
-(346 to 390k), ±3% for Unbound, ±2% for Knot, and ±15% for sdns TCP (195 to 273k).
+medians spanned roughly ±2.5% for sdns UDP (423 to 444k), ±6% for PowerDNS
+(346 to 390k), ±3% for Unbound, ±2% for Knot, and ±17% for sdns TCP (195 to 273k).
 Single-run numbers from any resolver should be read with that in mind.
 
 ## Cold cache: resolution rather than serving
@@ -171,7 +171,7 @@ minimisation defaults, which is what a deployment actually runs.
 ### Method
 
 - **Corpus:** `queryfile-50000`, 50,000 names, one full pass per run. It
-  resolves to roughly 67% NOERROR, 32% NXDOMAIN and 1.7% unresolvable. A
+  resolves to roughly 66% NOERROR, 32% NXDOMAIN and 2% unresolvable. A
   corpus that is largely dead names is the wrong instrument for the serving
   benchmark and the right one here, because dead names still cost a full
   delegation walk.
@@ -216,7 +216,7 @@ request"*, and names values: MAX_MINIMISE_COUNT with a RECOMMENDED value of
 
 | | default | step bound |
 |---|---|---|
-| sdns 1.8.0 | on, `qname_max_minimize_count = 10`, `qname_minimize_one_label = 4` | RFC 9156's recommended values |
+| sdns 1.8.1-pre (`42d06f3`) | on, `qname_max_minimize_count = 10`, `qname_minimize_one_label = 4` | RFC 9156's recommended values |
 | PowerDNS 5.4.1 | `qname_minimization: true` | `qname_max_minimize_count: 10`, `qname_minimize_one_label: 4` |
 | Unbound 1.24.2 | `qname-minimisation: yes`, strict `no` | the RFC's parameter names are Unbound's own: 10 and 4 |
 | Knot 6.2.0 | on | label by label |
@@ -234,7 +234,7 @@ engine comparison:
 
 | minimisation off | queries/sec | avg latency | unanswered | lost | spread |
 |---|---|---|---|---|---|
-| **sdns 1.8.0** | **905** | **0.107 s** | 883 (1.77%) | **0 / 0 / 0** | 1.9% |
+| **sdns 1.8.1-pre (`42d06f3`)** | **905** | **0.107 s** | 883 (1.77%) | **0 / 0 / 0** | 1.9% |
 | PowerDNS Recursor 5.4.1 | 799 | 0.118 s | 860 (1.72%) | 0 / 0 / 0 | 1.5% |
 | Knot Resolver 6.2.0 | 534 | 0.135 s | 910 (1.82%) | 218 / 206 / 236 | 5.3% |
 | Unbound 1.24.2 | 399 | 0.137 s | 905 (1.81%) | 567 / 581 / 554 | 2.4% |
@@ -243,7 +243,7 @@ And as shipped, every resolver on its own minimisation defaults:
 
 | as shipped | queries/sec | avg latency | unanswered | lost | spread |
 |---|---|---|---|---|---|
-| **sdns 1.8.0** | **658** | **0.145 s** | 898 (1.80%) | **2 / 1 / 1** | 3.9% |
+| **sdns 1.8.1-pre (`42d06f3`)** | **658** | **0.145 s** | 898 (1.80%) | **2 / 1 / 1** | 3.9% |
 | PowerDNS Recursor 5.4.1 | 636 | 0.149 s | 912 (1.82%) | 0 / 0 / 0 | 5.0% |
 | Knot Resolver 6.2.0 | 436 | 0.173 s | 928 (1.86%) | 248 / 245 / 235 | 4.3% |
 | Unbound 1.24.2 | 243 | 0.188 s | 1424 (2.85%) | 1106 / 1067 / 1152 | 5.8% |

@@ -105,10 +105,12 @@ Every other API route checks the token. The pprof routes do not, because pprof
 tooling does not send an `Authorization` header, so they stay open even when a
 token is set.
 
-That makes the advice elsewhere on this site incomplete for this case: a token
-is enough for the blocklist and purge endpoints, and it is **not** enough once
-pprof is on. With `SDNS_PPROF=true`, keep the API listener on loopback or behind
-an authenticating proxy. A reachable pprof endpoint hands out heap contents and
+The token is never the whole protection: the API is plain HTTP, so a token
+sent to a reachable address travels in the clear and can be replayed, and it is
+only a second layer behind loopback, a TLS-terminating authenticating proxy, a
+VPN or a source-restricted firewall. With pprof on it does not even cover every
+route. With `SDNS_PPROF=true`, keep the API listener on loopback or behind an
+authenticating proxy. A reachable pprof endpoint hands out heap contents and
 lets anyone force a 30-second CPU profile on your resolver.
 
 Leave it off unless you are actively profiling.
@@ -162,5 +164,6 @@ failure: the next question for the same name resolves normally.
 dig @127.0.0.1 CH TXT version.bind +short
 ```
 
-Works while `chaos = true`, which is the default. Across a fleet this is the
+Works while `chaos = true`. The generated configuration file sets it; omitted,
+it is false. Across a fleet this is the
 difference between knowing a deploy landed and assuming it did.

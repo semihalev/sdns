@@ -17,8 +17,9 @@ binddoq = ":853"      # DNS over QUIC
 
 `bind` opens both UDP and TCP. A bare `":53"` means every address on both
 families; give an address to narrow it (`"192.0.2.10:53"`, `"[2001:db8::1]:53"`).
-Leaving a key unset means that listener is not started, the encrypted
-transports are all unset by default.
+`bind` is always opened: left unset or empty, it listens on `":53"`. Leaving
+`bindtls`, `binddoh` or `binddoq` unset means that listener is not started, and
+the encrypted transports are all unset by default.
 
 Every key also takes a list, to listen on some addresses but not all of them:
 
@@ -37,6 +38,8 @@ addresses, since the wildcard already covers them. A wildcard on two ports
 (`[":53", ":5353"]`) is fine.
 
 `bindtls` and `binddoq` can share port 853 because one is TCP and the other UDP.
+`binddoh` is different: besides its TCP listener it opens UDP on the same
+address for DNS over HTTP/3, so `binddoh` and `binddoq` cannot share a port.
 
 ### TLS material
 
@@ -49,6 +52,11 @@ Both are PEM files, and both are required before DoT, DoH or DoQ will start.
 `sdns -t` opens them, so a path typo or a key the process cannot read is caught
 before a restart rather than after it.
 
+The certificate is reloaded without a restart: on `SIGHUP`, when either file
+changes on disk, and on a recheck every five minutes in case a change was
+missed. A load that fails (a broken file, or an expired certificate) is logged,
+and the certificate already in use stays in service.
+
 ## Outbound source addresses
 
 ```toml
@@ -60,8 +68,10 @@ Addresses sdns sends its own queries from. With more than one, a source is
 picked per request, which spreads queries across them. Leave both empty to let
 the operating system choose.
 
-These must be addresses the host actually holds. A source address that is not
-local fails at bind time when the query goes out, not at startup.
+These must be addresses the host actually holds. `sdns -t` refuses one that is
+not an address of this machine, and sdns stops at startup if it is given one.
+`outboundip6s` is used only while IPv6 access is on (`ipv6access`, or a
+successful IPv6 probe at startup).
 
 ## HTTP API
 
@@ -118,8 +128,10 @@ chaos = true
 `nsid` returns a server identifier in an EDNS option, which is how you tell
 which member of an anycast set answered you.
 
-`chaos` answers `version.bind`, `version.server`, `hostname.bind` and
-`id.server` in the CHAOS class. It is on by default and is the usual way to
+`chaos` answers TXT queries in the CHAOS class for these names, each in a
+`.bind` and a `.server` form: `version`, `hostname.bind` and `id.server`,
+`uptime`, `platform`, `fingerprint` and `stats`. The generated file sets it to
+`true`; a file that leaves the key out gets `false`. It is the usual way to
 confirm which build a node is running:
 
 ```bash
@@ -127,6 +139,12 @@ dig @resolver version.bind TXT CHAOS +short
 ```
 
 Turn it off if you would rather not publish the version.
+
+When sdns resolves recursively, it resolves only class IN. A CHAOS question
+not answered here, any of these with `chaos` off included, gets REFUSED, and a
+question in any other class gets NOTIMP with Extended DNS Error 21 (Not
+Supported). In forwarder mode, and for a forwarded zone, such a question goes
+to the upstream instead.
 
 ## Server resources
 

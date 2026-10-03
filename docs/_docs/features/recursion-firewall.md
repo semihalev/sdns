@@ -22,7 +22,11 @@ mode = "shadow"
 ## Modes
 
 `off` disables accounting. `shadow` records what would have been over budget and
-changes no reply. `enforce` terminates over-budget recursion with SERVFAIL.
+changes no reply. `enforce` terminates over-budget recursion with SERVFAIL,
+carrying EDE 0 with the text "Recursion work budget exceeded", or, when the
+budget crossed was a DNSSEC one, EDE 5 (DNSSEC Indeterminate) with "DNSSEC
+validation work budget exceeded". Fallback servers are not tried for such a
+SERVFAIL.
 
 `shadow` is the shipped default, and it is a genuine default rather than a
 placeholder: the right limits depend on your traffic, and the way to find them
@@ -64,8 +68,11 @@ failure_cache_max_ttl = "5m"
 ```
 
 This cache is active regardless of `mode`. `mode` governs work accounting;
-caching failures and the per-server retry ceiling are protocol requirements, not
-optional hardening.
+caching failures is a protocol requirement, not optional hardening. The one way
+to turn it off is the top-level `rfc9520 = false`, an emergency kill switch
+that gives up RFC 9520 conformance and leaves the per-server retry ceiling and
+the work limits in place (see
+[Resolution]({{ '/docs/configuration/resolution/' | relative_url }})).
 
 The first failed resolution is held for 5 seconds. Repeated failures back off
 exponentially to 5 minutes. RFC 9520 requires every active failure interval to
@@ -78,9 +85,13 @@ upstream once per client query.
 
 ```
 dns_recursion_firewall_exhaustions_total  budget crossings, by limit
-dns_recursion_fanout_ratio                outbound queries per client query
-dns_resolution_shed_total                 resolutions abandoned
+dns_recursion_fanout_ratio                outbound transport attempts per resolution tree
+dns_resolution_shed_total                 lookups shed at an in-flight capacity ceiling, by scope
 ```
+
+`dns_resolution_shed_total` is not a firewall outcome. It counts lookups
+refused before any upstream work because too many were already in flight,
+server-wide (`global`) or toward one zone (`zone`).
 
 In shadow mode, `dns_recursion_firewall_exhaustions_total` is exactly the set of
 requests `enforce` would have failed. If it is nonzero for ordinary traffic, the

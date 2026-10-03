@@ -16,6 +16,14 @@ First and foremost, thank you for considering contributing to SDNS! It's people 
 4.  Run all tests to ensure your changes don't negatively impact existing code.
 5.  Commit your changes to your branch. Keep commit messages clear and concise, stating what you did and why.
 
+## Conventions
+
+*   Format with `gofmt -w .`, then run `golangci-lint run` and `make test`. All three should be clean before you open a pull request.
+*   Tests use plain `testing` idioms. Do not add an assertion library.
+*   Tests must not need the live network. Run them against loopback fixtures, such as a loopback authority, instead of resolving real names.
+
+The full build and test guide, with the reasoning behind each convention, is at [sdns.dev/docs/development/building](https://sdns.dev/docs/development/building/).
+
 ## Submitting Changes
 
 1.  Push your changes to your fork on GitHub.

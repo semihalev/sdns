@@ -8,8 +8,8 @@ description: Packages, containers and building from source.
 
 ## Pre-built binaries
 
-Every release publishes archives, plus `.deb` and `.rpm` packages. The
-architectures differ by platform:
+Every release publishes archives, plus `.deb` and `.rpm` packages for Linux
+amd64 (x86_64) only. The archive architectures differ by platform:
 
 | Platform | Architectures |
 |---|---|
@@ -47,6 +47,10 @@ docker run -d --name sdns \
   ghcr.io/semihalev/sdns:{{ site.sdns_version | remove_first: 'v' }} -c /etc/sdns.conf
 ```
 
+Each release publishes its full version and its minor series (`1.9`) as image
+tags. `latest` is built from every push to the main branch, not from a
+release, so pin a release tag.
+
 Three parts of that are not decoration.
 
 **`127.0.0.1:` on both publishes.** A bare `-p 53:53` binds every interface on
@@ -60,14 +64,12 @@ container writes a default config and uses it.
 
 **`directory = "/var/lib/sdns"` inside that file.** The image is built
 `FROM scratch` with no `WORKDIR`, so the process runs in `/` and the default
-relative `directory = "db"` resolves to `/db`, not the volume. The trust
-anchor state then lives in the container's writable layer and is lost on the
-next `docker rm`, which is exactly the failure the volume was meant to prevent
-and which only surfaces at a root KSK rollover.
+relative `directory = "db"` resolves to `/db`, not the volume. The RFC 5011
+trust anchor state then lives in the container's writable layer and is lost on
+the next `docker rm`, which is exactly the failure the volume is there to
+prevent, and which only surfaces at a root KSK rollover.
 
-The volume is not optional: it holds the RFC 5011 trust-anchor state, and a
-container without it only reveals the problem at a root KSK rollover. A compose
-file and the rest of the container story are on the
+A compose file and the rest of the container story are on the
 [Containers]({{ '/docs/deployment/docker/' | relative_url }}) page.
 
 ## Package managers
@@ -97,8 +99,8 @@ only want the binary.
 Port 53 needs privilege and the shipped access list allows every client, so
 verify on a loopback high port rather than as root.
 
-A partial file will not do: settings you leave out are **not** filled in from
-the defaults, and a file without `directory`, `rootservers` and `rootkeys` is
+A partial file will not do: many settings you leave out are **not** filled in
+from the defaults, and a file without `directory`, `rootservers` and `rootkeys` is
 rejected. Generate a complete one first, pointing `-t` at a path that does not
 exist writes the full documented file and validates it:
 

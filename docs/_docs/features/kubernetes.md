@@ -27,8 +27,15 @@ Off by default.
 ## Connecting to the API
 
 Leave `kubeconfig` empty to use the in-cluster service account when running
-inside the cluster, or `~/.kube/config` when running outside it. Set it to a
-path to use a specific kubeconfig.
+inside the cluster. Outside it, `$KUBECONFIG` is used when set (a
+colon-separated list is merged), and `~/.kube/config` otherwise. Set
+`kubeconfig` to a path to use a specific file; an explicit path wins over the
+in-cluster service account.
+
+sdns connects once, at startup. If that first connection fails (no usable
+config, or the API does not answer), it logs `Failed to connect to Kubernetes
+API` and does not retry: names under `cluster_domain` get SERVFAIL until sdns
+is restarted. Reverse lookups still fall through to normal resolution.
 
 ## Names served
 
@@ -54,11 +61,16 @@ cut lookup volume.
 
 ```
 dns_kubernetes_queries_total      queries entering the middleware
-dns_kubernetes_answered_total     queries it answered
-dns_kubernetes_errors_total       API or lookup errors
+dns_kubernetes_answered_total     queries it answered, SERVFAIL included
+dns_kubernetes_errors_total       failures writing the response
 dns_kubernetes_write_errors_total failures writing the response
 ```
 
-`dns_kubernetes_errors_total` rising usually means the API connection has gone
-away, an expired service account token, or RBAC that no longer permits the
-watches.
+Both error counters count only failed writes to the client; they move
+together. They do not see the API. Until the informers have synced, and for
+the whole run when the startup connection failed, names under `cluster_domain`
+get SERVFAIL, and those replies count as answered. To tell whether the API side
+is healthy, read the log: `Kubernetes DNS middleware initialized` reports
+`k8s_connected`, `Kubernetes caches synced` marks the first full sync, and
+`Failed to connect to Kubernetes API` or `Kubernetes client stopped with error`
+mark failures.

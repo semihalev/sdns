@@ -14,8 +14,16 @@ func New(cfg *config.Config) middleware.Handler
 
 It is loaded at startup and inserted into the chain immediately **before the
 cache**, so a plugin sees queries the cache would otherwise have answered. It
-does not see every query: access control, rate limiting, the hosts file, views,
-the blocklist and RPZ all run earlier and any of them can end the chain first.
+does not see every query: access control, rate limiting, reflex, edns, chaos,
+DDR, the hosts file, views, the blocklist, RPZ, AS112, kubernetes and DNS64 all
+run earlier, and any of them can end the chain first.
+
+The official release binaries and the Docker image **cannot load plugins**.
+Releases are built with `CGO_ENABLED=0`, and Go's `plugin` package needs cgo;
+without it every load fails with `plugin: not implemented`. The Docker image is
+linked statically, so it cannot open a shared object either. To use plugins,
+build sdns yourself with cgo enabled and dynamic linking, on linux, darwin or
+freebsd (the only platforms the `plugin` package supports).
 
 ## Configuring
 
@@ -26,7 +34,13 @@ the blocklist and RPZ all run earlier and any of them can end the chain first.
     config = {key_1 = "value_1", key_2 = 2, key_3 = true}
 ```
 
-The `config` table is passed through to the plugin.
+`New` receives the whole `*config.Config`, not just its own table. A plugin
+reads its settings from `cfg.Plugins["<block name>"].Config`, here
+`cfg.Plugins["example"].Config`.
+
+The block name (`example` above) becomes the plugin's registered middleware
+name, and `Name()` must return the same string, otherwise the pipeline cannot
+resolve the handler back by name.
 
 Load order does **not** follow the order of the blocks. Plugins are held in a
 map and registered by iterating it, so with more than one plugin their relative
@@ -61,7 +75,11 @@ func (e *example) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 ```
 
 ```bash
-go build -buildmode=plugin -o exampleplugin.so
+# the plugin
+CGO_ENABLED=1 go build -buildmode=plugin -o exampleplugin.so
+
+# the host, from the sdns tree, same Go version and flags
+CGO_ENABLED=1 go build -o sdns
 ```
 
 ## What loading enforces
@@ -73,10 +91,17 @@ fatal, one bad plugin does not stop the server:
 - it exports `New`;
 - `New` has exactly the signature above.
 
+One failure is fatal: a block name equal to a name already in the chain (for
+example `[plugins.cache]`, or `[plugins.blocklist]`) panics at startup with
+`middleware: "<name>" already registered`. Pick a name no built-in middleware
+uses.
+
 ## The constraint worth knowing before you start
 
 Go plugins require the plugin and the host to be built with the **same Go
-version and the same dependency versions**. In practice that means rebuilding
+version, the same dependency versions and the same build flags**. If you build
+sdns with `-trimpath`, as the release does, build the plugin with `-trimpath`
+too. In practice that means rebuilding
 your plugin whenever you upgrade sdns, and it means the plugin cannot be
 distributed as a binary independent of the sdns build it targets.
 

@@ -9,13 +9,13 @@ description: Root servers, validation, QNAME minimisation, timeouts and work lim
 ## Root servers
 
 ```toml
-rootservers  = ["198.41.0.4:53", "170.247.170.2:53", ...]
-root6servers = ["[2001:503:ba3e::2:30]:53", ...]
+rootservers  = ["198.41.0.4:53", "170.247.170.2:53"]   # list shortened here
+root6servers = ["[2001:503:ba3e::2:30]:53"]            # list shortened here
 ```
 
-The generated file ships the full published list for both families. You would
-only edit these to point at a private root, or to point at a private root
-deployment.
+The generated file ships the full published list for both families; the
+example above shows only the first entries. You would only edit these to point
+at a private root deployment.
 
 You do not need to remove the IPv6 list on a host without IPv6 transit: sdns
 probes for transit at startup and leaves the IPv6 roots out of the rotation when
@@ -29,7 +29,7 @@ If you want the root served locally instead of queried, see
 
 ```toml
 dnssec   = "on"     # "on" or "off"
-rootkeys = [ ... ]  # root trust anchors
+# rootkeys = [...]  # root trust anchors; elided here, the generated file lists them
 rfc8198  = true
 rfc9520  = true
 ```
@@ -74,6 +74,10 @@ full name goes out, so every delegation below that point sees all of it.
 is how many of those add a single label before the remaining labels are grouped
 over the queries left; `0` selects the RFC's suggested 4. The shipped 10/4 is
 the RFC's own recommendation.
+
+`sdns -t` refuses a negative `qname_max_minimize_count`. While minimisation is
+on, it also refuses a negative `qname_minimize_one_label`, and one larger than
+`qname_max_minimize_count`.
 
 The older `qname_min_level`, which counted delegation depth rather than queries,
 is still read when `qname_max_minimize_count` is unset.
@@ -123,3 +127,18 @@ RFC 6303 is the citation that applies to a resolver: it defines the zone list
 and says the resolver should answer them itself. The often-quoted RFC 7534 is a
 different document, it describes how to *run* an AS112 node, the sink that
 catches these queries when a resolver does not answer them.
+
+## resolver.arpa
+
+`resolver.arpa`, the zone that describes this server itself (RFC 9462), is
+always answered locally and never sent upstream, with `[ddr]` off as well. Its
+apex answers SOA and NS; every other name and type in it gets NODATA, except
+the `_dns.resolver.arpa` SVCB records when
+[DDR]({{ '/docs/features/encrypted-transports/' | relative_url }}) is on.
+
+## Query classes
+
+When sdns resolves recursively, it resolves class IN only. A CHAOS question the
+`chaos` setting does not answer gets REFUSED, and any other class gets NOTIMP
+with Extended DNS Error 21 (Not Supported). See
+[Identification]({{ '/docs/configuration/server/' | relative_url }}#identification).

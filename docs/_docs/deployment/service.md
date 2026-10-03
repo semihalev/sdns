@@ -6,9 +6,9 @@ order: 1
 description: systemd, the unprivileged user, file layout and binding to port 53.
 ---
 
-The `.deb` and `.rpm` packages install the unit, the user and the configuration
-for you. This page describes what they set up, which is also what you want if
-you are installing from a tarball.
+The `.deb` and `.rpm` packages (built for Linux amd64, x86_64, only) install
+the unit, the user and the configuration for you. This page describes what
+they set up, which is also what you want if you are installing from a tarball.
 
 ## The unit
 
@@ -26,12 +26,15 @@ Group=sdns
 LimitNOFILE=131072
 Restart=on-failure
 RestartSec=10
+Environment="SDNS_DEBUGNS=false"
+Environment="SDNS_PPROF=false"
 WorkingDirectory=/var/lib/sdns
 ExecStart=/usr/bin/sdns --config=/etc/sdns.conf
-AmbientCapabilities=CAP_NET_BIND_SERVICE
+PermissionsStartOnly=true
 StandardOutput=syslog
 StandardError=journal
 SyslogIdentifier=sdns
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target
@@ -55,9 +58,21 @@ resolver with nowhere to write.
 |---|---|
 | `/usr/bin/sdns` | The binary |
 | `/etc/sdns.conf` | Configuration |
-| `/var/lib/sdns` | Trust anchors, cached blocklists, the local root copy |
+| `/var/lib/sdns` | Working directory of the unit |
+| `/var/lib/sdns/db/` | State, from the shipped `directory = "db"` |
 
-`/var/lib/sdns` must be writable by the `sdns` user. It holds real state, the
+`directory = "db"` is relative, so it resolves against the unit's
+`WorkingDirectory` and state lives in `/var/lib/sdns/db/`:
+
+| File | Contents |
+|---|---|
+| `trust-anchor.db` | RFC 5011 trust anchor database |
+| `trust-anchor-tombstones.db` | Revoked trust anchors |
+| `root.zone` | Local root zone copy, with `hyperlocal_root` |
+| `cache.snapshot` | Cache saved at shutdown, with `cache_persist` |
+| `blacklists/` | Downloaded blocklists |
+
+The directory must be writable by the `sdns` user. It holds real state, the
 RFC 5011 trust anchor database in particular, so it belongs on persistent
 storage, not in a tmpfs.
 
@@ -76,12 +91,19 @@ process actually derived from the machine.
 ## Restarting safely
 
 ```bash
-sudo -u sdns /usr/bin/sdns -t -c /etc/sdns.conf && sudo systemctl restart sdns
+sudo -u sdns sh -c 'cd /var/lib/sdns && /usr/bin/sdns -t -c /etc/sdns.conf' && sudo systemctl restart sdns
 ```
 
 Run the check **as the service user**. As root it reads files the `sdns` user
 cannot, a TLS key with tight ownership passes the test and then fails at
-startup.
+startup. Run it **from `/var/lib/sdns`** too: the relative
+`directory = "db"` is checked against the current directory, so from anywhere
+else the test validates the wrong path.
+
+A stop waits up to 10 seconds for in-flight queries to drain. With
+`cache_persist` on, saving the snapshot can add up to 5 more, so a stop can
+take up to 15 seconds. The unit sets no `TimeoutStopSec`, and systemd's
+default of 90 seconds covers that.
 
 Make the validation gate part of the restart, not a thing you remember to run.
 It reports every problem in the file at once and exits nonzero on any of them,

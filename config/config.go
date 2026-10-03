@@ -288,7 +288,7 @@ type RPZZone struct {
 // ForwardZoneConfig sends one zone's queries to named recursive upstreams
 // instead of resolving them from the root.
 //
-// This is forwarding in the RFC 8499 §6 sense. The query goes out with RD=1
+// This is forwarding in the RFC 9499 §6 sense. The query goes out with RD=1
 // to a server that resolves on our behalf, not a stub zone, which points at
 // a zone's own authoritative servers with RD=0.
 //
@@ -672,7 +672,8 @@ func (d *Duration) UnmarshalText(text []byte) error {
 }
 
 var defaultConfig = `
-# Configuration file version (not SDNS version)
+# Configuration file version: the sdns release that generated this file.
+# A different value only logs a notice at startup.
 version = "%s"
 
 # ============================
@@ -686,7 +687,8 @@ directory = "db"
 # DNS server bind address and port
 # Each bind key takes one "host:port" or a list of them, for example
 # bind = ["192.0.2.53:53", "[2001:db8::53]:53"]
-# An empty host listens on every address and cannot be listed with others
+# A wildcard (":53", "0.0.0.0:53" or "[::]:53") listens on every address and
+# cannot be listed with specific addresses on the same key
 bind = ":53"
 
 # DNS-over-TLS (DoT) server bind address and port
@@ -808,7 +810,7 @@ serve_stale_mode = "failure"
 # DNSSEC root trust anchors
 # These are the public keys used to verify the DNS root zone
 rootkeys = [
-	# Key ID 20326 - Active since 2017
+	# Key ID 20326, active since 2017
 	"""\
 	. 172800 IN DNSKEY 257 3 8 ( \
 	AwEAAaz/tAm8yTn4Mfeh5eyI96WSVexTBAvkMgJzkKTO \
@@ -821,7 +823,7 @@ rootkeys = [
 	9555KrUB5qihylGa8subX2Nn6UwNR1AkUTV74bU= \
 	) ; KSK; alg = RSASHA256 ; key id = 20326 \
 	""",
-	# Key ID 38696 - Active since 2024
+	# Key ID 38696, active since 2024
 	"""\
 	. 172800 IN DNSKEY 257 3 8 ( \
 	AwEAAa96jeuknZlaeSrvyAJj6ZHv28hhOKkx3rLGXVaC \
@@ -872,7 +874,7 @@ forwarderservers = [
 
 # Per-zone forwarding
 # Sends one zone's queries to its own upstreams while everything else still
-# resolves recursively. This is forwarding in the RFC 8499 sense. The query
+# resolves recursively. This is forwarding in the RFC 9499 sense. The query
 # goes out with RD=1 to a resolver that answers on our behalf, so the
 # upstreams must be recursive resolvers, not the zone's authoritative servers.
 # The most specific matching zone wins. A zone must name itself and at least
@@ -919,7 +921,7 @@ loglevel = "info"
 # ============================
 
 # Remote blocklist sources
-# These URLs are periodically downloaded and updated
+# These URLs are downloaded once at startup; restart to fetch them again
 blocklists = [
     # Popular blocklist examples:
     # "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
@@ -928,7 +930,7 @@ blocklists = [
     # "https://s3.amazonaws.com/lists.disconnect.me/simple_ad.txt"
 ]
 
-# [DEPRECATED] Blocklist directory - automatically created under working directory
+# [DEPRECATED] Blocklist directory, created automatically under the working directory
 blocklistdir = ""
 
 # Response IP for blocked A queries (IPv4)
@@ -964,12 +966,13 @@ timeout = "2s"
 # Maximum time to wait for any DNS query to complete
 querytimeout = "10s"
 
-# Legacy error-cache ceiling retained for configuration compatibility.
-# Recursive resolution failures use the RFC 9520 failure_cache_* settings
-# below instead of DNS-message TTLs.
+# Longest life, in seconds, of an aggressively reused denial: an RFC 8020
+# NXDOMAIN cut or an RFC 8198 NSEC/NSEC3 proof is never kept longer than
+# this, whatever its records allow. Recursive resolution failures use the
+# RFC 9520 failure_cache_* settings below.
 expire = 600
 
-# Maximum number of cached DNS records
+# Maximum number of cached answers (DNS messages, not records); at least 1024
 cachesize = 256000
 
 # Save the answer cache to the working directory at a clean shutdown and load
@@ -1015,7 +1018,9 @@ maxdepth = 30
 # Rate Limiting
 # ============================
 
-# Global query rate limit (queries per second)
+# Cache hit rate limit (queries per second). Cached answers share hashed
+# token buckets of this rate; a hit over its bucket's limit is dropped
+# without a reply. Misses are not limited by it.
 # 0 = disabled
 ratelimit = 0
 
@@ -1032,7 +1037,7 @@ clientratelimit = 0
 domainmetrics = false
 
 # Maximum number of domains to track in metrics
-# 0 = unlimited (use with caution - may consume memory)
+# 0 = unlimited (use with caution, it may consume memory)
 domainmetricslimit = 1000
 
 # ============================
@@ -1065,7 +1070,8 @@ whitelist = [
 nsid = ""
 
 # CHAOS query responses
-# Responds to: version.bind, version.server, hostname.bind, id.server
+# Responds to version.bind, version.server, hostname.bind, id.server, and
+# uptime, platform, fingerprint and stats under both .bind and .server
 chaos = true
 
 # QNAME minimization (RFC 9156)
@@ -1096,17 +1102,18 @@ qname_minimize_one_label = 4
 hyperlocal_root = false
 # hyperlocal_root_sources = ["b.root-servers.net:53", "k.root-servers.net:53"]
 
-# Empty zones (AS112 - RFC 7534)
+# Empty zones (locally served zones, RFC 6303)
 # Prevents queries for private IP reverse zones from leaking
 # Default list used if empty
 emptyzones = [
     # Example: "10.in-addr.arpa."
 ]
 
-# Response Policy Zones (RPZ). Policy zones -- local files in the standard
-# RPZ encoding, so commercial feeds work unmodified -- rewrite, deny, or
+# Response Policy Zones (RPZ). Policy zones, local files in the standard
+# RPZ encoding so commercial feeds work unmodified, rewrite, deny, or
 # drop answers for the names they list. Zones are evaluated in the order
-# written here; the first zone with a match wins. mode = "shadow" counts
+# written here; the first zone with a match wins, except that a "disabled"
+# zone never wins and a later zone still applies. mode = "shadow" counts
 # and logs every match without rewriting anything (watch rpz_action_total,
 # then switch to "enforce"). Per-zone policy overrides the feed's own
 # actions: given|passthru|nxdomain|nodata|drop|tcp-only|cname|disabled;
@@ -1466,8 +1473,9 @@ failure_cache_max_ttl = "5m"
 # ============================
 
 # External plugin configuration
-# Plugins extend SDNS functionality
-# Load order affects processing sequence
+# Plugins extend SDNS functionality. They load only into an sdns built with
+# cgo and linked dynamically: the released binaries and image cannot load
+# them. Plugins run before the cache, in no defined order among themselves.
 # Example: https://github.com/semihalev/sdnsexampleplugin
 
 # [plugins]

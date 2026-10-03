@@ -21,15 +21,17 @@ are covered below.
 | Endpoint | Method | Purpose | Answer |
 |---|---|---|---|
 | `/metrics` | GET | Prometheus exposition | text |
-| `/api/v1/purge/:qname/:qtype` | GET | Drop one question from every cache | `{"success":true}` |
-| `/api/v1/block/exists/:key` | GET | Is a name blocked | `{"exists":true}` |
-| `/api/v1/block/get/:key` | GET | Read a blocklist entry | `{"success":true}`, or 404 |
-| `/api/v1/block/set/:key` | GET | Add a name | `{"success":true}` |
-| `/api/v1/block/remove/:key` | GET | Remove a name | `{"success":false}` if absent |
+| `/api/v1/purge/{qname}/{qtype}` | GET | Drop one question from every cache | `{"success":true}` |
+| `/api/v1/block/exists/{key}` | GET | Is a name blocked | `{"exists":true}` |
+| `/api/v1/block/get/{key}` | GET | Read an exact-name entry | `{"success":true}`, or 404 |
+| `/api/v1/block/set/{key}` | GET | Add a name | `{"success":true}` |
+| `/api/v1/block/remove/{key}` | GET | Remove a name | `{"success":false}` if absent |
 | `/api/v1/block/set/batch` | POST | Add many | `{"requested":3,"added":3,"skipped":0}` |
 | `/api/v1/block/remove/batch` | POST | Remove many | `{"requested":2,"removed":1,"missing":1}` |
 
-A key is a name (`ads.example.com`) or a wildcard (`*.ads.example.com`). `set`
+A key is a name (`ads.example.com`) or a wildcard (`*.ads.example.com`). `get`
+reads exact names only, so a wildcard key always answers 404 there; use
+`exists` to ask whether a name is blocked by any entry. `set`
 answers `success:false` for a name already there or one the whitelist covers,
 and a batch counts those as `skipped`. The batch endpoints take
 `{"keys":["a.example","*.b.example"]}`, at most 8 MiB, and refuse unknown
@@ -89,11 +91,23 @@ alerting on because it is invisible to clients, they just see SERVFAIL.
 ```
 dns_cache_hit_rate
 dns_cache_evictions_total
+dns_cache_pruned_total
 dns_cache_size
 ```
 
-Evictions climbing while the hit rate falls means `cachesize` is below the
-working set.
+The two removal counters mean different things. `dns_cache_evictions_total`
+counts answers evicted to make room, so it moving at all says the cache is full.
+`dns_cache_pruned_total` counts expired answers the background pruner removed
+because nothing could serve them again, which is normal housekeeping. Evictions
+climbing while the hit rate falls means `cachesize` is below the working set.
+
+The resolver keeps its own caches of delegations and nameserver glue:
+`dns_resolver_cache_size` and `dns_resolver_cache_pruned_total` report them by
+`type`, and `dns_resolver_refresh_total` counts delegations and glue renewed
+ahead of their end, by `type` and `result`. With `cache_persist` on,
+`dns_cache_snapshot_entries_total` and `dns_cache_snapshot_seconds` show what
+the startup load read and how long it took. The save at shutdown runs after
+the API has stopped, so its figures are in the `Cache saved` log line.
 
 **Is it being abused?**
 
@@ -104,8 +118,10 @@ dns_recursion_fanout_ratio
 dns_recursion_firewall_exhaustions_total
 ```
 
-`dns_recursion_fanout_ratio`, outbound queries per client query, is the single
-most useful number for spotting a query pattern designed to cost you work. It
+`dns_recursion_fanout_ratio`, outbound attempts per resolution tree (one
+recursive resolution with the sub-resolutions it spawns, not one client query),
+is the single most useful number for spotting a query pattern designed to cost
+you work. It
 sits low and flat in normal operation.
 
 **Is anything being dropped at the door?**

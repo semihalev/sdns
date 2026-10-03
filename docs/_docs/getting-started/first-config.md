@@ -7,9 +7,14 @@ description: What the generated file contains and the few keys worth setting str
 ---
 
 Starting sdns without a configuration writes `sdns.conf` in the current
-working directory and uses it. That matters under systemd, where
-`WorkingDirectory=/var/lib/sdns` decides where it lands. The generated file documents every setting in place, so it is worth
-reading once rather than copying fragments from elsewhere.
+working directory and uses it. The `.deb` and `.rpm` packages install
+`/etc/sdns.conf`, and their systemd unit runs `sdns --config=/etc/sdns.conf`.
+The unit's `WorkingDirectory=/var/lib/sdns` decides only where a relative
+`directory` lands: the default `"db"` becomes `/var/lib/sdns/db`. The
+generated file documents nearly every setting in place, so it is worth reading
+once rather than copying fragments from elsewhere; the few keys it leaves out
+are in the
+[configuration key index]({{ '/docs/reference/config-keys/' | relative_url }}).
 
 ## The keys that matter first
 
@@ -17,7 +22,8 @@ reading once rather than copying fragments from elsewhere.
 # Where to listen. ":53" is both 0.0.0.0:53 and [::]:53.
 bind = ":53"
 
-# Writable state: trust anchors, cached blocklists, the local root copy.
+# Writable state: trust anchors, cached blocklists, the local root copy
+# (root.zone), and the cache_persist snapshot (cache.snapshot).
 directory = "/var/lib/sdns"
 
 # Who may query this resolver. The default allows everyone, which is

@@ -24,9 +24,11 @@ order. `go build` alone gives you just the binary.
 | Target | Does |
 |---|---|
 | `make all` | generate, tidy, test, build |
-| `make test` | the full test suite |
-| `go generate ./...` | regenerate generated files |
-| `go build` | the binary only |
+| `make test` | the full test suite, with `-race` and coverage |
+| `make generate` | `go generate ./...`, regenerates generated files |
+| `make tidy` | `go mod tidy` |
+| `make build` | `go build`, the binary only |
+| `make clean` | removes the binary and `coverage.out` |
 
 ## Running one test
 
@@ -45,7 +47,9 @@ golangci-lint run
 make test
 ```
 
-CI runs the same linter configuration, so a clean local run is the same answer.
+CI runs the latest golangci-lint release on the latest stable Go, with the same
+`.golangci.yml`. A different local linter version can disagree with it, so
+when the two differ, CI's answer is the one that counts.
 
 ## Conventions
 
