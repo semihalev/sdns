@@ -22,12 +22,12 @@ Pin a release tag: the full version for an exact release, or the minor series
 (such as `1.9`) for the newest patch of that line. `latest` is rebuilt from
 every push to the `main` branch, so it tracks development, not releases.
 
-`--stop-timeout 20` gives a stop room to finish. sdns waits up to
-`querytimeout` (10 seconds by default) for in-flight queries to drain, and
-with `cache_persist` on, saving the snapshot can add up to 5 more. Docker's
-default of 10 seconds would kill it mid-save. If you raise `querytimeout`,
-raise the stop timeout to at least `querytimeout` plus 5 seconds, with some
-margin; the same goes for `stop_grace_period` below.
+`--stop-timeout 20` gives a stop room to finish. sdns waits at most 10 seconds
+for in-flight queries to drain, whatever `querytimeout` is, and a query still
+running then gets no reply. With `cache_persist` on, saving the snapshot can
+add up to 5 more, so a stop takes at most 15 seconds. Docker's default of 10
+seconds would kill it mid-save; `stop_grace_period` below needs the same
+room.
 
 ## Persist the state directory
 
