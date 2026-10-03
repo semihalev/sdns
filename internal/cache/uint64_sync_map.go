@@ -58,9 +58,10 @@ func (m *SyncUInt64Map[V]) All() iter.Seq2[uint64, V] {
 }
 
 // SetWithCap adds or updates a key-value pair, self-evicting from the same
-// segment under the same lock when total occupancy exceeds capacity.
-func (m *SyncUInt64Map[V]) SetWithCap(key uint64, value V, capacity int64) {
-	m.data.SetWithCap(key, value, capacity)
+// segment under the same lock when total occupancy exceeds capacity, and
+// returns how many other entries it evicted.
+func (m *SyncUInt64Map[V]) SetWithCap(key uint64, value V, capacity int64) int {
+	return m.data.SetWithCap(key, value, capacity)
 }
 
 // Compact is a no-op for this implementation as it handles memory efficiently

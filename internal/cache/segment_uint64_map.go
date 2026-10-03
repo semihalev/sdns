@@ -111,8 +111,9 @@ func (m *SegmentUInt64Map[V]) Set(key uint64, value V) {
 // other writers to sleep behind. Every over-capacity insert pays a small
 // constant toll (net occupancy change ≥ -1), so the map is self-bounding
 // at any write rate. The scan offset is derived from the key's hash with
-// a different mixer than slot placement, so the loss stays uniform.
-func (m *SegmentUInt64Map[V]) SetWithCap(key uint64, value V, capacity int64) {
+// a different mixer than slot placement, so the loss stays uniform. It
+// returns how many other entries it evicted.
+func (m *SegmentUInt64Map[V]) SetWithCap(key uint64, value V, capacity int64) int {
 	segIdx := m.getSegmentIndex(key)
 	segment := m.segments[segIdx]
 	offset := int((key * 0xff51afd7ed558ccd) >> 40) //nolint:gosec // G115 - masked to bucket range by EvictKeysAt
@@ -123,25 +124,27 @@ func (m *SegmentUInt64Map[V]) SetWithCap(key uint64, value V, capacity int64) {
 	if segment.data.Len() > oldSize {
 		m.count.Add(1)
 	}
-	deficit := 0
+	deficit, evicted := 0, 0
 	if m.count.Load() > capacity {
 		d := segment.data.EvictKeysAt(offset, 2, key)
 		if d > 0 {
 			m.count.Add(int64(-d))
+			evicted = d
 		}
 		deficit = 2 - d
 	}
 	segment.rwlock.Unlock()
 
-	m.collectRemainingToll(segIdx, offset, deficit, key, capacity)
+	return evicted + m.collectRemainingToll(segIdx, offset, deficit, key, capacity)
 }
 
 // PutIfNotExistsWithCap adds the key-value pair only if the key doesn't
 // already exist, paying the same self-eviction toll as SetWithCap when the
 // insert pushes the map over capacity. The existence check and the insert
 // run under the segment write lock, so a concurrent writer cannot land
-// between them. Returns whether value was inserted.
-func (m *SegmentUInt64Map[V]) PutIfNotExistsWithCap(key uint64, value V, capacity int64) bool {
+// between them. Returns whether value was inserted, and how many other
+// entries it evicted.
+func (m *SegmentUInt64Map[V]) PutIfNotExistsWithCap(key uint64, value V, capacity int64) (bool, int) {
 	segIdx := m.getSegmentIndex(key)
 	segment := m.segments[segIdx]
 	offset := int((key * 0xff51afd7ed558ccd) >> 40) //nolint:gosec // G115 - masked to bucket range by EvictKeysAt
@@ -150,21 +153,21 @@ func (m *SegmentUInt64Map[V]) PutIfNotExistsWithCap(key uint64, value V, capacit
 	_, inserted := segment.data.PutIfNotExists(key, value)
 	if !inserted {
 		segment.rwlock.Unlock()
-		return false
+		return false, 0
 	}
 	m.count.Add(1)
-	deficit := 0
+	deficit, evicted := 0, 0
 	if m.count.Load() > capacity {
 		d := segment.data.EvictKeysAt(offset, 2, key)
 		if d > 0 {
 			m.count.Add(int64(-d))
+			evicted = d
 		}
 		deficit = 2 - d
 	}
 	segment.rwlock.Unlock()
 
-	m.collectRemainingToll(segIdx, offset, deficit, key, capacity)
-	return true
+	return true, evicted + m.collectRemainingToll(segIdx, offset, deficit, key, capacity)
 }
 
 // collectRemainingToll finishes an over-capacity insert's eviction toll when
@@ -172,11 +175,11 @@ func (m *SegmentUInt64Map[V]) PutIfNotExistsWithCap(key uint64, value V, capacit
 // sparse relative to the segment count (small caches). Collect the remainder
 // from the following segments, one lock at a time and never nested, so two
 // writers can never hold each other's segment. Stop as soon as the map is
-// back under capacity.
-func (m *SegmentUInt64Map[V]) collectRemainingToll(segIdx uint, offset, deficit int, key uint64, capacity int64) {
+// back under capacity. It returns how many entries it evicted.
+func (m *SegmentUInt64Map[V]) collectRemainingToll(segIdx uint, offset, deficit int, key uint64, capacity int64) (evicted int) {
 	for i := uint(1); i < uint(len(m.segments)) && deficit > 0; i++ {
 		if m.count.Load() <= capacity {
-			return
+			return evicted
 		}
 		next := m.segments[(segIdx+i)&uint(m.segmentMask)] //nolint:gosec // G115 - segmentMask ensures valid range
 
@@ -187,8 +190,10 @@ func (m *SegmentUInt64Map[V]) collectRemainingToll(segIdx uint, offset, deficit 
 		if d > 0 {
 			m.count.Add(int64(-d))
 			deficit -= d
+			evicted += d
 		}
 	}
+	return evicted
 }
 
 // PutIfNotExists adds the key-value pair only if the key doesn't already exist

@@ -26,8 +26,12 @@ type PositiveCache struct {
 
 // NewPositiveCache creates a new positive cache.
 func NewPositiveCache(size int, minTTL, maxTTL time.Duration, metrics *CacheMetrics) *PositiveCache {
+	c := cache.NewWithExpiry(size, answerExpiryHorizon, expiryMark)
+	if metrics != nil {
+		c.OnEvict(metrics.Evictions)
+	}
 	return &PositiveCache{
-		cache:   cache.NewWithExpiry(size, answerExpiryHorizon, expiryMark),
+		cache:   c,
 		ttl:     NewTTLManager(minTTL, maxTTL),
 		metrics: metrics,
 	}

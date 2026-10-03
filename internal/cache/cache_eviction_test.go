@@ -2,6 +2,7 @@ package cache
 
 import (
 	"testing"
+	"time"
 )
 
 func TestCacheEviction(t *testing.T) {
@@ -111,4 +112,41 @@ func BenchmarkCacheWithEviction(b *testing.B) {
 			i++
 		}
 	})
+}
+
+// TestOnEvictCountsCapacityEvictions: the owner hears of every entry an
+// insert evicts to stay within capacity, through Add, AddUntil and
+// AddIfAbsent alike, and of nothing else: replacing a key, removing one or
+// an insert under capacity evicts nothing.
+func TestOnEvictCountsCapacityEvictions(t *testing.T) {
+	const size = 64
+	c := NewWithExpiry[*int](size, time.Hour, func(*int) *ExpiryMark { return new(ExpiryMark) })
+	var evicted int
+	c.OnEvict(func(n int) { evicted += n })
+
+	for i := range size {
+		v := i
+		c.Add(uint64(i)+1, &v) //nolint:gosec // small test keys
+	}
+	c.Add(1, new(int)) // replace
+	c.Remove(2)
+	if evicted != 0 {
+		t.Fatalf("evicted %d under capacity", evicted)
+	}
+
+	for i := size; i < 4*size; i++ {
+		v := i
+		switch i % 3 {
+		case 0:
+			c.Add(uint64(i)+1, &v) //nolint:gosec // small test keys
+		case 1:
+			c.AddUntil(uint64(i)+1, &v, time.Now().Add(time.Minute)) //nolint:gosec // small test keys
+		default:
+			c.AddIfAbsent(uint64(i)+1, &v) //nolint:gosec // small test keys
+		}
+	}
+	inserted := 4*size - 1 // the removal freed one slot
+	if want := inserted - c.Len(); evicted != want {
+		t.Fatalf("evicted %d, want %d (inserted %d, holding %d)", evicted, want, inserted, c.Len())
+	}
 }

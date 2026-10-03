@@ -176,7 +176,7 @@ func (x *expiryIndex) track(key uint64, m *ExpiryMark, until time.Time) {
 // one that comes late delays the removal. The zero time files nothing,
 // for a value with no end.
 func (c *Cache[V]) AddUntil(key uint64, value V, until time.Time) {
-	c.data.SetWithCap(key, value, c.maxSize)
+	c.evicted(c.data.SetWithCap(key, value, c.maxSize))
 	if c.exp != nil {
 		c.exp.track(key, c.mark(value), until)
 	}

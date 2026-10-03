@@ -26,6 +26,20 @@ type Cache[V comparable] struct {
 	maxSize int64
 	exp     *expiryIndex // nil unless built by NewWithExpiry
 	marker  func(V) *ExpiryMark
+	onEvict func(n int) // told of entries evicted for capacity; nil for none
+}
+
+// OnEvict has f told how many entries each insert evicted to stay within
+// capacity, after the insert's locks are released. Entries removed for
+// having expired, or replaced, are not evictions. Set it before the cache
+// is shared.
+func (c *Cache[V]) OnEvict(f func(n int)) { c.onEvict = f }
+
+// evicted reports n capacity evictions to the owner.
+func (c *Cache[V]) evicted(n int) {
+	if n > 0 && c.onEvict != nil {
+		c.onEvict(n)
+	}
 }
 
 // NewWithExpiry creates a bounded cache with an expiry index whose ring
@@ -78,7 +92,7 @@ func (c *Cache[V]) Get(key uint64) (V, bool) {
 // from its own segment, so occupancy is bounded at any write rate while
 // per-Add work stays a small constant.
 func (c *Cache[V]) Add(key uint64, value V) {
-	c.data.SetWithCap(key, value, c.maxSize)
+	c.evicted(c.data.SetWithCap(key, value, c.maxSize))
 }
 
 // Remove removes an item
@@ -92,7 +106,9 @@ func (c *Cache[V]) Remove(key uint64) {
 // write lock, so a concurrent Add cannot land between them. Returns whether
 // value was stored.
 func (c *Cache[V]) AddIfAbsent(key uint64, value V) bool {
-	return c.data.data.PutIfNotExistsWithCap(key, value, c.maxSize)
+	stored, n := c.data.data.PutIfNotExistsWithCap(key, value, c.maxSize)
+	c.evicted(n)
+	return stored
 }
 
 // CompareAndSwap stores value under key only if the value currently
