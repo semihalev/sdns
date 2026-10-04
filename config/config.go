@@ -144,6 +144,10 @@ type Config struct {
 	// Kubernetes middleware configuration as a section
 	Kubernetes KubernetesConfig `toml:"kubernetes"`
 
+	// BlockAAAA suppresses client IN/AAAA queries with NOERROR and no answers.
+	// Off by default; internal resolution and IPv6 transports are unaffected.
+	BlockAAAA bool `toml:"block_aaaa"`
+
 	// DNS64 middleware configuration (RFC 6147). Translates A
 	// records into AAAA records embedded in a configured IPv6
 	// prefix, so an IPv6-only client can reach IPv4-only services.
@@ -941,6 +945,12 @@ nullroute = "0.0.0.0"
 
 # Response IP for blocked AAAA queries (IPv6)
 nullroutev6 = "::0"
+
+# Suppress client IN/AAAA queries with NOERROR and no answers (NODATA).
+# Applies to all clients, ahead of hosts, views, RPZ, cache and DNS64.
+# Internal resolution and IPv6 listeners/outbound queries are unaffected.
+# Off by default; enable for intentionally IPv4-only downstream networks.
+block_aaaa = false
 
 # ============================
 # Access Control

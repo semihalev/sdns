@@ -29,6 +29,9 @@ var middlewareList = []string{
 	// handler that could rewrite or forward it: no policy has a say in which
 	// listeners this server advertises, and no upstream may answer for it.
 	"ddr",
+	// Client AAAA suppression wins over local answers and DNS64, cache hits
+	// included, while resolver.arpa stays under DDR control.
+	"block_aaaa",
 	"hostsfile",
 	"views",
 	"blocklist",

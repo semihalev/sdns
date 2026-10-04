@@ -6,7 +6,7 @@ order: 3
 description: Every metric sdns exports, what it means, and the queries worth building a dashboard from.
 ---
 
-sdns exports 73 metrics in Prometheus format on the API listener, alongside the
+sdns exports 74 metrics in Prometheus format on the API listener, alongside the
 Go runtime and process collectors.
 
 ```toml
@@ -166,6 +166,7 @@ whose handler panicked, reset with `DOQ_INTERNAL_ERROR`.
 | `dns_accesslist_denied_total` | counter | | Queries denied by the access list |
 | `dns_ratelimit_exceeded_total` | counter | | Queries rejected by rate limiting |
 | `dns_blocklist_hits_total` | counter | | Queries blocked by the blocklist |
+| `dns_aaaa_blocked_total` | counter | | Client AAAA queries answered with policy NODATA after a successful write |
 | `dns_blocklist_entries` | gauge | | Blocklist size (exact names plus wildcard suffixes) |
 | `reflex_blocked_total` | counter | | Queries blocked as amplification-attack suspects |
 | `reflex_detections_total` | counter | `qtype` | Queries scored as amplification suspects, whether or not blocking is on |
