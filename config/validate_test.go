@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -2211,5 +2212,100 @@ func TestValidateRelativeAndAbsoluteAreOnePlace(t *testing.T) {
 	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate() called two spellings of one directory different: %v", err)
+	}
+}
+
+func TestValidateHostsFileZones(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		zones []string
+		want  string
+	}{
+		{name: "root", zones: []string{"."}},
+		{name: "uppercase unrooted", zones: []string{"Corp.Example"}},
+		{name: "uppercase rooted", zones: []string{"Corp.Example."}},
+		{name: "escaped dot rooted", zones: []string{"foo\\.."}},
+		{name: "escaped trailing dot unrooted", zones: []string{"foo\\."}},
+		{name: "unicode generic label", zones: []string{"münchen.example."}},
+		{name: "unicode ü label", zones: []string{"ü"}},
+		{name: "unicode ü child", zones: []string{"child.ü"}},
+		{name: "unicode generic label unrooted", zones: []string{"münchen.example"}},
+		{name: "unicode child label", zones: []string{"child.münchen.example"}},
+		{name: "escaped unicode bytes", zones: []string{`m\195\188nchen.example.`}},
+		{name: "escaped whitespace bytes", zones: []string{`example\032zone`}},
+		{name: "escaped control bytes", zones: []string{`example\001zone`}},
+		{name: "one backslash before dot", zones: []string{`\.example`}},
+		{name: "two backslashes before dot", zones: []string{`\\.example`}},
+		{name: "three backslashes before dot", zones: []string{`\\\.example`}},
+		{name: "four backslashes before dot", zones: []string{`\\\\.example`}},
+		{name: "63 octet label", zones: []string{strings.Repeat("a", 63) + ".example"}},
+		{name: "255 octet wire name", zones: []string{strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + "." + strings.Repeat("d", 61)}},
+		{name: "multiple zones", zones: []string{"example", "office.example.", "_services.example"}},
+		{name: "asterisk byte in label length", zones: []string{strings.Repeat("a", 42) + ".example"}},
+		{name: "invalid empty entry", zones: []string{"example.", ""}, want: "hostsfilezones[1]"},
+		{name: "invalid wildcard", zones: []string{"*.example"}, want: "hostsfilezones[0]"},
+		{name: "invalid wildcard character", zones: []string{"host*.example"}, want: "hostsfilezones[0]"},
+		{name: "invalid escaped wildcard label", zones: []string{"\\042.example"}, want: "hostsfilezones[0]"},
+		{name: "invalid escaped wildcard character", zones: []string{"host\\042.example"}, want: "hostsfilezones[0]"},
+		{name: "invalid repeated dots", zones: []string{"a..example"}, want: "hostsfilezones[0]"},
+		{name: "invalid whitespace", zones: []string{"example zone"}, want: "hostsfilezones[0]"},
+		{name: "invalid literal control", zones: []string{"example\x01zone"}, want: "hostsfilezones[0]"},
+		{name: "invalid long label", zones: []string{strings.Repeat("a", 64) + ".example"}, want: "hostsfilezones[0]"},
+		{name: "invalid long wire name", zones: []string{strings.Repeat(strings.Repeat("a", 62)+".", 4) + "abcd"}, want: "hostsfilezones[0]"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := (&Config{HostsFileZones: tc.zones}).Validate()
+			if tc.want == "" && err != nil {
+				t.Fatalf("Validate() rejected usable zones: %v", err)
+			}
+			if tc.want != "" && (err == nil || !strings.Contains(err.Error(), tc.want)) {
+				t.Fatalf("Validate() = %v, want an error naming %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateHostsFileOptionsReportTogether(t *testing.T) {
+	err := (&Config{
+		DNSSEC:         "maybe",
+		HostsFileZones: []string{"good.example", "*.bad.example", ""},
+	}).Validate()
+	if err == nil {
+		t.Fatal("Validate() accepted invalid hosts-file zones")
+	}
+	for _, want := range []string{"dnssec", "hostsfilezones[1]", "hostsfilezones[2]"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Validate() = %v, missing a problem for %q", err, want)
+		}
+	}
+}
+
+func TestLoadHostsFileOptionsAndDefaults(t *testing.T) {
+	dir := t.TempDir()
+	load := func(body string) *Config {
+		t.Helper()
+		path := filepath.Join(dir, "sdns.conf")
+		body = fmt.Sprintf("version = %q\ndirectory = %q\nipv6access = true\ndnssec = \"off\"\nrootservers = [\"192.0.2.53:53\"]\n", configver, filepath.Join(dir, "db")) + body
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(path, "test")
+		if err != nil {
+			t.Fatalf("Load() failed: %v", err)
+		}
+		return cfg
+	}
+
+	defaults := load("")
+	if defaults.HostsFileCheckNames || len(defaults.HostsFileZones) != 0 {
+		t.Fatalf("omitted hosts-file options = (%v, %q), want (false, [])", defaults.HostsFileCheckNames, defaults.HostsFileZones)
+	}
+
+	configured := load("hostsfilechecknames = true\nhostsfilezones = [\"Corp.Example.\", \"office.example\"]\n")
+	if !configured.HostsFileCheckNames {
+		t.Fatal("Load() lost hostsfilechecknames = true")
+	}
+	if want := []string{"Corp.Example.", "office.example"}; !reflect.DeepEqual(configured.HostsFileZones, want) {
+		t.Fatalf("HostsFileZones = %q, want %q", configured.HostsFileZones, want)
 	}
 }

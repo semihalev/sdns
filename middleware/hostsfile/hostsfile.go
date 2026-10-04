@@ -73,6 +73,7 @@ type HostEntry struct {
 
 // WildcardEntry represents a wildcard pattern.
 type WildcardEntry struct {
+	suffix    string // canonical label-aware suffix when zones are configured
 	Pattern   string
 	IPv4      []net.IP
 	IPv6      []net.IP
@@ -86,6 +87,8 @@ type Hostsfile struct {
 	watcher    *fsnotify.Watcher
 	reloadTime time.Time
 	ttl        uint32
+	checkNames bool
+	zones      []string // private, lowercase FQDNs
 }
 
 // New creates a new Hostsfile middleware.
@@ -95,8 +98,21 @@ func New(cfg *config.Config) *Hostsfile {
 	}
 
 	h := &Hostsfile{
-		path: cfg.HostsFile,
-		ttl:  600, // 10 minutes default TTL
+		path:       cfg.HostsFile,
+		ttl:        600, // 10 minutes default TTL
+		checkNames: cfg.HostsFileCheckNames,
+		zones:      make([]string, len(cfg.HostsFileZones)),
+	}
+
+	for i, zone := range cfg.HostsFileZones {
+		key, ok := canonicalImportKey(zone)
+		if !ok || (key == "" && zone != ".") {
+			zlog.Error("Invalid hosts file zone", "zone", zone)
+			return nil
+		}
+		// Canonical keys omit the root separator. Append it explicitly so
+		// escaped label content cannot be mistaken for the root.
+		h.zones[i] = key + "."
 	}
 
 	// Initial load
@@ -322,7 +338,7 @@ func lookupKeyed[K interface{ ~string | ~[]byte }](h *Hostsfile, db *HostsDB, ke
 		if len(db.wildcards) > 0 {
 			k := string(key)
 			for _, wc := range db.wildcards {
-				if matchWildcard(wc.Pattern, k) {
+				if wc.matches(k) {
 					if len(wc.IPv4) > 0 {
 						return buildARRs(k, wc.IPv4, h.ttl), true
 					}
@@ -339,7 +355,7 @@ func lookupKeyed[K interface{ ~string | ~[]byte }](h *Hostsfile, db *HostsDB, ke
 		if len(db.wildcards) > 0 {
 			k := string(key)
 			for _, wc := range db.wildcards {
-				if matchWildcard(wc.Pattern, k) {
+				if wc.matches(k) {
 					if len(wc.IPv6) > 0 {
 						return buildAAAARRs(k, wc.IPv6, h.ttl), true
 					}
@@ -361,7 +377,7 @@ func lookupKeyed[K interface{ ~string | ~[]byte }](h *Hostsfile, db *HostsDB, ke
 		if len(db.wildcards) > 0 {
 			k := string(key)
 			for _, wc := range db.wildcards {
-				if matchWildcard(wc.Pattern, k) {
+				if wc.matches(k) {
 					return nil, true
 				}
 			}
@@ -436,6 +452,11 @@ func (h *Hostsfile) load() error {
 			continue
 		}
 
+		hostnames = h.filterNames(hostnames, lineNo)
+		if len(hostnames) == 0 {
+			continue
+		}
+
 		// Check all hostnames for wildcards
 		hasWildcard := false
 		wildcardHostname := ""
@@ -452,6 +473,9 @@ func (h *Hostsfile) load() error {
 			wc := &WildcardEntry{
 				Pattern:   wildcardHostname,
 				Timestamp: now,
+			}
+			if len(h.zones) > 0 && strings.HasPrefix(wc.Pattern, "*.") {
+				wc.suffix = wc.Pattern[2:]
 			}
 			if ip.To4() != nil {
 				wc.IPv4 = []net.IP{ip}
@@ -565,6 +589,89 @@ func (h *Hostsfile) load() error {
 	return nil
 }
 
+// filterNames applies import policy before primary, alias, wildcard and PTR
+// selection. With both controls disabled, historical spellings and duplicate
+// handling are preserved.
+func (h *Hostsfile) filterNames(names []string, lineNo int) []string {
+	if !h.checkNames && len(h.zones) == 0 {
+		return names
+	}
+	accepted := names[:0]
+	// Keep the first occurrence of each DNS identity in this row.
+	// Repeated names are not new aliases or additional addresses.
+	// Separate rows still contribute their addresses.
+	seen := make(map[string]struct{}, len(names))
+	for _, hostname := range names {
+		if h.checkNames && !validHostname(hostname) {
+			zlog.Warn("Invalid hosts file hostname", "path", h.path, "line", lineNo, "hostname", hostname)
+			continue
+		}
+		name, ok := canonicalImportKey(hostname)
+		if !ok {
+			continue
+		}
+		if len(h.zones) > 0 {
+			fqdn := name + "."
+			allowed := false
+			for _, zone := range h.zones {
+				if dnsname.Sub(zone, fqdn) {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				continue
+			}
+		}
+		if _, duplicate := seen[name]; duplicate {
+			continue
+		}
+		seen[name] = struct{}{}
+		accepted = append(accepted, name)
+	}
+	return accepted
+}
+
+// canonicalImportKey follows DNS wire identity: only ASCII case folds, and
+// presentation escapes are canonicalized without mistaking escaped dots for
+// label boundaries or the root. It is used only while loading the file.
+func canonicalImportKey(name string) (string, bool) {
+	var wire [255]byte
+	packed, ok := dnsname.AppendWireName(wire[:0], name)
+	if !ok {
+		return "", false
+	}
+	var presentation [dnsname.MaxPresentationLength]byte
+	key, ok := dnsname.AppendFoldedKey(presentation[:0], packed)
+	return string(key), ok
+}
+
+// validHostname accepts ASCII LDH hostnames and the supported *.suffix
+// wildcard. Wire length includes every label's length byte and the root,
+// including the wildcard label when present.
+func validHostname(name string) bool {
+	name = strings.TrimSuffix(name, ".")
+	if len(name) == 0 || len(name)+2 > 255 {
+		return false
+	}
+	name = strings.TrimPrefix(name, "*.")
+	for _, label := range strings.Split(name, ".") {
+		if len(label) == 0 || len(label) > 63 || !hostnameAlnum(label[0]) || !hostnameAlnum(label[len(label)-1]) {
+			return false
+		}
+		for i := 1; i < len(label)-1; i++ {
+			if !hostnameAlnum(label[i]) && label[i] != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func hostnameAlnum(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+}
+
 // setupWatcher creates a file watcher for auto-reload.
 func (h *Hostsfile) setupWatcher() error {
 	watcher, err := fsnotify.NewWatcher()
@@ -670,6 +777,15 @@ func parseLine(line string) (net.IP, []string, string) {
 	}
 
 	return ip, fields[1:], comment
+}
+
+// matches enforces real DNS label boundaries for scoped wildcards, while
+// preserving the historical presentation-suffix match without zone policy.
+func (wc *WildcardEntry) matches(name string) bool {
+	if wc.suffix != "" {
+		return dnsname.Sub(wc.suffix, name)
+	}
+	return matchWildcard(wc.Pattern, name)
 }
 
 // matchWildcard checks if a name matches a wildcard pattern.

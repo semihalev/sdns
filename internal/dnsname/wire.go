@@ -163,3 +163,54 @@ func WireLabelCount(wire []byte) (int, bool) {
 	}
 	return n, true
 }
+
+// AppendWireName appends an uncompressed wire-form name decoded from DNS
+// presentation form, preserving case and every raw byte. Only unescaped dots
+// separate labels; a final unescaped dot is optional, and "." is the root.
+// A backslash escapes one byte, or exactly three decimal digits decoded
+// modulo 256. Partial decimal escapes escape only their first digit.
+// Empty names, dangling escapes, empty labels, labels over 63 octets, and
+// names over 255 wire octets including the root refuse. On refusal, the
+// returned slice contains only dst's original prefix; callers must use the
+// returned slice because appending may have grown its backing array.
+func AppendWireName(dst []byte, name string) ([]byte, bool) {
+	mark := len(dst)
+	if name == "" {
+		return dst, false
+	}
+	if name == "." {
+		return append(dst, 0), true
+	}
+
+	dst = append(dst, 0)
+	label := mark
+	for i := 0; i < len(name); {
+		if name[i] == '.' {
+			n := len(dst) - label - 1
+			if n == 0 {
+				return dst[:mark], false
+			}
+			dst[label] = byte(n) //nolint:gosec // G115 - decoded labels are bounded to 63 octets.
+			i++
+			if i == len(name) {
+				return append(dst, 0), true
+			}
+			label = len(dst)
+			dst = append(dst, 0)
+			continue
+		}
+		if name[i] == '\\' && i+1 == len(name) {
+			return dst[:mark], false
+		}
+		if len(dst)-label-1 == 63 || len(dst)-mark >= maxWireNameOctets-1 {
+			return dst[:mark], false
+		}
+		// Decode bytes, not runes: escaped UTF-8 keeps its original octets.
+		// An escaped final dot is label content, never a root separator.
+		var oct byte
+		oct, i = decodeOctet(name, i)
+		dst = append(dst, oct)
+	}
+	dst[label] = byte(len(dst) - label - 1) //nolint:gosec // G115 - decoded labels are bounded to 63 octets.
+	return append(dst, 0), true
+}

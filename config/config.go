@@ -11,10 +11,12 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/BurntSushi/toml"
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/internal/dnsclient"
+	"github.com/semihalev/sdns/internal/dnsname"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -51,36 +53,38 @@ type Config struct {
 	// ForwardZones route individual zones to their own upstreams. They are
 	// consulted before ForwarderServers, which remains the whole-server
 	// setting: a query matching no zone resolves normally.
-	ForwardZones    []ForwardZoneConfig `toml:"forward_zone"`
-	AccessList      []string
-	LogLevel        string
-	AccessLog       string
-	Bind            Addrs
-	BindTLS         Addrs
-	BindDOH         Addrs
-	BindDOQ         Addrs
-	TLSCertificate  string
-	TLSPrivateKey   string
-	API             string
-	BearerToken     string //nolint:gosec // G117 - not a hardcoded credential, loaded from config file
-	Nullroute       string
-	Nullroutev6     string
-	HostsFile       string
-	OutboundIPs     []string
-	OutboundIP6s    []string
-	Timeout         Duration
-	QueryTimeout    Duration
-	Expire          uint32
-	CacheSize       int
-	CachePersist    bool `toml:"cache_persist"`
-	Prefetch        uint32
-	Maxdepth        int
-	RateLimit       int
-	ClientRateLimit int
-	NSID            string
-	Blocklist       []string
-	Whitelist       []string
-	Chaos           bool
+	ForwardZones        []ForwardZoneConfig `toml:"forward_zone"`
+	AccessList          []string
+	LogLevel            string
+	AccessLog           string
+	Bind                Addrs
+	BindTLS             Addrs
+	BindDOH             Addrs
+	BindDOQ             Addrs
+	TLSCertificate      string
+	TLSPrivateKey       string
+	API                 string
+	BearerToken         string //nolint:gosec // G117 - not a hardcoded credential, loaded from config file
+	Nullroute           string
+	Nullroutev6         string
+	HostsFile           string
+	HostsFileCheckNames bool     `toml:"hostsfilechecknames"`
+	HostsFileZones      []string `toml:"hostsfilezones"`
+	OutboundIPs         []string
+	OutboundIP6s        []string
+	Timeout             Duration
+	QueryTimeout        Duration
+	Expire              uint32
+	CacheSize           int
+	CachePersist        bool `toml:"cache_persist"`
+	Prefetch            uint32
+	Maxdepth            int
+	RateLimit           int
+	ClientRateLimit     int
+	NSID                string
+	Blocklist           []string
+	Whitelist           []string
+	Chaos               bool
 	// QnameMinLevel is deprecated and retained so older configs keep
 	// parsing. It capped minimization by delegation depth rather than by
 	// the queries a lookup spends, which is what RFC 9156 section 2.3
@@ -341,6 +345,39 @@ func (c *Config) validateForwardZones(add func(string, ...any)) {
 func validDomainName(name string) bool {
 	_, ok := dns.IsDomainName(name)
 	return ok
+}
+
+// validHostsFileZone checks the DNS name structure used for hosts-file
+// suffixes. These are generic DNS labels, not LDH host labels; only empty
+// names, wildcard syntax, literal whitespace/control characters, and malformed
+// or overlong DNS names are rejected. Decimal escapes may represent whitespace
+// or control bytes. A trailing root dot is optional; "." names the root zone.
+func validHostsFileZone(name string) bool {
+	if strings.IndexFunc(name, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r)
+	}) >= 0 {
+		return false
+	}
+	var wire [255]byte
+	packed, ok := dnsname.AppendWireName(wire[:0], name)
+	if !ok {
+		return false
+	}
+	// Inspect label contents after DNS escapes have been decoded. The length
+	// octet is not label content (and can itself equal the byte for '*').
+	for i := 0; i < len(packed); {
+		labelLen := int(packed[i])
+		if labelLen == 0 {
+			break
+		}
+		for _, b := range packed[i+1 : i+1+labelLen] {
+			if b == '*' {
+				return false
+			}
+		}
+		i += labelLen + 1
+	}
+	return true
 }
 
 // ForwardZoneFor returns the most specific configured forward zone covering
@@ -957,6 +994,12 @@ accesslist = [
 # Serves entries from hosts file (RFC 952/1123 format)
 # Leave empty to disable
 hostsfile = ""
+
+# Validate each hosts-file name as an ASCII DNS hostname before importing it
+hostsfilechecknames = false
+
+# DNS zones that limit which hosts-file names are imported
+hostsfilezones = []
 
 
 # ============================
