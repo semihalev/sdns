@@ -2,6 +2,7 @@ package block_aaaa
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"reflect"
@@ -428,5 +429,203 @@ func TestWireLeaseAndCommitFallback(t *testing.T) {
 				t.Fatalf("count=%d written=%v commits=%d aborts=%d", blocked.Value()-before, w.Written(), wrapper.commits, wrapper.aborts)
 			}
 		})
+	}
+}
+
+type leaseFixtureWriter struct {
+	middleware.ResponseWriter
+	transport    *mock.Writer
+	maxSize      int
+	extraReserve int
+	beginSize    int
+	reserve      int
+	begins       int
+	commits      int
+	aborts       int
+	body         []byte
+	info         middleware.WireInfo
+}
+
+func (w *leaseFixtureWriter) WireReady() (middleware.WireCapability, bool) {
+	capability, ok := w.ResponseWriter.(middleware.WireWriter).WireReady()
+	if ok {
+		capability.MaxSize = w.maxSize
+		capability.Reserve += w.extraReserve
+	}
+	return capability, ok
+}
+
+func (w *leaseFixtureWriter) WriteWire(body []byte, info middleware.WireInfo) error {
+	w.body = body
+	w.info = info
+	return w.ResponseWriter.(middleware.WireWriter).WriteWire(body, info)
+}
+
+func (w *leaseFixtureWriter) BeginWire(size, reserve int) []byte {
+	w.begins++
+	w.beginSize, w.reserve = size, reserve
+	return w.ResponseWriter.(middleware.WireBodyLeaser).BeginWire(size, reserve)
+}
+
+func (w *leaseFixtureWriter) CommitWire(body []byte, info middleware.WireInfo) error {
+	w.commits++
+	w.body = body
+	w.info = info
+	return w.ResponseWriter.(middleware.WireBodyLeaser).CommitWire(body, info)
+}
+
+func (w *leaseFixtureWriter) AbortWire() {
+	w.aborts++
+	w.ResponseWriter.(middleware.WireBodyLeaser).AbortWire()
+}
+
+func (w *leaseFixtureWriter) ServeDNS(ctx context.Context, ch *middleware.Chain) {
+	w.ResponseWriter = ch.Writer
+	ch.Writer = w
+	ch.Next(ctx)
+	ch.Writer = w.ResponseWriter
+	w.ResponseWriter = nil
+}
+
+func (w *leaseFixtureWriter) Name() string { return "lease_fixture" }
+
+func TestWireLeaseCommit(t *testing.T) {
+	const edeText = "AAAA response suppressed by policy"
+	const capabilityReserve = 7
+	for _, ednsEnabled := range []bool{false, true} {
+		for _, cd := range []bool{false, true} {
+			t.Run(fmt.Sprintf("edns=%v/cd=%v", ednsEnabled, cd), func(t *testing.T) {
+				q := query(dns.TypeAAAA)
+				q.CheckingDisabled = cd
+				if ednsEnabled {
+					q.SetEdns0(1232, false)
+				}
+				raw, err := q.Pack()
+				if err != nil {
+					t.Fatal(err)
+				}
+				req := new(middleware.Request)
+				if !req.ParseWire(raw, time.Time{}, nil) {
+					t.Fatal("ParseWire rejected query")
+				}
+				base := &leaseFixtureWriter{
+					transport: mock.NewWriter("udp", "192.0.2.1:40000"),
+					maxSize:   1232,
+				}
+				if ednsEnabled {
+					base.extraReserve = capabilityReserve
+				}
+				cfg := &config.Config{BlockAAAA: true}
+				handlers := []middleware.Handler{base, New(cfg), middleware.HandlerFunc(func(context.Context, *middleware.Chain) {
+					t.Fatal("suppressed query reached downstream")
+				})}
+				if ednsEnabled {
+					handlers = append([]middleware.Handler{edns.New(cfg)}, handlers...)
+				}
+				ch := middleware.NewChain(handlers)
+				ch.ResetWire(base.transport, req)
+				ch.AllowDirectPack()
+				before := blocked.Value()
+				ch.Next(context.Background())
+				ch.Next(context.Background())
+				ch.Finish()
+				if blocked.Value()-before != 1 || base.begins != 1 || base.commits != 1 || base.aborts != 0 {
+					t.Fatalf("counter=%d begins=%d commits=%d aborts=%d", blocked.Value()-before, base.begins, base.commits, base.aborts)
+				}
+				wantReserve := 0
+				if ednsEnabled {
+					wantReserve = capabilityReserve + 11 + 6 + len(edeText)
+				}
+				if base.beginSize != req.WireQuestionEnd() || base.reserve != wantReserve {
+					t.Fatalf("lease size/reserve=%d/%d, want %d/%d", base.beginSize, base.reserve, req.WireQuestionEnd(), wantReserve)
+				}
+				if !base.info.HasEDE || base.info.EDECode != dns.ExtendedErrorCodeOther || base.info.EDEText != edeText {
+					t.Fatalf("wire info = %+v", base.info)
+				}
+				got := base.transport.Msg()
+				if got == nil {
+					t.Fatal("no committed wire reply")
+				}
+				wantFlags := uint16(0x8000 | 0x0080 | 0x0100)
+				if cd {
+					wantFlags |= 0x0010
+				}
+				wantAdditional := uint16(0)
+				if ednsEnabled {
+					wantAdditional = 1
+				}
+				flags := binary.BigEndian.Uint16(base.body[2:4])
+				if got.Id != q.Id || flags != wantFlags || got.Opcode != dns.OpcodeQuery ||
+					binary.BigEndian.Uint16(base.body[4:6]) != 1 || binary.BigEndian.Uint16(base.body[6:8]) != 0 ||
+					binary.BigEndian.Uint16(base.body[8:10]) != 0 || binary.BigEndian.Uint16(base.body[10:12]) != wantAdditional ||
+					len(got.Question) != 1 ||
+					len(got.Answer) != 0 || len(got.Ns) != 0 {
+					t.Fatalf("reply id/flags/sections = %d/%016b/%d/%d/%d", got.Id, flags, len(got.Question), len(got.Answer), len(got.Ns))
+				}
+				if !reflect.DeepEqual(got.Question, q.Question) {
+					t.Fatalf("reply question = %v, want %v", got.Question, q.Question)
+				}
+				opt := got.IsEdns0()
+				if !ednsEnabled {
+					if opt != nil {
+						t.Fatalf("non-EDNS reply OPT = %v", opt)
+					}
+				} else {
+					ede := dnsutil.GetEDE(got)
+					if opt == nil || opt.Do() || ede == nil || ede.InfoCode != dns.ExtendedErrorCodeOther || ede.ExtraText != edeText {
+						t.Fatalf("reply OPT/EDE = %v / %v", opt, ede)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestWireLeaseMaxSizePreflight(t *testing.T) {
+	for _, ednsEnabled := range []bool{false, true} {
+		for _, cd := range []bool{false, true} {
+			for _, fits := range []bool{true, false} {
+				t.Run(fmt.Sprintf("edns=%v/cd=%v/fits=%v", ednsEnabled, cd, fits), func(t *testing.T) {
+					q := query(dns.TypeAAAA)
+					q.CheckingDisabled = cd
+					if ednsEnabled {
+						q.SetEdns0(1232, false)
+					}
+					req := request(t, q)
+					reserve := 0
+					if ednsEnabled {
+						reserve = 7 + 11 + 6 + len("AAAA response suppressed by policy")
+					}
+					maxSize := req.WireQuestionEnd() + reserve
+					if !fits {
+						maxSize--
+					}
+					base := &leaseFixtureWriter{transport: mock.NewWriter("udp", "192.0.2.1:40000"), maxSize: maxSize}
+					if ednsEnabled {
+						base.extraReserve = 7
+					}
+					cfg := &config.Config{BlockAAAA: true}
+					handlers := []middleware.Handler{base, New(cfg), middleware.HandlerFunc(func(context.Context, *middleware.Chain) {
+						t.Fatal("suppressed query reached downstream")
+					})}
+					if ednsEnabled {
+						handlers = append([]middleware.Handler{edns.New(cfg)}, handlers...)
+					}
+					ch := middleware.NewChain(handlers)
+					ch.ResetWire(base.transport, req)
+					ch.AllowDirectPack()
+					before := blocked.Value()
+					ch.Next(context.Background())
+					ch.Finish()
+					wantCommits, wantBegins := 0, 0
+					if fits {
+						wantCommits, wantBegins = 1, 1
+					}
+					if blocked.Value()-before != 1 || base.commits != wantCommits || base.begins != wantBegins || base.transport.Msg() == nil {
+						t.Fatalf("fits=%v counter=%d begins=%d commits=%d msg=%v", fits, blocked.Value()-before, base.begins, base.commits, base.transport.Msg())
+					}
+				})
+			}
+		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,19 +35,12 @@ func TestBlockAAAARawAllocatesNothing(t *testing.T) {
 						t.Fatal("warm serve not handled")
 					}
 				}
-				runtime.GC()
-				runtime.GC()
-				// Fence the very first serve after GC as well as the warm
-				// loop: storage belongs to the job, not a replenished pool.
-				before := runtime.MemStats{}
-				after := runtime.MemStats{}
-				runtime.ReadMemStats(&before)
-				if !s.ServeRaw(job, raw, time.Now()) {
-					t.Fatal("post-GC serve not handled")
-				}
-				runtime.ReadMemStats(&after)
-				if after.Mallocs != before.Mallocs {
-					t.Fatalf("first post-GC serve allocated %d objects", after.Mallocs-before.Mallocs)
+				if allocs := leastAllocsAfterGC(func() {
+					if !s.ServeRaw(job, raw, time.Now()) {
+						t.Fatal("serve not handled")
+					}
+				}); allocs != 0 {
+					t.Fatalf("first post-GC serve allocated %d objects", allocs)
 				}
 				allocs := leastAllocsPerRun(100, func() {
 					if !s.ServeRaw(job, raw, time.Now()) {
@@ -58,5 +52,47 @@ func TestBlockAAAARawAllocatesNothing(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// leastAllocsAfterGC repeats one cold call after two collections and keeps
+// the minimum to filter unrelated process-wide background allocations.
+func leastAllocsAfterGC(fn func()) uint64 {
+	var least uint64
+	for trial := range 3 {
+		runtime.GC()
+		runtime.GC()
+		before := runtime.MemStats{}
+		after := runtime.MemStats{}
+		runtime.ReadMemStats(&before)
+		fn()
+		runtime.ReadMemStats(&after)
+		allocs := after.Mallocs - before.Mallocs
+		if trial == 0 || allocs < least {
+			least = allocs
+		}
+		if least == 0 {
+			break
+		}
+	}
+	return least
+}
+
+type allocationControlObject [64]byte
+
+var allocationControlSink *allocationControlObject
+
+func TestLeastAllocsAfterGCDetectsColdPoolAllocation(t *testing.T) {
+	pool := sync.Pool{New: func() any { return &allocationControlObject{} }}
+	pool.Put(&allocationControlObject{})
+	callback := func() {
+		allocationControlSink = pool.Get().(*allocationControlObject)
+		pool.Put(allocationControlSink)
+	}
+	if allocs := testing.AllocsPerRun(100, callback); allocs != 0 {
+		t.Fatalf("warm pool callback allocated %v objects, want 0", allocs)
+	}
+	if allocs := leastAllocsAfterGC(callback); allocs == 0 {
+		t.Fatal("cold pool callback allocated no objects, want at least one")
 	}
 }
