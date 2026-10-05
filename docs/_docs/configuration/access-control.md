@@ -183,3 +183,36 @@ Tracks query counts per domain, exported as `dns_domain_queries_total`. Off by
 default because the cardinality is unbounded on a public resolver; that is
 what the limit is for. `0`, or leaving the key out, means unlimited, which on a
 busy resolver will consume memory until something gives.
+
+## Suppress AAAA answers
+
+```toml
+block_aaaa = false
+```
+
+Off by default, including when omitted. Set it to `true` to answer normal
+single-question IN/AAAA client queries with NOERROR and empty Answer and
+Authority sections (NODATA). It applies to IPv4 and IPv6 clients on every DNS
+transport, including queries with RD=0 or CD=1. Other types and classes keep
+their usual behavior.
+
+Use this setting for intentionally IPv4-only downstream networks. Suppressing
+AAAA makes IPv6-only destinations unreachable to those clients. IPv6 listeners,
+outbound IPv6 connectivity and internal lookups of nameserver and resolver
+addresses are unaffected. The setting
+does not remove IPv6 addresses in other record types, including HTTPS/SVCB
+address hints, or prevent a client from using an IPv6 address it already knows.
+
+Suppression runs after access controls, EDNS and DDR, ahead of hosts files,
+views, blocklists, RPZ, cache and DNS64. Their AAAA answers and synthesis are
+therefore bypassed even when cached. The `resolver.arpa` zone remains under
+DDR control. Enabling DNS64 alongside `block_aaaa` is accepted; suppression
+wins for client AAAA queries.
+
+These replies describe local policy, not authenticated denial from the
+authoritative zone: AA and AD are clear, RA is set, and the client's RD and CD
+are preserved. No SOA or DNSSEC denial proof is supplied, so there is no
+SOA-based negative-cache lifetime; validating clients may reject the
+unsigned answer. EDNS clients receive EDE 0 (Other), with text
+“AAAA response suppressed by policy”; clients without EDNS receive no OPT.
+The `dns_aaaa_blocked_total` counter counts successfully written policy replies.

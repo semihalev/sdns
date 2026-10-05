@@ -73,6 +73,7 @@ The page that explains each top-level key is listed under
 | `whitelist` | `[]` | Names the blocklist never blocks; RPZ policy still applies to them |
 | `nullroute` | `"0.0.0.0"` | Answer for blocked A queries |
 | `nullroutev6` | `"::0"` | Answer for blocked AAAA queries |
+| `block_aaaa` | `false` | Suppress normal client IN/AAAA queries with unsigned NODATA, ahead of local answers, cache and DNS64; internal resolution and IPv6 transports are unaffected |
 | `accesslist` | `["0.0.0.0/0", "::0/0"]` | Clients allowed to query, narrow this; `[]` or omitted allows every client |
 | `hostsfile` | `""` | Serve entries from a hosts file |
 | `hostsfilechecknames` | `false` | Reject malformed names from a hosts file before importing them; independent of zone filtering |
@@ -138,8 +139,8 @@ The page that explains each top-level key is listed under
 - [Access control and blocking]({{ '/docs/configuration/access-control/' | relative_url }}):
   `accesslist`, `ratelimit`, `clientratelimit`, `cookiesecret`, the `reflex*`
   keys, `blocklists`, `blocklist`, `whitelist`, `nullroute`, `nullroutev6`,
-  `blocklistdir`, `hostsfile`, `hostsfilechecknames`, `hostsfilezones`,
-  `domainmetrics`, `domainmetricslimit`.
+  `blocklistdir`, `block_aaaa`, `hostsfile`, `hostsfilechecknames`,
+  `hostsfilezones`, `domainmetrics`, `domainmetricslimit`.
 - [Views and forwarding]({{ '/docs/features/views/' | relative_url }}):
   `fallbackservers`, `forwarderservers`.
 - [Local root zone]({{ '/docs/features/hyperlocal-root/' | relative_url }}):
