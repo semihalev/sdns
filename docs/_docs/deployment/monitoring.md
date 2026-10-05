@@ -137,7 +137,7 @@ their own goroutine because no worker in the fixed pool was free. A resolver
 serving misses spends much of its time there, and that is fine; one meant to
 be serving cache hits should see it near zero.
 
-**Everything else.** All 73 metrics, with their types, labels, ready-made
+**Everything else.** All 74 metrics, with their types, labels, ready-made
 PromQL and the alerts worth having, live in the
 [metrics reference]({{ '/docs/reference/metrics/' | relative_url }}).
 
