@@ -733,6 +733,11 @@ func (c *Config) validateSubTables(add func(string, ...any)) {
 		if label == "" {
 			label = fmt.Sprintf("#%d", i+1)
 		}
+		switch view.Mode {
+		case "", "overlay", "authoritative-owner":
+		default:
+			add("view %s mode = %q: must be overlay or authoritative-owner", label, view.Mode)
+		}
 		// zone is a free-form label. The middleware only carries it into log
 		// lines; matching is done by the networks and the answers' own owner
 		// names. Validating it as a domain would reject descriptive labels

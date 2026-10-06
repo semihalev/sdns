@@ -151,6 +151,7 @@ The page that explains each top-level key is listed under
 | Key | Meaning |
 |---|---|
 | `zone` | Name for the view |
+| `mode` | `overlay` (default, also omitted or empty) or `authoritative-owner`; the latter selects an IN owner before type and answers missing types locally |
 | `networks` | Client CIDRs this view applies to |
 | `answers` | Zone-file lines; wildcards allowed |
 

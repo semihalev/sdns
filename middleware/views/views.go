@@ -1,13 +1,8 @@
-// Package views serves per-client static answers for configured
-// zones. A query whose source IP falls inside one of a view's
-// CIDRs gets that view's records as the response; queries that
-// don't match any view (by source IP or by name) fall through the
-// chain to the regular resolution path.
-//
-// Views are intentionally evaluated before blocklist and resolver
-// so an admin-curated answer for a specific client always wins.
-// Internal sub-queries skip views entirely. They have no
-// meaningful client IP and views are a client-traffic concept.
+// Package views serves static answers from the first client-matching view.
+// Overlay mode matches name and type; opt-in authoritative-owner mode also
+// answers missing types at selected IN owners. Other queries fall through.
+// Views run before downstream policy and resolution; internal queries skip
+// them because they have no originating client address.
 package views
 
 import (
@@ -16,6 +11,8 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/dnsname"
+	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/ipset"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/zlog/v2"
@@ -29,6 +26,7 @@ type Views struct {
 
 type compiledView struct {
 	zone     string
+	mode     string
 	networks *ipset.Set
 	answers  []dns.RR
 }
@@ -47,6 +45,7 @@ func New(cfg *config.Config) *Views {
 		}
 		cv := &compiledView{
 			zone:     vc.Zone,
+			mode:     vc.Mode,
 			networks: networks,
 		}
 		for _, rr := range vc.Answers {
@@ -75,10 +74,9 @@ func (v *Views) Name() string { return name }
 // to whatever sentinel address the internal writer carries.
 func (v *Views) ClientOnly() bool { return true }
 
-// (*Views).ServeDNS dispatches a query to the first view whose
-// source CIDR contains the client IP. If a record matches the
-// query's name and type, the synthesised reply is written and the
-// chain is short-circuited; otherwise the request falls through.
+// ServeDNS consults only the first client-matching view. Overlay answers
+// matching records; authoritative-owner also answers missing types at a
+// selected IN owner. Other requests fall through.
 func (v *Views) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if len(v.views) == 0 || ch.Writer.Internal() {
 		ch.Next(ctx)
@@ -97,13 +95,25 @@ func (v *Views) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	q := req.Question[0]
-	qname := dns.CanonicalName(q.Name)
 
 	for _, cv := range v.views {
 		if !cv.networks.ContainsIP(clientIP) {
 			continue
 		}
 
+		if cv.mode == "authoritative-owner" {
+			if q.Qclass != dns.ClassINET || dnsutil.DeclinedQtype(q.Qtype) {
+				break
+			}
+			answers, found := cv.ownerAnswers(q)
+			if !found {
+				break
+			}
+			writeReply(ch, req, answers)
+			return
+		}
+
+		qname := dns.CanonicalName(q.Name)
 		// Collect exact-name matches and wildcard matches separately
 		// so an exact owner can override a covering wildcard
 		// (RFC 4592 §3.2). Among wildcards, only those rooted at
@@ -152,17 +162,92 @@ func (v *Views) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			break
 		}
 
-		msg := new(dns.Msg)
-		msg.SetReply(req)
-		msg.Authoritative = true
-		msg.RecursionAvailable = true
-		msg.Answer = answers
-		_ = ch.Writer.WriteMsg(msg)
-		ch.Cancel()
+		writeReply(ch, req, answers)
 		return
 	}
 
 	ch.Next(ctx)
+}
+
+// ownerAnswers selects an IN owner before considering the question's type.
+// A selected owner without that type or a CNAME still answers locally.
+func (cv *compiledView) ownerAnswers(q dns.Question) ([]dns.RR, bool) {
+	// Presentation spelling is not DNS identity: \097lias and alias name the
+	// same owner. Compare decoded octets with ASCII case folding when selecting
+	// an owner and collecting its RRset.
+	qLabels := dns.CountLabel(q.Name)
+	selected := ""
+	bestSuffix := -1
+	for _, rr := range cv.answers {
+		if rr.Header().Class != dns.ClassINET {
+			continue
+		}
+		owner := rr.Header().Name
+		if dnsname.CanonicalCompare(owner, q.Name) == 0 {
+			selected = owner
+			break
+		}
+		if suffixLabels, matched := ownerWildcardMatch(owner, q.Name, qLabels); matched && suffixLabels > bestSuffix {
+			selected = owner
+			bestSuffix = suffixLabels
+		}
+	}
+	if selected == "" {
+		return nil, false
+	}
+	var answers, cnames []dns.RR
+	for _, rr := range cv.answers {
+		if rr.Header().Class != dns.ClassINET || dnsname.CanonicalCompare(rr.Header().Name, selected) != 0 {
+			continue
+		}
+		if rr.Header().Rrtype != q.Qtype && rr.Header().Rrtype != dns.TypeCNAME {
+			continue
+		}
+		cp := dns.Copy(rr)
+		cp.Header().Name = q.Name
+		if rr.Header().Rrtype == q.Qtype {
+			answers = append(answers, cp)
+		} else {
+			cnames = append(cnames, cp)
+		}
+	}
+	if len(answers) == 0 {
+		answers = cnames
+	}
+	return answers, true
+}
+
+// ownerWildcardMatch reports a wildcard match and its suffix's label count.
+// A wildcard's first label decodes to "*". Match only at real label
+// boundaries: an escaped dot belongs to its label. The query must have
+// more labels than the suffix, and specificity is measured in labels,
+// so escape spelling cannot change precedence.
+func ownerWildcardMatch(owner, qname string, qLabels int) (suffixLabels int, matched bool) {
+	firstLabelEnd, _ := dns.NextLabel(owner, 0)
+	if dnsname.CanonicalCompare(owner[:firstLabelEnd], "*.") != 0 {
+		return 0, false
+	}
+
+	suffixLabels = dns.CountLabel(owner) - 1
+	if qLabels <= suffixLabels {
+		return 0, false
+	}
+
+	qnameSuffixStart := 0
+	for labelsToSkip := qLabels - suffixLabels; labelsToSkip > 0; labelsToSkip-- {
+		qnameSuffixStart, _ = dns.NextLabel(qname, qnameSuffixStart)
+	}
+	return suffixLabels, dnsname.CanonicalCompare(qname[qnameSuffixStart:], owner[firstLabelEnd:]) == 0
+}
+
+func writeReply(ch *middleware.Chain, req *dns.Msg, answers []dns.RR) {
+	msg := new(dns.Msg)
+	msg.SetReply(req)
+	msg.Authoritative = true
+	msg.RecursionAvailable = true
+	msg.Answer = answers
+	_ = ch.Writer.WriteMsg(msg)
+	ch.Cancel()
 }
 
 // nameMatches reports whether qname (canonical form) is covered by

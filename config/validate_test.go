@@ -2309,3 +2309,17 @@ func TestLoadHostsFileOptionsAndDefaults(t *testing.T) {
 		t.Fatalf("HostsFileZones = %q, want %q", configured.HostsFileZones, want)
 	}
 }
+
+func TestValidateViewMode(t *testing.T) {
+	for _, mode := range []string{"", "overlay", "authoritative-owner", "typo", "Overlay", " overlay "} {
+		cfg := &Config{Views: []ViewConfig{{Zone: "office", Mode: mode}}}
+		err := cfg.Validate()
+		valid := mode == "" || mode == "overlay" || mode == "authoritative-owner"
+		if (err == nil) != valid {
+			t.Fatalf("Validate(%q) = %v", mode, err)
+		}
+		if !valid && !strings.Contains(err.Error(), "view office mode") {
+			t.Fatalf("missing view mode context: %v", err)
+		}
+	}
+}
