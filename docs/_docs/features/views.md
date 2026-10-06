@@ -8,8 +8,11 @@ description: Answers scoped to client networks, per-zone upstreams, and whole-se
 
 ## Views
 
-A view serves particular answers to particular client networks. Everything a
-view does not match falls through to normal resolution.
+A view serves answers to particular client networks. Overlay mode selects a
+matching name and type; authoritative-owner mode selects an exact IN owner
+first, otherwise the closest matching wildcard owner, before checking type.
+Missing types resolve normally in overlay mode and are answered locally at
+selected owners in authoritative-owner mode. Unmatched names resolve normally.
 
 ```toml
 [[views]]
@@ -26,15 +29,62 @@ networks = ["100.64.0.0/24"]
 answers  = ["*.example.lan. 60 IN A 100.64.0.2"]
 ```
 
-Answers are zone-file lines. Wildcards work, and an exact owner overrides a
-covering wildcard. A wildcard matches names below its suffix only:
-`*.example.lan.` does not match `example.lan.` itself.
+Answers are zone-file lines. The first view, in declaration order, whose
+networks contain the client is the only one consulted; later views are not
+tried. `zone` is a label for logs, not a zone boundary.
 
-The first view, in declaration order, whose networks contain the client is the
-only one consulted. If it has no record of the asked type for the name, the
-query resolves normally, and later views are not tried. Matching is by exact
-type: a view with only A records lets an AAAA question for the same name
-resolve publicly.
+`mode = "overlay"` is the default, including when `mode` is omitted or empty.
+It matches the requested type first: an exact owner of that type overrides a
+covering wildcard, and the longest matching wildcard suffix of that type wins.
+If no record of the requested type matches, the query resolves normally. For
+example, a view with only A records lets AAAA questions resolve publicly.
+
+Set `mode = "authoritative-owner"` to keep questions for configured IN owners
+local even when a type is absent:
+
+```toml
+[[views]]
+zone     = "internal"
+mode     = "authoritative-owner"
+networks = ["192.168.1.0/24", "fd00::/8"]
+answers  = ["*.example.lan. 60 IN A 192.168.1.3"]
+```
+
+This mode selects an exact IN owner first, otherwise the wildcard with the
+longest matching suffix, before looking at the requested type. It returns
+that owner's requested RRset, or its CNAME RRset if the requested type is
+absent. If neither RRset exists, it returns NOERROR/NODATA with empty answer
+and authority sections. There is no SOA and no advertised negative-cache TTL.
+Unknown ordinary types follow the same
+rule. Non-IN questions and meta-types declined by the resolver (ANY, AXFR,
+IXFR and NXNAME) continue to downstream policy. Non-IN records do not establish
+an owner in this mode.
+
+CNAME targets are not chased, even when the target is configured in the same
+view. Ordinary application resolvers may therefore fail when they look up an
+address for that alias. A client that follows the CNAME target itself gets
+normal Views processing for the target question.
+
+An exact owner with no A record suppresses a covering wildcard's A records.
+Likewise, a closer wildcard with no TXT record suppresses a broader wildcard's
+TXT records. A wildcard containing only A records also answers TXT questions
+such as `_acme-challenge.example.lan.` with NODATA, preventing public ACME TXT
+lookup for matching clients. Use overlay mode if those types should resolve
+normally. Names with no configured owner or matching wildcard still resolve
+normally in either mode.
+
+Wildcards match names strictly below their suffix, including nested names:
+`*.example.lan.` matches `deep.host.example.lan.` but excludes `example.lan.`
+itself. Matching ignores case. In authoritative-owner mode, exact owners and
+wildcard suffixes are compared as decoded DNS names, so escaped and plain
+spellings of the same label share ownership and RRsets. An
+escaped dot stays within its label: `foo\.example.lan.` is outside
+`*.example.lan.`. A first label that decodes to `*` is wildcard syntax, so
+`\042.example.lan.` and `\*.example.lan.` have the same meaning as
+`*.example.lan.`. Wildcard specificity follows suffix label count, not
+presentation-string length. This is closest-suffix selection over configured
+records, not a full authoritative zone implementation: it does not infer empty
+non-terminals or zone-wide ownership from descendants.
 
 Views run early in the chain, after the hosts file and ahead of the blocklist,
 RPZ and the cache, so a view answer is not subject to policy or caching. A
