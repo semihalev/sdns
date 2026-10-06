@@ -122,11 +122,9 @@ type Config struct {
 	// Policy Zones section.
 	RPZ RPZ `toml:"rpz"`
 
-	// Views are per-client static answers, evaluated in order. A
-	// query whose source IP falls in a view's Sources gets that
-	// view's Records as the response; non-matching queries fall
-	// through to the rest of the middleware chain (blocklist,
-	// resolver, etc.).
+	// Views serve static answers from the first client-matching network.
+	// Overlay is the default; authoritative-owner also answers missing
+	// types locally at configured IN owners. Other queries fall through.
 	Views []ViewConfig
 
 	// Dnstap configuration
@@ -236,14 +234,14 @@ func (c *Config) RFC9520Enabled() bool {
 	return c == nil || c.RFC9520 == nil || *c.RFC9520
 }
 
-// ViewConfig describes a single per-client static-answer view.
-// Zone is a free-form label that names the view in logs and
-// errors. Networks are CIDR strings; a query is dispatched to
-// this view if its source IP is contained in any of them. Answers
-// are DNS resource records in standard zone-file format; wildcard
-// owners (e.g. "*.example.lan.") match any name strictly more
-// specific than the suffix per RFC 4592.
+// ViewConfig describes a per-client static-answer view. Zone is a log label,
+// Networks are client CIDRs, and Answers are zone-file records. Wildcards
+// match names strictly below their suffix, including nested names. Mode
+// defaults to overlay; authoritative-owner selects an IN owner before type
+// and answers its missing types locally.
 type ViewConfig struct {
+	// Mode is overlay (the default) or authoritative-owner.
+	Mode     string
 	Zone     string
 	Networks []string
 	Answers  []string
@@ -1233,12 +1231,18 @@ reflexlearningmode = false
 # networks gets the view's matching answer, and any non-matching
 # query falls through to normal resolution.
 #
+# Mode defaults to "overlay": missing types resolve normally.
+# Use "authoritative-owner" to answer missing IN types locally with
+# NOERROR/NODATA (no SOA), or with a configured CNAME without chasing it.
+# It selects the exact owner or closest wildcard suffix before type.
+#
 # Wildcards (*.example.lan.) are supported. Exact owners override
 # a covering wildcard. Views are evaluated in declaration order.
 #
 # Examples:
 # [[views]]
 # zone = "lannet"
+# mode = "overlay"
 # networks = ["192.168.1.0/24"]
 # answers = [
 #     "*.example.lan. 60 IN A 192.168.1.3",

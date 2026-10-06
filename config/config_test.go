@@ -1370,3 +1370,71 @@ func TestValidateForwardZones(t *testing.T) {
 		})
 	}
 }
+
+func TestViewModesLoad(t *testing.T) {
+	for _, tc := range []struct {
+		name, setting, want string
+		valid               bool
+	}{
+		{"omitted", "", "", true},
+		{"empty", `mode = ""`, "", true},
+		{"overlay", `mode = "overlay"`, "overlay", true},
+		{"owner", `mode = "authoritative-owner"`, "authoritative-owner", true},
+		{"unknown", `mode = "authoritative-zone"`, "", false},
+		{"case", `mode = "Overlay"`, "", false},
+		{"whitespace", `mode = " overlay "`, "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "sdns.conf")
+			content := fmt.Sprintf("version = %q\ndirectory = %q\ndnssec = \"off\"\nrootservers = [\"192.0.2.1:53\"]\n[[views]]\nzone = \"office\"\n%s\nnetworks = [\"192.0.2.0/24\"]\nanswers = [\"printer.local. 60 IN A 192.0.2.10\"]\n", configver, filepath.Join(dir, "db"), tc.setting)
+			if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path, "test")
+			if !tc.valid {
+				if err == nil || !strings.Contains(err.Error(), "view office mode") {
+					t.Fatalf("Load() = %v, want mode validation error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cfg.Views) != 1 || cfg.Views[0].Mode != tc.want {
+				t.Fatalf("decoded views = %+v", cfg.Views)
+			}
+		})
+	}
+}
+
+func TestLoadViewAnswersPreservesEscapedOwner(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sdns.conf")
+	content := fmt.Sprintf(`version = %q
+directory = %q
+dnssec = "off"
+rootservers = ["192.0.2.1:53"]
+[[views]]
+zone = "office"
+mode = "authoritative-owner"
+networks = ["192.0.2.0/24"]
+answers = ['\097lias.example. 60 IN A 192.0.2.10', 'foo\.example.lan. 60 IN A 192.0.2.11']
+`, configver, filepath.Join(dir, "db"))
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.Views) != 1 || cfg.Views[0].Mode != "authoritative-owner" || len(cfg.Views[0].Answers) != 2 {
+		t.Fatalf("decoded views = %+v, want one owner-mode view with two answers", cfg.Views)
+	}
+	want := []string{`\097lias.example. 60 IN A 192.0.2.10`, `foo\.example.lan. 60 IN A 192.0.2.11`}
+	for i, got := range cfg.Views[0].Answers {
+		if got != want[i] {
+			t.Fatalf("loaded answer %d = %q, want escaped spelling %q", i, got, want[i])
+		}
+	}
+}
