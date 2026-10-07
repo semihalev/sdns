@@ -1070,6 +1070,8 @@ func TestConfigDefaults(t *testing.T) {
 		"rfc9520 = true",
 		"serve_stale = false",
 		"serve_stale_max_ttl = \"24h\"",
+		"hostsfilechecknames = false",
+		"hostsfilezones = []",
 		"# Upstream Servers",
 		"# API and Logging",
 		"# Filtering and Blocking",

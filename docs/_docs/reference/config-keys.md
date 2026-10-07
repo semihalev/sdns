@@ -76,6 +76,8 @@ The page that explains each top-level key is listed under
 | `block_aaaa` | `false` | Suppress normal client IN/AAAA queries with unsigned NODATA, ahead of local answers, cache and DNS64; internal resolution and IPv6 transports are unaffected |
 | `accesslist` | `["0.0.0.0/0", "::0/0"]` | Clients allowed to query, narrow this; `[]` or omitted allows every client |
 | `hostsfile` | `""` | Serve entries from a hosts file |
+| `hostsfilechecknames` | `false` | Reject malformed names from a hosts file before importing them; independent of zone filtering |
+| `hostsfilezones` | `[]` | Optional DNS zones limiting imported hosts-file names; empty preserves unrestricted import |
 | `timeout` | `"2s"` | Per upstream query; `"0"` or omitted means `"2s"` |
 | `querytimeout` | `"10s"` | For one whole client query; `"0"` or omitted means `"10s"` |
 | `expire` | `600` | Seconds; lifetime cap of RFC 8020 subtree cuts and RFC 8198 proofs (fixed caps of 24 hours and 3 hours sit above it; `0` or omitted leaves only those). Neither mechanism runs with `dnssec = "off"` or `forwarderservers` set. Resolution failures use `failure_cache_*` |
@@ -137,7 +139,8 @@ The page that explains each top-level key is listed under
 - [Access control and blocking]({{ '/docs/configuration/access-control/' | relative_url }}):
   `accesslist`, `ratelimit`, `clientratelimit`, `cookiesecret`, the `reflex*`
   keys, `blocklists`, `blocklist`, `whitelist`, `nullroute`, `nullroutev6`,
-  `blocklistdir`, `block_aaaa`, `hostsfile`, `domainmetrics`, `domainmetricslimit`.
+  `blocklistdir`, `block_aaaa`, `hostsfile`, `hostsfilechecknames`,
+  `hostsfilezones`, `domainmetrics`, `domainmetricslimit`.
 - [Views and forwarding]({{ '/docs/features/views/' | relative_url }}):
   `fallbackservers`, `forwarderservers`.
 - [Local root zone]({{ '/docs/features/hyperlocal-root/' | relative_url }}):

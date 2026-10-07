@@ -552,6 +552,11 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 			add("hostsfile = %q: %v", c.HostsFile, err)
 		}
 	}
+	for i, zone := range c.HostsFileZones {
+		if !validHostsFileZone(zone) {
+			add("hostsfilezones[%d] = %q: must be a valid DNS zone name", i, zone)
+		}
+	}
 
 	// Only read when the feature is on, so a stale source left behind by an
 	// operator who turned hyperlocal off does not stop the server.

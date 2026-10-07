@@ -137,12 +137,39 @@ automatically.
 
 ```toml
 hostsfile = "/etc/hosts"
+hostsfilechecknames = true
+hostsfilezones = ["home.arpa."]
 ```
 
-Serves entries from a hosts file directly. Empty disables it. A name the file
-lists with addresses of one family only gets NODATA for the other family; the
-query is not sent upstream. For answers scoped to particular client networks
-rather than served to everyone, use
+Serves entries from a hosts file directly. Empty `hostsfile` disables it.
+`hostsfilechecknames` and `hostsfilezones` are independent filters: the
+first checks each name; the second limits names to configured DNS zones.
+Setting `hostsfilechecknames = true` alone checks names without limiting their
+zones. An empty zone list disables zone filtering. With both options omitted
+or at their defaults, hosts-file importing keeps its existing behavior.
+
+When name checking is enabled, SDNS accepts ASCII RFC 952/1123-style
+hostname labels containing letters, digits, and hyphens. Each label must begin
+and end with a letter or digit, and may contain hyphens between them. Labels
+are limited to 63 octets and names to 255 octets on the DNS wire. A trailing
+dot is optional. A leading `*.` is allowed for a wildcard entry. An invalid
+name is skipped with a warning that identifies its file and line; it contributes no
+forward answer or PTR record. For a line with aliases, each name is considered
+individually. The first accepted normal name is promoted to the row's primary
+name for CNAME and PTR processing. Equivalent names in one row are imported once
+when either filter is enabled; addresses from separate rows still aggregate.
+A surviving wildcard keeps the existing wildcard-row precedence and does not
+create a PTR record.
+
+`hostsfilezones` entries are DNS zones. Matching is label-aware and
+case-insensitive: a zone matches its apex and subdomains, so `corp.example`
+matches `printer.corp.example` but not `notcorp.example`. Root `.` and
+names with or without a trailing dot are accepted. A name outside every
+configured zone continues through normal resolution.
+
+A name the file lists with addresses of one family only gets NODATA for the
+other family; the query is not sent upstream. For answers scoped to particular
+client networks rather than served to everyone, use
 [views]({{ '/docs/features/views/' | relative_url }}).
 
 ## Per-domain metrics
