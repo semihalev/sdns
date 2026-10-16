@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/semihalev/zlog/v2"
 )
 
 // TestConfigTestReportsOnceWithoutUsage pins what `sdns -t` prints when a
@@ -59,6 +61,40 @@ func TestConfigTestReportsOnceWithoutUsage(t *testing.T) {
 	if n := strings.Count(got, "nullroute"); n != 0 {
 		// main is the only printer; cobra must stay quiet.
 		t.Fatalf("cobra printed the error itself %d time(s):\n%s", n, got)
+	}
+}
+
+func TestConfigTestWarnsWhenCacheExceedsMemoryBudget(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sdns.conf")
+	body := fmt.Sprintf("version = %q\ndirectory = %q\ndnssec = \"off\"\n"+
+		"rootservers = [\"192.5.5.241:53\"]\ncachesize = %d\n",
+		version, filepath.Join(dir, "db"), int(^uint(0)>>1))
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldPath, oldCfg := cfgPath, cfg
+	oldLogger := zlog.Default()
+	defer func() {
+		cfgPath, cfg = oldPath, oldCfg
+		zlog.SetDefault(oldLogger)
+	}()
+
+	var logOutput bytes.Buffer
+	logger := zlog.NewStructured()
+	logger.SetLevel(zlog.LevelWarn)
+	logger.SetWriter(&logOutput)
+	zlog.SetDefault(logger)
+
+	cfgPath = path
+	if err := validateConfiguration(); err != nil {
+		t.Fatalf("validateConfiguration() = %v", err)
+	}
+	for _, part := range []string{"cachesize", "full occupancy", "memory budget"} {
+		if !strings.Contains(logOutput.String(), part) {
+			t.Errorf("config-test log %q does not contain %q", logOutput.String(), part)
+		}
 	}
 }
 

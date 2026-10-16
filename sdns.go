@@ -112,6 +112,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if err := setup(); err != nil {
 		return err
 	}
+	server.WarnCacheSizeMemory(cfg.CacheSize)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -236,6 +237,7 @@ func validateConfiguration() error {
 		)
 		return err
 	}
+	server.WarnCacheSizeMemory(cfg.CacheSize)
 
 	fmt.Printf("Configuration file %s test successful\n", cfgPath)
 	return nil
