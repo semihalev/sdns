@@ -81,7 +81,7 @@ The page that explains each top-level key is listed under
 | `timeout` | `"2s"` | Per upstream query; `"0"` or omitted means `"2s"` |
 | `querytimeout` | `"10s"` | For one whole client query; `"0"` or omitted means `"10s"` |
 | `expire` | `600` | Seconds; lifetime cap of RFC 8020 subtree cuts and RFC 8198 proofs (fixed caps of 24 hours and 3 hours sit above it; `0` or omitted leaves only those). Neither mechanism runs with `dnssec = "off"` or `forwarderservers` set. Resolution failures use `failure_cache_*` |
-| `cachesize` | `256000` | Cached answers (messages), not records; `0` or omitted means 1024, 1 to 1023 is refused. Adds `cachesize / 16` RFC 8020 cut entries and `cachesize / 32` RFC 8198 proof entries |
+| `cachesize` | `256000` | Cached answers (messages), not records; `0` or omitted means 1024, 1 to 1023 is refused. Adds `cachesize / 16` RFC 8020 cut entries and `cachesize / 32` RFC 8198 proof entries. Estimate about 50 MB base plus 2.5 kB resident per answer; startup and `-t` warn if this exceeds the memory budget. See [Cache and TTLs]({{ '/docs/configuration/cache/' | relative_url }}) |
 | `cache_persist` | `false` | Save the answer cache at a clean shutdown and restore it at startup |
 | `prefetch` | `10` | Refresh threshold percent; `0` or omitted disables; 10 to 90, other values are rejected |
 | `maxdepth` | `30` | Recursion depth ceiling; `0` or omitted means 30 |
