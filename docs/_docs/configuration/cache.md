@@ -24,8 +24,10 @@ to `cachesize / 16` entries and the RFC 8198 proofs `cachesize / 32` (at least
 For planning, allow about 50 MB for the process and another 2.5 kB of resident
 memory per cached answer at full occupancy. Measurements vary with traffic:
 the live heap is about 1.1–1.6 kB per answer, and resident memory about
-2.2–2.7 kB per answer with the default Go garbage-collection target. As a
-starting point, choose `cachesize` as `(memory budget - 50 MB) / 2.5 kB`.
+2.2–2.7 kB per answer with the default Go garbage-collection target. For a
+budget above 50 MB, a starting point for `cachesize` is
+`(memory budget - 50 MB) / 2.5 kB`. With less memory, even the default 1024
+answers may exceed the estimate.
 This is an estimate, not a byte limit. At startup and with `sdns -t`, sdns
 warns when the estimated full cache is larger than the available memory budget
 (machine memory, narrowed by a container limit and `GOMEMLIMIT`). A valid

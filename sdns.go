@@ -90,6 +90,7 @@ func setup() error {
 	zlog.SetDefault(logger)
 
 	defaults.Register()
+	server.WarnCacheSizeMemory(cfg.CacheSize)
 	middleware.Setup(cfg)
 
 	return nil
@@ -112,7 +113,6 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if err := setup(); err != nil {
 		return err
 	}
-	server.WarnCacheSizeMemory(cfg.CacheSize)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
