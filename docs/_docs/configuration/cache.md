@@ -21,6 +21,21 @@ Two smaller caches are sized from it on top: the RFC 8020 subtree cuts take up
 to `cachesize / 16` entries and the RFC 8198 proofs `cachesize / 32` (at least
 64).
 
+For planning, allow about 50 MB for the process and another 2.5 kB of resident
+memory per cached answer at full occupancy. Measurements vary with traffic:
+the live heap is about 1.1 to 1.6 kB per answer, and resident memory about
+2.2 to 2.7 kB per answer with the default Go garbage-collection target. For a
+budget above 50 MB, a starting point for `cachesize` is
+`(memory budget - 50 MB) / 2.5 kB`. With less memory, even the default 1024
+answers may exceed the estimate.
+This is an estimate, not a byte limit. At startup and with `sdns -t`, sdns
+warns when the estimated full cache is larger than the available memory budget.
+On Linux and macOS, this starts with physical memory; Linux also accounts for
+container limits. `GOMEMLIMIT` narrows the budget on every platform. On Windows
+and other platforms, the budget is known only when `GOMEMLIMIT` is set. A valid
+configuration still passes `-t`; reduce `cachesize` if the warning exceeds the
+memory you can give sdns.
+
 `prefetch` refreshes an entry in the background when a query arrives and the
 entry has less than that percentage of its original TTL left. It trades a small
 amount of upstream traffic for hits that stay warm on popular names.

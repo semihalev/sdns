@@ -90,6 +90,7 @@ func setup() error {
 	zlog.SetDefault(logger)
 
 	defaults.Register()
+	server.WarnCacheSizeMemory(cfg.CacheSize)
 	middleware.Setup(cfg)
 
 	return nil
@@ -236,6 +237,7 @@ func validateConfiguration() error {
 		)
 		return err
 	}
+	server.WarnCacheSizeMemory(cfg.CacheSize)
 
 	fmt.Printf("Configuration file %s test successful\n", cfgPath)
 	return nil
