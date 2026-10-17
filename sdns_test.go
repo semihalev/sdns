@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -65,11 +66,14 @@ func TestConfigTestReportsOnceWithoutUsage(t *testing.T) {
 }
 
 func TestConfigTestWarnsWhenCacheExceedsMemoryBudget(t *testing.T) {
+	oldMemoryLimit := debug.SetMemoryLimit(1 << 30)
+	defer debug.SetMemoryLimit(oldMemoryLimit)
+
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sdns.conf")
 	body := fmt.Sprintf("version = %q\ndirectory = %q\ndnssec = \"off\"\n"+
-		"rootservers = [\"192.5.5.241:53\"]\ncachesize = %d\n",
-		version, filepath.Join(dir, "db"), int(^uint(0)>>1))
+		"rootservers = [\"192.5.5.241:53\"]\ncachesize = 1000000\n",
+		version, filepath.Join(dir, "db"))
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

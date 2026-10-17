@@ -20,10 +20,6 @@ func cacheMemoryEstimate(cacheSize int) uint64 {
 	if cacheSize == 0 {
 		cacheSize = defaultCacheEntries
 	}
-	if cacheSize < 0 {
-		return cacheMemoryBaseBytes
-	}
-
 	entries := uint64(cacheSize)
 	if entries > (math.MaxUint64-cacheMemoryBaseBytes)/cacheMemoryPerAnswerBytes {
 		return math.MaxUint64
