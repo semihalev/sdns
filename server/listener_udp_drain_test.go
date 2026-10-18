@@ -47,13 +47,7 @@ func TestUDPShutdownDrainsInFlight(t *testing.T) {
 	}
 	go func() { _ = l.Serve(ctx) }()
 
-	deadline := time.Now().Add(3 * time.Second)
-	for !l.Serving() {
-		if time.Now().After(deadline) {
-			t.Fatal("listener never started serving")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitFor(t, "the listener to serve", l.Serving)
 	l.mu.Lock()
 	addr := l.pcs[0].LocalAddr().String()
 	l.mu.Unlock()
@@ -71,29 +65,42 @@ func TestUDPShutdownDrainsInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := conn.Write(raw); err != nil {
-		t.Fatal(err)
+	// Sent again until the handler has it, as a client would: a datagram
+	// is the one thing here the network may lose.
+	for deadline, sent := time.Now().Add(10*time.Second), false; !sent; {
+		if time.Now().After(deadline) {
+			t.Fatal("handler never received the query")
+		}
+		if _, err := conn.Write(raw); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-serving:
+			sent = true
+		case <-time.After(time.Second):
+		}
 	}
 
-	select {
-	case <-serving:
-	case <-time.After(3 * time.Second):
-		t.Fatal("handler never received the query")
-	}
-
-	// Shutdown begins while the request is mid-flight; the handler then
-	// answers into a listener that is draining.
+	// Shutdown begins while the request is mid-flight; the handler answers
+	// only once admission has stopped, the readers gone, into a listener
+	// that is draining.
+	readersDone := make(chan struct{})
+	go func() { l.engine.readers.Wait(); close(readersDone) }()
 	done := make(chan error, 1)
 	go func() {
 		sctx, scancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer scancel()
 		done <- l.Shutdown(sctx)
 	}()
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-readersDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("shutdown never stopped admission")
+	}
 	close(proceed)
 
 	buf := make([]byte, 4096)
-	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	n, err := conn.Read(buf)
 	if err != nil {
 		t.Fatalf("in-flight request was dropped by shutdown: %v", err)

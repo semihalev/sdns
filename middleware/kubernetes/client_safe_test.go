@@ -324,17 +324,26 @@ func TestRebuildCoalescesBurst(t *testing.T) {
 		c.onEndpointSliceUpdate(eps, eps)
 	}
 
-	// Wait long enough for the worker to drain (debounce + slack).
-	deadline := time.Now().Add(500 * time.Millisecond)
-	var got uint64
-	for time.Now().Before(deadline) {
-		got = c.Rebuilds()
-		if got > 0 && len(c.queue.drain()) == 0 {
-			break
+	// Wait for the worker to go idle. Holding processingMu waits out an
+	// in-flight cycle, and an empty queue after it means every key the
+	// burst left has been rebuilt. The queue is only looked at, never
+	// drained here: a key taken from it would never reach the worker,
+	// and a burst slower than the debounce leaves one pending.
+	idle := func() bool {
+		c.queue.processingMu.Lock()
+		defer c.queue.processingMu.Unlock()
+		c.queue.mu.Lock()
+		defer c.queue.mu.Unlock()
+		return len(c.queue.pending) == 0
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for !idle() {
+		if time.Now().After(deadline) {
+			t.Fatal("the rebuild worker never drained the burst")
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	got = c.Rebuilds()
+	got := c.Rebuilds()
 	if got == 0 {
 		t.Fatal("no rebuilds fired, worker isn't running")
 	}

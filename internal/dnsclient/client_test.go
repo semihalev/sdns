@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/loopback"
 )
 
 // startServer launches a local DNS server on the given network ("udp"
@@ -223,21 +224,22 @@ func TestClientExchange_QuestionMismatch(t *testing.T) {
 func TestClientExchange_TruncationFallsBackToTCP(t *testing.T) {
 	// UDP server sets TC; TCP server returns the full answer. A correct
 	// client must retry over TCP and surface the TCP answer.
-	udpAddr, stopUDP := startServer(t, "udp", func(w dns.ResponseWriter, r *dns.Msg) {
+	// The TCP listener must share the UDP address so the fallback dials
+	// the same host:port.
+	pc, ln := loopback.ListenDual(t)
+	udpAddr := pc.LocalAddr().String()
+
+	udpMux := dns.NewServeMux()
+	udpMux.HandleFunc(".", func(w dns.ResponseWriter, r *dns.Msg) {
 		m := new(dns.Msg)
 		m.SetReply(r)
 		m.Truncated = true
 		_ = w.WriteMsg(m)
 	})
-	defer stopUDP()
+	us := &dns.Server{Net: "udp", PacketConn: pc, Handler: udpMux}
+	go func() { _ = us.ActivateAndServe() }()
+	defer func() { _ = us.Shutdown() }()
 
-	// The TCP listener must share the UDP address so the fallback dials
-	// the same host:port. Bind TCP to the UDP port explicitly.
-	host, port, _ := net.SplitHostPort(udpAddr)
-	ln, err := net.Listen("tcp", net.JoinHostPort(host, port))
-	if err != nil {
-		t.Fatalf("listen tcp on %s: %v", udpAddr, err)
-	}
 	mux := dns.NewServeMux()
 	mux.HandleFunc(".", answerExample)
 	s := &dns.Server{Net: "tcp", Listener: ln, Handler: mux}

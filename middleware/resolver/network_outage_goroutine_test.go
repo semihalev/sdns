@@ -128,37 +128,123 @@ func newOutageResolver(root *authority.Servers, maxConcurrent int) *Resolver {
 	return r
 }
 
-// outageSample is one observation of the system under load. Raw
-// NumGoroutine() is not directly comparable across arms of this test: the load
-// generator itself holds one goroutine per in-flight request, so a slower
-// system looks "leakier" purely because more of its own callers are parked.
+// goroutineCensus counts the goroutines born after a baseline snapshot that
+// are doing one resolver's work, by what bounds them. Raw NumGoroutine() is
+// the wrong instrument for that: the package's other tests leave hundreds of
+// goroutines behind, other resolvers in the process prime and refresh on
+// their own schedule, the load generator holds one goroutine per in-flight
+// request, and the fixtures run a handler per packet. On a starved CI
+// scheduler every one of those lingers for a while, and the sum read as
+// "backlog" while it measured the scheduler.
 //
-// backlog subtracts both the pre-test baseline and the harness's own caller
-// goroutines. What remains is resolver-internal machinery, the number that
-// blew from 139 to ~400k in production.
-type outageSample struct {
-	goroutines int
-	inflight   int64
-	backlog    int
+// Identity comes from the stacks: a baseline goroutine is excluded by its
+// id, the harness by its test function frames, a fixture by the DNS server
+// frames, and whose resolver a goroutine works for by the receiver its
+// method frames print, which is also what tells a slot holder of this
+// resolver from one of another.
+type goroutineCensus struct {
+	lookups   int // in r.lookup, each holds one of r.resolutionSlots
+	exchanges int // in r.queryServer's exchange, each holds one of r.maxConcurrent
+	other     int // resolver side, born after the baseline, holding neither
 }
 
-// sampleGoroutines watches goroutine count against in-flight requests and
-// reports the sample with the largest internal backlog.
-func sampleGoroutines(stop <-chan struct{}, inflight *atomic.Int64, baseline int, done chan<- outageSample) {
-	var worst outageSample
-	ticker := time.NewTicker(20 * time.Millisecond)
+// goroutineStacks returns every live goroutine's stack, keyed by its id.
+func goroutineStacks() map[string]string {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	stacks := map[string]string{}
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(g), "goroutine ")
+		if !ok {
+			continue
+		}
+		if id, _, ok := strings.Cut(rest, " "); ok {
+			stacks[id] = g
+		}
+	}
+	return stacks
+}
+
+// resolverMethods returns the Resolver methods stack runs with recv as
+// their receiver, and reports whether it runs any on another resolver. Only
+// a method frame prints its receiver, so closures, whose names carry a dot,
+// are skipped, and a receiver the traceback cannot vouch for is printed
+// with a "?".
+func resolverMethods(stack string, recv *Resolver) (mine map[string]bool, foreign bool) {
+	const frame = "github.com/semihalev/sdns/middleware/resolver.(*Resolver)."
+	addr := fmt.Sprintf("%p", recv)
+	mine = map[string]bool{}
+	for _, line := range strings.Split(stack, "\n") {
+		rest, ok := strings.CutPrefix(line, frame)
+		if !ok {
+			continue
+		}
+		name, args, ok := strings.Cut(rest, "(")
+		if !ok || strings.Contains(name, ".") {
+			continue
+		}
+		end := strings.IndexAny(args, ",)")
+		if end < 0 {
+			continue
+		}
+		if strings.TrimSuffix(args[:end], "?") == addr {
+			mine[name] = true
+		} else {
+			foreign = true
+		}
+	}
+	return mine, foreign
+}
+
+func takeGoroutineCensus(r *Resolver, baseline map[string]string) goroutineCensus {
+	var c goroutineCensus
+	for id, stack := range goroutineStacks() {
+		if _, ok := baseline[id]; ok {
+			continue
+		}
+		mine, foreign := resolverMethods(stack, r)
+		switch {
+		case strings.Contains(stack, "middleware/resolver.Test"):
+			// The harness: callers, samplers, timed dumps.
+		case strings.Contains(stack, "github.com/miekg/dns.(*Server)"):
+			// The fixture authorities answering, or swallowing, a packet.
+		case foreign && len(mine) == 0:
+			// Another resolver's work, one an earlier test left running.
+		case mine["lookup"]:
+			c.lookups++
+		case mine["queryServer"] && mine["exchange"]:
+			c.exchanges++
+		default:
+			c.other++
+		}
+	}
+	return c
+}
+
+// sampleCensus samples r's goroutines until stop closes and reports the
+// peak of each class. Each class peaks on its own, so the peaks are reported
+// separately rather than as the one sample with the largest sum.
+func sampleCensus(r *Resolver, baseline map[string]string, interval time.Duration, stop <-chan struct{}, done chan<- goroutineCensus) {
+	var peak goroutineCensus
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-stop:
-			done <- worst
+			done <- peak
 			return
 		case <-ticker.C:
-			n := runtime.NumGoroutine()
-			f := inflight.Load()
-			if b := n - baseline - int(f); b > worst.backlog {
-				worst = outageSample{goroutines: n, inflight: f, backlog: b}
-			}
+			c := takeGoroutineCensus(r, baseline)
+			peak.lookups = max(peak.lookups, c.lookups)
+			peak.exchanges = max(peak.exchanges, c.exchanges)
+			peak.other = max(peak.other, c.other)
 		}
 	}
 }
@@ -236,9 +322,9 @@ func glueIPFor(zone string) net.IP {
 //
 // The test asserts two properties that together bound a network incident:
 //
-//   - Backlog: resolver-internal goroutines (total minus baseline minus the
-//     harness's own in-flight callers) must stay within a multiplier of the
-//     healthy arm under identical offered load. Unbounded growth here is the
+//   - Backlog: the resolver's goroutines born under load, counted by stack
+//     (see goroutineCensus), must stay within the slot pools that bound
+//     them, plus a small transient tail. Unbounded growth here is the
 //     139 → 400k production signature.
 //   - Drain: once load stops and the network returns, goroutines must fall
 //     back near the pre-outage baseline within the detached-job budget.
@@ -339,7 +425,7 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 	// authorities dark. Fresh state per arm matters: breaker trips earned
 	// under one arm's load must not leak into the next arm's measurements.
 	// Naming is namespaced per arm so the shared fixtures stay stateless.
-	runArm := func(prefix string, dark bool) (worst outageSample, issued, resolved int64, baseline int) {
+	runArm := func(prefix string, dark bool) (peak goroutineCensus, r *Resolver, issued, resolved int64, baseline int) {
 		// Wait out the previous arm's detached jobs so this arm's warm-up
 		// and baseline aren't measured against leftover load.
 		settleDeadline := time.Now().Add(40 * time.Second)
@@ -348,7 +434,7 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 			time.Sleep(250 * time.Millisecond)
 		}
 
-		r := newOutageResolver(rootServers, maxConcurrent)
+		r = newOutageResolver(rootServers, maxConcurrent)
 		r.resolveTarget.Store(&mapper)
 
 		resolve := func(name string, budget time.Duration) error {
@@ -378,16 +464,17 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 		runtime.GC()
 		baseline = runtime.NumGoroutine()
+		baselineStacks := goroutineStacks()
 
 		if dark {
 			child.dropping.Store(true)
 			defer child.dropping.Store(false)
 		}
 
-		var inflight, issuedN, resolvedN atomic.Int64
+		var issuedN, resolvedN atomic.Int64
 		stop := make(chan struct{})
-		worstCh := make(chan outageSample, 1)
-		go sampleGoroutines(stop, &inflight, baseline, worstCh)
+		peakCh := make(chan goroutineCensus, 1)
+		go sampleCensus(r, baselineStacks, 20*time.Millisecond, stop, peakCh)
 
 		if dark {
 			// Attribute the outage-arm backlog to its spawn sites while the
@@ -403,10 +490,8 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 		for i := 0; time.Now().Before(deadline); i++ {
 			wg.Add(1)
 			issuedN.Add(1)
-			inflight.Add(1)
 			go func(n int) {
 				defer wg.Done()
-				defer inflight.Add(-1)
 				if resolve(fmt.Sprintf("www.%s%d.test.", prefix, n), 10*time.Second) == nil {
 					resolvedN.Add(1)
 				}
@@ -415,15 +500,14 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 		}
 		wg.Wait()
 		close(stop)
-		return <-worstCh, issuedN.Load(), resolvedN.Load(), baseline
+		return <-peakCh, r, issuedN.Load(), resolvedN.Load(), baseline
 	}
 
-	// Control arm, healthy network. This is what separates "the load
-	// generator is holding goroutines" from "the outage is making SDNS
-	// hold goroutines".
-	healthy, healthyIssued, healthyOK, _ := runArm("ok", false)
-	t.Logf("healthy: offered=%d resolved=%d peak_backlog=%d (goroutines=%d inflight=%d)",
-		healthyIssued, healthyOK, healthy.backlog, healthy.goroutines, healthy.inflight)
+	// Control arm, healthy network. It proves the offered load is one the
+	// resolver keeps up with, so the outage arm measures the outage.
+	healthy, _, healthyIssued, healthyOK, _ := runArm("ok", false)
+	t.Logf("healthy: offered=%d resolved=%d peak lookups=%d exchanges=%d other=%d",
+		healthyIssued, healthyOK, healthy.lookups, healthy.exchanges, healthy.other)
 	if healthyOK*10 < healthyIssued*8 {
 		t.Fatalf("healthy arm resolved only %d/%d, the offered load saturates the resolver "+
 			"even without an outage, so the arms are not comparable; lower the arrival rate",
@@ -433,10 +517,10 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 	// Partial outage arm, leaf authorities dark, root keeps answering
 	// referrals, queries keep arriving at the same rate.
 	rootBefore, childBefore := root.received.Load(), child.received.Load()
-	outage, outageIssued, outageOK, baseline := runArm("z", true)
+	outage, outageResolver, outageIssued, outageOK, baseline := runArm("z", true)
 
-	t.Logf("outage:  offered=%d resolved=%d peak_backlog=%d (goroutines=%d inflight=%d)",
-		outageIssued, outageOK, outage.backlog, outage.goroutines, outage.inflight)
+	t.Logf("outage:  offered=%d resolved=%d peak lookups=%d exchanges=%d other=%d",
+		outageIssued, outageOK, outage.lookups, outage.exchanges, outage.other)
 	t.Logf("wire during outage: root_rx=%d child_rx=%d (offered=%d), "+
 		"referrals answered, leaf queries swallowed",
 		root.received.Load()-rootBefore, child.received.Load()-childBefore, outageIssued)
@@ -524,21 +608,29 @@ func TestNetworkOutageGoroutineBacklog(t *testing.T) {
 	t.Logf("baseline=%d after_drain=%d max_concurrent=%d", baseline, drained, maxConcurrent)
 
 	// Backlog bound. The claim under test: a partial outage must not grow the
-	// resolver-internal backlog beyond a small multiple of the healthy arm
-	// under identical offered load. Comparing arms makes the bound
-	// independent of the harness's own caller goroutines.
-	//
-	// The enrichment lanes add a constant envelope on top: during an outage
-	// every worker grinds a resolution against dead upstreams, and each such
-	// resolution transiently holds a lookup, its racing exchange pair and
-	// their reads. That envelope scales with the fixed worker count, never
-	// with the offered load, which is the property this test defends.
-	const perWorkerEnvelope = 6
-	enrichEnvelope := 2 * nsEnrichWorkers * perWorkerEnvelope
-	if limit := healthy.backlog*3 + maxConcurrent + enrichEnvelope; outage.backlog > limit {
-		t.Errorf("outage grows internal goroutine backlog: healthy=%d, outage=%d, want <= %d "+
-			"(goroutines=%d, inflight=%d); work accumulates faster than timeouts retire it",
-			healthy.backlog, outage.backlog, limit, outage.goroutines, outage.inflight)
+	// resolver-internal backlog with the offered load. Under this outage the
+	// arrivals outpace the timeouts, so the resolver sits at its ceilings by
+	// design, and the ceilings are what is asserted: every in-flight lookup
+	// holds a resolution slot and every exchange a query slot, the enrichment
+	// lanes' work included, since it draws on the same two pools.
+	if limit := cap(outageResolver.resolutionSlots); outage.lookups > limit {
+		t.Errorf("outage holds %d lookups, want <= %d (resolution slots); "+
+			"lookups run without a slot", outage.lookups, limit)
+	}
+	if limit := cap(outageResolver.maxConcurrent); outage.exchanges > limit {
+		t.Errorf("outage holds %d exchanges, want <= %d (query slots); "+
+			"exchanges run without a slot", outage.exchanges, limit)
+	}
+
+	// Anything else is the transient tail of a slot holder, a timer, a
+	// cancellation callback, a worker posting its result, and a handful at
+	// most. A goroutine kept per admitted request, the shape that grew from
+	// 139 to ~400k in production, would be at least one per resolution slot,
+	// so half of them is the line.
+	if limit := cap(outageResolver.resolutionSlots) / 2; outage.other > limit {
+		t.Errorf("outage holds %d resolver goroutines outside the slot pools, want <= %d "+
+			"(healthy arm: %d); work accumulates faster than timeouts retire it",
+			outage.other, limit, healthy.other)
 	}
 
 	// Drain bound. Anything still running after the detached budget outlived

@@ -56,6 +56,21 @@ func writeTAState(t *testing.T, r *Resolver, anchors ...*TrustAnchor) string {
 	return path
 }
 
+// distinctRootKey is a fresh root key, with flags set, whose tag differs
+// from the anchor's. The state file is keyed by tag, so a key sharing it
+// would overwrite the anchor's entry, a state AutoTA never writes, and one
+// random key in 65536 does.
+func distinctRootKey(t *testing.T, n *hermeticNet, flags uint16) *dns.DNSKEY {
+	t.Helper()
+	for {
+		key := newHermeticKey(t, ".").key
+		key.Flags |= flags
+		if dnssec.KeyTag(key) != dnssec.KeyTag(n.rootKey.key) {
+			return key
+		}
+	}
+}
+
 // breakRootDNSKEY makes the root's DNSKEY RRset fail validation against the
 // configured anchor, so a refresh stops right after the fetch.
 func breakRootDNSKEY(t *testing.T, n *hermeticNet) {
@@ -121,7 +136,7 @@ func TestAutoTAPublishesFromDiskOnlyOverALiveSet(t *testing.T) {
 
 	t.Run("live set narrows to the tombstone-filtered disk state", func(t *testing.T) {
 		r, n := autoTAResolver(t)
-		revoked := newHermeticKey(t, ".").key
+		revoked := distinctRootKey(t, n, 0)
 		r.Lock()
 		r.rootKeys = append(r.rootKeys, revoked)
 		r.configuredRootKeys = append(r.configuredRootKeys, revoked)
@@ -156,8 +171,7 @@ func TestAutoTAPublishesFromDiskOnlyOverALiveSet(t *testing.T) {
 func TestAutoTAKeepsRevocationMarkerUntilTombstonePersists(t *testing.T) {
 	markerState := func(t *testing.T, r *Resolver, n *hermeticNet) (string, *dns.DNSKEY) {
 		t.Helper()
-		revoked := newHermeticKey(t, ".").key
-		revoked.Flags |= DNSKEYFlagRevoke
+		revoked := distinctRootKey(t, n, DNSKEYFlagRevoke)
 		path := writeTAState(t, r,
 			&TrustAnchor{DNSKey: n.rootKey.key, State: StateValid, FirstSeen: time.Now()},
 			&TrustAnchor{DNSKey: revoked, State: StateRevoked, FirstSeen: time.Now()},

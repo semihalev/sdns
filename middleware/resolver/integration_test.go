@@ -319,31 +319,14 @@ func TestHighLoadWithCircuitBreaker(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	// Track goroutine growth
+	// Track goroutine growth. The census counts the exchanges this resolver
+	// runs, by stack: the total would also count the load generator's own
+	// callers, one per in-flight lookup however long a starved scheduler
+	// keeps it, and whatever the rest of the process is doing.
 	startGoroutines := runtime.NumGoroutine()
-	maxGoroutines := atomic.Int32{}
-	maxGoroutines.Store(int32(startGoroutines)) //nolint:gosec // G115 - goroutine count conversion
-
-	// Monitor goroutines
 	stopMonitor := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				current := int32(runtime.NumGoroutine()) //nolint:gosec // G115 - goroutine count conversion
-				for {
-					max := maxGoroutines.Load()
-					if current <= max || maxGoroutines.CompareAndSwap(max, current) {
-						break
-					}
-				}
-			case <-stopMonitor:
-				return
-			}
-		}
-	}()
+	peakCh := make(chan goroutineCensus, 1)
+	go sampleCensus(r, goroutineStacks(), 50*time.Millisecond, stopMonitor, peakCh)
 
 	// Simulate 1000 req/s for a short period
 	var wg sync.WaitGroup
@@ -384,13 +367,10 @@ func TestHighLoadWithCircuitBreaker(t *testing.T) {
 	close(stopLoad)
 	wg.Wait()
 	close(stopMonitor)
+	peak := <-peakCh
 
-	// Check results
-	maxObservedGoroutines := int(maxGoroutines.Load())
-	goroutineGrowth := maxObservedGoroutines - startGoroutines
-
-	t.Logf("Goroutine growth under load: Start=%d, Max=%d, Growth=%d",
-		startGoroutines, maxObservedGoroutines, goroutineGrowth)
+	t.Logf("Peak exchanges under load: %d (limit %d), other resolver goroutines: %d",
+		peak.exchanges, cfg.MaxConcurrentQueries, peak.other)
 
 	// Verify all bad servers are in circuit breaker
 	for _, server := range googleServers.List {
@@ -399,11 +379,12 @@ func TestHighLoadWithCircuitBreaker(t *testing.T) {
 		}
 	}
 
-	// Growth should be controlled by MaxConcurrentQueries
-	// Note: Since queries spawn goroutines that then acquire semaphore,
-	// we may temporarily exceed the limit while goroutines wait for slots
-	if goroutineGrowth > cfg.MaxConcurrentQueries*3 {
-		t.Errorf("%s: goroutineGrowth = %v, want <= %v", "Goroutine growth should be limited by MaxConcurrentQueries", goroutineGrowth, cfg.MaxConcurrentQueries*3)
+	// Growth should be controlled by MaxConcurrentQueries: lookup takes a
+	// slot before it starts an exchange goroutine, and the goroutine holds
+	// it for the whole exchange, so the limit is exact. The load offers about
+	// twice as many as the limit, two racing servers per lookup.
+	if peak.exchanges > cfg.MaxConcurrentQueries {
+		t.Errorf("%s: peak exchanges = %v, want <= %v", "Goroutine growth should be limited by MaxConcurrentQueries", peak.exchanges, cfg.MaxConcurrentQueries)
 	}
 
 	// Wait for cleanup, but only as long as it actually takes: the test is
