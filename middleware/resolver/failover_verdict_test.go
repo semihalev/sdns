@@ -113,6 +113,12 @@ func TestCachedValidationFailureIsNotFailedOver(t *testing.T) {
 	cfg := net.Config()
 	cfg.FallbackServers = []string{fallback}
 	cfg.CacheSize = 1024
+	// One address per server, so a lookup sends the target one query. With
+	// both families the resolver races two, and the loser, cancelled once
+	// the winner answers, may still have sent its query, which the server
+	// counts whenever it lands: no wait tells that late arrival from the
+	// alias asking again.
+	cfg.IPv6Access = false
 	handler := net.handlerWithConfig(cfg)
 	handlers := []middleware.Handler{answercache.New(cfg), failover.New(cfg), handler}
 	var queryer middleware.Queryer = pipelineQueryer{handlers: handlers}
@@ -141,16 +147,9 @@ func TestCachedValidationFailureIsNotFailedOver(t *testing.T) {
 	if got := ask("www.target.test."); got == nil || got.Rcode != dns.RcodeServerFailure {
 		t.Fatalf("target: %v, want SERVFAIL", got)
 	}
-	// The resolver races the target's IPv4 and IPv6 addresses. The loser,
-	// cancelled once the winner answers, may already have sent its query,
-	// and the server counts it whenever it arrives, which can be after the
-	// answer is back. Count once that has had time to land.
 	targetAsked := target.asked("www.target.test.", dns.TypeA)
-	for quiet, deadline := time.Now(), time.Now().Add(5*time.Second); time.Since(quiet) < 200*time.Millisecond && time.Now().Before(deadline); {
-		time.Sleep(10 * time.Millisecond)
-		if n := target.asked("www.target.test.", dns.TypeA); n != targetAsked {
-			targetAsked, quiet = n, time.Now()
-		}
+	if targetAsked != 1 {
+		t.Fatalf("the target was asked %d times, want once", targetAsked)
 	}
 
 	got := ask("www.alias.test.")

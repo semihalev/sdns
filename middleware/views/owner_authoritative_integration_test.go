@@ -11,6 +11,7 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
+	"github.com/semihalev/sdns/internal/loopback"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/cache"
@@ -31,16 +32,7 @@ type loopbackUpstream struct {
 
 func startLoopbackUpstream(t *testing.T) *loopbackUpstream {
 	t.Helper()
-	tcpConn, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	port := tcpConn.Addr().(*net.TCPAddr).Port
-	udpConn, err := net.ListenPacket("udp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		_ = tcpConn.Close()
-		t.Fatal(err)
-	}
+	udpConn, tcpConn := loopback.ListenDual(t)
 	u := &loopbackUpstream{addr: tcpConn.Addr().String(), counts: make(map[string]int), tcpConn: tcpConn, udpConn: udpConn}
 	handler := dns.HandlerFunc(func(w dns.ResponseWriter, req *dns.Msg) {
 		if len(req.Question) != 1 {
@@ -159,16 +151,8 @@ func configFor(upstream string, mode string) *config.Config {
 
 func startClientServerMode(t *testing.T, handlers []middleware.Handler, wire bool) (string, func()) {
 	t.Helper()
-	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	pc, tcpListener := loopback.ListenDual(t)
 	addr := pc.LocalAddr().String()
-	tcpListener, err := net.Listen("tcp", addr)
-	if err != nil {
-		_ = pc.Close()
-		t.Fatal(err)
-	}
 	started := make(chan struct{}, 2)
 	udpServer := &dns.Server{PacketConn: pc, Handler: chainHandler{handlers, wire}, NotifyStartedFunc: func() { started <- struct{}{} }}
 	tcpServer := &dns.Server{Listener: tcpListener, Handler: chainHandler{handlers, wire}, NotifyStartedFunc: func() { started <- struct{}{} }}

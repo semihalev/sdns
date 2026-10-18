@@ -10,6 +10,7 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/authority"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/loopback"
 )
 
 // slowUpstream answers every query after delay, and reports its address.
@@ -296,16 +297,8 @@ func TestAProbeTruncationDoesNotWinRaceAheadOfTCPFallback(t *testing.T) {
 	})
 
 	startDual := func() (string, func()) {
-		uconn, err := net.ListenPacket("udp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
-		}
+		uconn, tconn := loopback.ListenDual(t)
 		addr := uconn.LocalAddr().String()
-		tconn, err := net.Listen("tcp", addr)
-		if err != nil {
-			_ = uconn.Close()
-			t.Fatal(err)
-		}
 		uServer := &dns.Server{PacketConn: uconn, Handler: handler}
 		tServer := &dns.Server{Listener: tconn, Handler: handler}
 		go func() { _ = uServer.ActivateAndServe() }()

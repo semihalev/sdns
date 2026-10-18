@@ -1,7 +1,6 @@
 package cache
 
 import (
-	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -77,9 +76,16 @@ func TestEvictionProportionalityAtCapacity(t *testing.T) {
 
 // TestAddLatencyUnderEvictionStorm keeps the cache at capacity while
 // concurrent writers insert fresh keys and readers keep probing, the
-// incident-night workload. It asserts a hard per-operation latency bound:
-// whatever bookkeeping eviction does, no single Add or Get may stall behind
-// bulk work.
+// incident-night workload. Whatever bookkeeping eviction does, no single
+// Add or Get may stall behind bulk work.
+//
+// The guarantee is structural, so it is asserted by count: every insert
+// reports what it evicted, and none may evict more than the per-Add toll.
+// Bulk work done on behalf of other keys is exactly an insert that evicts
+// more than that. The p99 latency bound stays as the regression signal for
+// lock contention; a single worst sample is logged, not asserted, because
+// one descheduling of the measuring goroutine spends a whole absolute
+// budget and says nothing about the cache.
 func TestAddLatencyUnderEvictionStorm(t *testing.T) {
 	if testing.Short() {
 		t.Skip("storm test skipped in -short")
@@ -91,12 +97,23 @@ func TestAddLatencyUnderEvictionStorm(t *testing.T) {
 		readers  = 8
 		duration = 2 * time.Second
 		maxStall = 50 * time.Millisecond
+		maxToll  = 2 // what one over-capacity insert may evict
 	)
 
 	c := New[any](maxSize)
 	for i := 0; i < maxSize; i++ {
 		c.Add(uint64(i), i) //nolint:gosec // G115 - test loop
 	}
+
+	var worstToll atomic.Int64
+	c.OnEvict(func(n int) {
+		for {
+			cur := worstToll.Load()
+			if int64(n) <= cur || worstToll.CompareAndSwap(cur, int64(n)) {
+				return
+			}
+		}
+	})
 
 	var (
 		stop     atomic.Bool
@@ -147,28 +164,34 @@ func TestAddLatencyUnderEvictionStorm(t *testing.T) {
 	stop.Store(true)
 	wg.Wait()
 
-	stats := func(name string, lat []time.Duration) (p99, max time.Duration) {
+	stats := func(name string, lat []time.Duration) (p99 time.Duration) {
 		if len(lat) == 0 {
 			t.Fatalf("%s: no samples", name)
 		}
 		sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
 		p99 = lat[len(lat)*99/100]
-		max = lat[len(lat)-1]
-		t.Logf("%s: samples=%d p99=%v max=%v", name, len(lat), p99, max)
-		return p99, max
+		t.Logf("%s: samples=%d p99=%v max=%v", name, len(lat), p99, lat[len(lat)-1])
+		return p99
 	}
 
-	t.Logf("total_ops=%d len_after=%d (max=%d)", totalOps.Load(), c.Len(), maxSize)
-	addP99, addMax := stats("add", addLat)
-	getP99, getMax := stats("get", getLat)
+	t.Logf("total_ops=%d len_after=%d (max=%d) worst_toll=%d",
+		totalOps.Load(), c.Len(), maxSize, worstToll.Load())
+	addP99 := stats("add", addLat)
+	getP99 := stats("get", getLat)
+
+	if got := worstToll.Load(); got > maxToll {
+		t.Errorf("one insert evicted %d entries under eviction storm, want <= %d; "+
+			"an insert must never do bulk eviction work for other keys",
+			got, maxToll)
+	}
 
 	// p99 is the portable regression signal: bulk-eviction stalls (the
 	// 2026-07-28 mode, writers queued behind segment clearing) drag the
 	// p99 across a fraction of hundreds of thousands of samples, while a
-	// shared CI runner descheduling one goroutine for half a second moves
-	// only the tail maximum. Assert the absolute-stall bound too, but only
-	// on dedicated hardware where the max measures the cache and not the
-	// neighbour's build.
+	// shared runner descheduling one goroutine for half a second moves
+	// only the tail maximum. It held at ~30µs on a host oversubscribed
+	// nearly threefold, and at ~6ms under -race with coverage and more
+	// busy loops than cores.
 	if addP99 > maxStall {
 		t.Errorf("Add p99 %v under eviction storm, want < %v; "+
 			"inserts are queueing behind bulk eviction work",
@@ -178,40 +201,6 @@ func TestAddLatencyUnderEvictionStorm(t *testing.T) {
 		t.Errorf("Get p99 %v under eviction storm, want < %v; "+
 			"reads are queueing behind bulk eviction work",
 			getP99, maxStall)
-	}
-	if isCI() {
-		return
-	}
-
-	// The absolute bound is a single worst sample, so one descheduling event
-	// spends the whole budget. isCI() was the proxy for "dedicated hardware",
-	// but a developer machine is not dedicated either while it is running the
-	// rest of the suite, and that is where this bound went red without a
-	// regression behind it. Ask the machine instead of guessing from the
-	// environment: measure what it costs to deschedule a loop that touches no
-	// cache at all, at the same concurrency, right after the storm. When that
-	// alone reaches the bound, the storm's maximum cannot be attributed to
-	// eviction and the bound is not evidence of anything.
-	//
-	// The p99 assertions above stay unconditional: they held at ~30µs on a
-	// host oversubscribed nearly threefold, which is the whole reason they
-	// are the portable signal.
-	if floor := schedulerStallMax(writers+readers, 300*time.Millisecond); floor >= maxStall {
-		t.Logf("absolute-stall bound not asserted: this host descheduled a "+
-			"no-op loop for %v against a %v bound (add max %v, get max %v)",
-			floor, maxStall, addMax, getMax)
-		return
-	}
-
-	if addMax > maxStall {
-		t.Errorf("Add stalled %v under eviction storm, want < %v; "+
-			"an insert must never wait on bulk eviction work",
-			addMax, maxStall)
-	}
-	if getMax > maxStall {
-		t.Errorf("Get stalled %v under eviction storm, want < %v; "+
-			"reads must never wait on bulk eviction work",
-			getMax, maxStall)
 	}
 }
 
@@ -251,45 +240,4 @@ func BenchmarkAddUnderCapacity(b *testing.B) {
 			c.Add(k, int(k)) //nolint:gosec // G115 - bench key
 		}
 	})
-}
-
-// schedulerStallMax reports the longest a goroutine waited on this machine
-// when nothing was asked of it but the scheduler, at the concurrency the
-// storm runs at. It is the floor under any single stall the storm test can
-// attribute to the cache: whatever eviction does, it cannot be seen beneath
-// the delay the host imposes on a loop that touches nothing.
-//
-// The maximum is what this compares against, because the bound it guards is
-// itself a maximum, one sample against one sample.
-func schedulerStallMax(goroutines int, d time.Duration) time.Duration {
-	var (
-		mu   sync.Mutex
-		lat  []time.Duration
-		stop atomic.Bool
-		wg   sync.WaitGroup
-	)
-	for range goroutines {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			local := make([]time.Duration, 0, 1<<14)
-			for !stop.Load() {
-				start := time.Now()
-				runtime.Gosched()
-				local = append(local, time.Since(start))
-			}
-			mu.Lock()
-			lat = append(lat, local...)
-			mu.Unlock()
-		}()
-	}
-	time.Sleep(d)
-	stop.Store(true)
-	wg.Wait()
-
-	if len(lat) == 0 {
-		return 0
-	}
-	sort.Slice(lat, func(i, j int) bool { return lat[i] < lat[j] })
-	return lat[len(lat)-1]
 }

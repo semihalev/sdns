@@ -49,7 +49,9 @@ func dialDoQ(t *testing.T, addr string, alpn ...string) (*quic.Conn, error) {
 	if len(alpn) == 0 {
 		alpn = []string{"doq"}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	// A handshake that loses a packet waits out its retransmission timers;
+	// on a loaded machine that alone can take seconds.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	conn, err := quic.DialAddr(ctx, addr,
 		&tls.Config{InsecureSkipVerify: true, NextProtos: alpn}, //nolint:gosec // loopback test server
@@ -419,29 +421,40 @@ func TestDoQCacheHitTakesTheBytePath(t *testing.T) {
 // Once shutdown begins no stream is admitted, on any connection, while
 // the one already in flight is allowed to finish.
 func TestDoQDrainAdmitsNoNewStream(t *testing.T) {
-	release := make(chan struct{})
+	release, read := make(chan struct{}), make(chan struct{})
 	var entered atomic.Int32
 	h := rawHandlerFunc(func(w middleware.Transport, raw []byte, rt time.Time) bool {
-		if entered.Add(1) == 1 {
-			<-release
+		if entered.Add(1) != 1 {
+			return answer(w, raw, rt)
 		}
-		return answer(w, raw, rt)
+		<-release
+		ok := answer(w, raw, rt)
+		// The stream stays in flight until its client has read the reply:
+		// the connections close as soon as the drain is over, and a close
+		// discards whatever reply the client has not read yet.
+		<-read
+		return ok
 	})
 	l, addr := startDoQ(t, h, doqPlan(4, 4))
+	// The drain allowance outlasts the steps below on a loaded machine.
+	l.timeout = 30 * time.Second
+	var releaseOnce, readOnce sync.Once
+	answerFirst := func() { releaseOnce.Do(func() { close(release) }) }
+	finishFirst := func() { readOnce.Do(func() { close(read) }) }
+	// A failure below must not leave the drain waiting on the handler.
+	t.Cleanup(func() { answerFirst(); finishFirst() })
 	conn, err := dialDoQ(t, addr)
 	if err != nil {
 		t.Fatal(err)
 	}
 	q := framedQuery(t, 0, nil)
 	first := make(chan error, 1)
-	go func() { _, err := exchange(conn, q, false); first <- err }()
-	for entered.Load() == 0 {
-		time.Sleep(time.Millisecond)
-	}
+	go func() { first <- readReply(conn, q) }()
+	waitFor(t, "the first stream to reach the handler", func() bool { return entered.Load() != 0 })
 
-	stopped := make(chan struct{})
-	go func() { _ = l.Shutdown(context.Background()); close(stopped) }()
-	<-l.engine.closing
+	stopped := make(chan error, 1)
+	go func() { stopped <- l.Shutdown(context.Background()) }()
+	waitFor(t, "the drain to begin", func() bool { return l.engine.inflight.Load()&doqStopBit != 0 })
 
 	if _, err := exchange(conn, q, false); err == nil {
 		t.Fatal("a stream opened during the drain was answered")
@@ -449,11 +462,49 @@ func TestDoQDrainAdmitsNoNewStream(t *testing.T) {
 	if n := entered.Load(); n != 1 {
 		t.Fatalf("the handler was entered %d times, want only the stream admitted before the drain", n)
 	}
-	close(release)
+	answerFirst()
 	if err := <-first; err != nil {
 		t.Fatalf("the stream admitted before the drain: %v", err)
 	}
-	<-stopped
+	finishFirst()
+	if err := <-stopped; err != nil {
+		t.Fatalf("shutdown: %v", err)
+	}
+}
+
+// readReply sends payload on a fresh stream and reads one framed reply,
+// without waiting for the stream's FIN.
+func readReply(conn *quic.Conn, payload []byte) error {
+	stream, err := conn.OpenStreamSync(context.Background())
+	if err != nil {
+		return err
+	}
+	_ = stream.SetDeadline(time.Now().Add(30 * time.Second))
+	if _, err := stream.Write(payload); err != nil {
+		return err
+	}
+	_ = stream.Close()
+	var prefix [dnsclient.FramePrefixLen]byte
+	if _, err := io.ReadFull(stream, prefix[:]); err != nil {
+		return err
+	}
+	body := make([]byte, binary.BigEndian.Uint16(prefix[:]))
+	if _, err := io.ReadFull(stream, body); err != nil {
+		return err
+	}
+	return new(dns.Msg).Unpack(body)
+}
+
+// waitFor polls cond until it holds, failing the test after a deadline
+// generous enough for a loaded machine.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); !cond(); {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // Admission and the drain race freely here; under -race a counter that

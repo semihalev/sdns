@@ -260,8 +260,14 @@ func TestEveryUnmeasuredAuthorityIsEventuallyQueried(t *testing.T) {
 		servers.List = append(servers.List, authority.NewServer(addr, authority.IPv4))
 	}
 	// The leader goes in last, so the order it ends up in is the ranking's
-	// doing rather than the order it was handed.
-	servers.List = append(servers.List, authority.NewServer(leaderAddr, authority.IPv4))
+	// doing rather than the order it was handed. It comes measured: a first
+	// lookup to measure it would walk the tied delegation in adaptive
+	// steps, and on a loaded machine the first addresses it started time
+	// out before the walk reaches the leader, which is a real measurement
+	// this test would then read as a cancelled one.
+	leader := authority.NewServer(leaderAddr, authority.IPv4)
+	leader.Observe(time.Millisecond)
+	servers.List = append(servers.List, leader)
 
 	cfg := &config.Config{
 		// Roots this test never reaches, but a resolver built without any
@@ -272,6 +278,11 @@ func TestEveryUnmeasuredAuthorityIsEventuallyQueried(t *testing.T) {
 		MaxConcurrentQueries: 100,
 	}
 	r := newWiredTestResolver(cfg)
+	// No room for exploration probes, so the second slot is always a hedge
+	// the leader's answer cancels. A probe outlives its lookup by design,
+	// and its query to a silent address ends in a timeout it records, two
+	// seconds in, whenever this test runs that long.
+	r.probeSlots = make(chan struct{})
 
 	req := new(dns.Msg)
 	req.SetQuestion("rotate.example.", dns.TypeA)
@@ -286,16 +297,6 @@ func TestEveryUnmeasuredAuthorityIsEventuallyQueried(t *testing.T) {
 			t.Fatal("lookup returned no answer")
 		}
 	}
-
-	// One lookup to establish a leader. On the first one nothing is
-	// measured, so the whole delegation is tied and the resolver walks
-	// down it until something answers, which contacts every address once
-	// and says nothing about how the slot behind the leader is chosen.
-	runLookup()
-	for _, hits := range silent {
-		hits.Store(0)
-	}
-	leaderHits.Store(0)
 
 	for range lookups {
 		runLookup()

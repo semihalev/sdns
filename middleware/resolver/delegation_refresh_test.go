@@ -113,7 +113,12 @@ func TestDelegationRefreshedBeforeItsLeaseEnds(t *testing.T) {
 	}
 
 	// Past the old end: the renewed delegation serves, the root is not
-	// asked for it again.
+	// asked for it again. The renewed lease enters its own last half at
+	// about the old end, so a use there would rightly schedule the next
+	// refresh, and that refresh asks the root too. Narrow the window so
+	// the use below schedules none: a root query it makes is then the walk
+	// the renewal should have spared.
+	delegationRefreshShare.Store(1000)
 	time.Sleep(time.Until(oldEnd.Add(200 * time.Millisecond)))
 	afterRefresh := net.root.asked("refresh.test.", dns.TypeA) + net.root.asked("refresh.test.", dns.TypeNS)
 	resolveA(t, h, "c.refresh.test.")

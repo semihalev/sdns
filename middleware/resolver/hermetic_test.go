@@ -59,11 +59,18 @@ func newHermeticKey(tb testing.TB, zone string) hermeticKey {
 		Protocol:  3,
 		Algorithm: dns.ECDSAP256SHA256,
 	}
-	priv, err := key.Generate(256)
-	if err != nil {
-		tb.Fatalf("generate %s DNSKEY: %v", zone, err)
+	// A key whose tag comes out zero cannot sign: the DNS library reads a
+	// zero tag in an RRSIG as unset and refuses it as a bad key. One random
+	// key in 65536 has it, and a package run generates enough to meet one.
+	for {
+		priv, err := key.Generate(256)
+		if err != nil {
+			tb.Fatalf("generate %s DNSKEY: %v", zone, err)
+		}
+		if key.KeyTag() != 0 {
+			return hermeticKey{key: key, priv: priv}
+		}
 	}
-	return hermeticKey{key: key, priv: priv}
 }
 
 func (k hermeticKey) sign(tb testing.TB, rrset []dns.RR) *dns.RRSIG {
