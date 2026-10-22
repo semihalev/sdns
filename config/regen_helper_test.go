@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"testing"
 )
@@ -15,7 +14,7 @@ func TestDumpDefaultConfig(t *testing.T) {
 	if dest == "" {
 		t.Skip("set SDNS_REGEN_CONFIG to a path to regenerate")
 	}
-	if err := os.WriteFile(dest, fmt.Appendf(nil, defaultConfig, configver), 0o600); err != nil { //nolint:gosec // G703 - dev-only regen helper, path chosen by the developer running it
+	if err := os.WriteFile(dest, []byte(defaultConfig), 0o600); err != nil { //nolint:gosec // G703 - dev-only regen helper, path chosen by the developer running it
 		t.Fatal(err)
 	}
 }

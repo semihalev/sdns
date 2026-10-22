@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"testing"
 )
@@ -15,7 +14,7 @@ func TestWriteGeneratedDefault(t *testing.T) {
 	}
 	// Only the packaged copy: the repository root's sdns.conf is
 	// gitignored. It is a user's live config, not ours to write.
-	generated := fmt.Sprintf(defaultConfig, configver)
+	generated := defaultConfig
 	if err := os.WriteFile("../contrib/linux/sdns.conf", []byte(generated), 0o644); err != nil { //nolint:gosec // repo fixture
 		t.Fatal(err)
 	}

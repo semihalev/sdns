@@ -21,9 +21,9 @@ import (
 func TestConfigTestReportsOnceWithoutUsage(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sdns.conf")
-	body := fmt.Sprintf("version = %q\ndirectory = %q\ndnssec = \"off\"\n"+
+	body := fmt.Sprintf("directory = %q\ndnssec = \"off\"\n"+
 		"rootservers = [\"192.5.5.241:53\"]\nnullroute = \"not-an-ip\"\n",
-		currentConfigVersion(t), filepath.Join(dir, "db"))
+		filepath.Join(dir, "db"))
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -147,29 +147,4 @@ func TestShutdownDrainBudget(t *testing.T) {
 			}
 		})
 	}
-}
-
-// currentConfigVersion reads the version the generator writes, so this test
-// does not carry a copy that goes stale on the next bump.
-func currentConfigVersion(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gen.conf")
-	oldPath, oldTest := cfgPath, testConfig
-	defer func() { cfgPath, testConfig = oldPath, oldTest }()
-
-	cfgPath, testConfig = path, true
-	_ = validateConfiguration() // generates the file when it is missing
-
-	body, err := os.ReadFile(path) //nolint:gosec // G304 - path is this test's own temp dir
-	if err != nil {
-		t.Fatalf("generate config: %v", err)
-	}
-	for line := range strings.SplitSeq(string(body), "\n") {
-		if after, ok := strings.CutPrefix(line, "version = "); ok {
-			return strings.Trim(strings.TrimSpace(after), "\"")
-		}
-	}
-	t.Fatal("generated config has no version")
-	return ""
 }

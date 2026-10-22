@@ -42,7 +42,7 @@ The page that explains each top-level key is listed under
 
 | Key | Default | Meaning |
 |---|---|---|
-| `version` | `"1.9.0"` | The configuration version of the sdns that generated the file; a different value only logs a warning at startup |
+| `version` | *(not generated)* | Ignored; files generated before 1.9.1 carry it, and it may be deleted |
 | `directory` | `"db"` | Writable state: `trust-anchor.db`, `trust-anchor-tombstones.db`, `root.zone` with `hyperlocal_root`, `cache.snapshot` with `cache_persist`, and the downloaded blocklists in `blacklists/` |
 | `bind` | `":53"` | UDP and TCP listener; one `"host:port"` or a list. Unset or empty still listens on `":53"` |
 | `bindtls` | *(commented)* | DoT listener, usually `":853"`; one address or a list; not started while unset |

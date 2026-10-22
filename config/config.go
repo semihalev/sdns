@@ -21,12 +21,13 @@ import (
 )
 
 const (
-	configver               = "1.9.0"
 	defaultServeStaleMaxTTL = 24 * time.Hour
 )
 
 // Config type.
 type Config struct {
+	// Version is ignored. Files generated before 1.9.1 carry the release
+	// that wrote them; the field is retained so they still pass sdns -t.
 	Version      string
 	Directory    string
 	BlockLists   []string
@@ -711,10 +712,6 @@ func (d *Duration) UnmarshalText(text []byte) error {
 }
 
 var defaultConfig = `
-# Configuration file version: the sdns release that generated this file.
-# A different value only logs a notice at startup.
-version = "%s"
-
 # ============================
 # Basic Server Configuration
 # ============================
@@ -1639,10 +1636,6 @@ func Load(cfgfile, version string) (*Config, error) {
 		config.ServeStaleMaxTTL.Duration = defaultServeStaleMaxTTL
 	}
 
-	if config.Version != configver {
-		zlog.Warn("Config file is out of version, you can generate new one and check the changes.")
-	}
-
 	// Before the gate, like the DNSSEC default below, because the checks read
 	// the settled value: outboundip6s is only judged when v6 is in use, and
 	// root6servers only count as roots then too.
@@ -1764,7 +1757,7 @@ func generateConfig(path string) error {
 		}
 	}()
 
-	r := strings.NewReader(fmt.Sprintf(defaultConfig, configver))
+	r := strings.NewReader(defaultConfig)
 	if _, err := io.Copy(output, r); err != nil {
 		return fmt.Errorf("could not copy default config: %s", err)
 	}
