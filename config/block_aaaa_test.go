@@ -1,7 +1,6 @@
 package config
 
 import (
-	"fmt"
 	"strings"
 	"testing"
 
@@ -32,7 +31,7 @@ func TestBlockAAAADefaultAndParsing(t *testing.T) {
 			}
 		})
 	}
-	generated := fmt.Sprintf(defaultConfig, configver)
+	generated := defaultConfig
 	if !strings.Contains(generated, "block_aaaa = false") {
 		t.Fatal("generated default omits block_aaaa = false")
 	}

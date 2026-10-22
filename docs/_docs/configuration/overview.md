@@ -49,21 +49,16 @@ Startup only warns about it. The asymmetry is deliberate: you want the strict
 answer when you are checking a change, and you do not want a stale key left in
 the file to turn an upgrade into an outage.
 
-## Versioning
+## Upgrading
 
-```toml
-version = "1.9.0"
-```
+The file carries no version. One generated before 1.9.1 starts with a
+`version` line; it is ignored and can be deleted.
 
-This is the configuration file's version, the configuration version of the sdns
-that generated the file. Recent releases set it to their own version number;
-some older ones left it at an earlier release's.
-
-When the file's version differs from the running sdns it logs a warning and
-loads the file **unchanged**. After an upgrade the warning is informational if
-`sdns -t` passes. Nothing is migrated and no backup is written. Generate a
-fresh configuration alongside the new binary and carry your settings across by
-hand; `sdns -t` reports any key that no longer exists.
+An upgrade loads the file **unchanged**. Nothing is migrated and no backup is
+written. Run `sdns -t` against it with the new binary: it reports any key that
+no longer exists and any value the new release refuses. A deprecated key logs a
+warning at startup. New settings take their defaults until you add them; to see
+them, generate a fresh configuration alongside the new binary and compare.
 
 ## State directory
 
