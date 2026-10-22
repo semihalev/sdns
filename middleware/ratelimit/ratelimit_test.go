@@ -3,6 +3,8 @@ package ratelimit
 import (
 	"context"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -58,9 +60,66 @@ func Test_RateLimit(t *testing.T) {
 		t.Fatalf("passes = %d, want 7: the second query over a rate of 1 is dropped", passes)
 	}
 
-	r.rate = 0
+	r.limits.Load().rate = 0
 	serve("udp", "10.0.0.1:0")
 	if passes != 8 {
 		t.Fatalf("passes = %d, want 8: a rate of 0 limits nothing", passes)
+	}
+}
+
+// A reload puts a new rate in use on commit, with fresh buckets, while
+// queries keep arriving.
+func TestReloadSwapsTheRateOnCommit(t *testing.T) {
+	r := New(&config.Config{ClientRateLimit: 1})
+	req := new(dns.Msg)
+	req.SetQuestion("example.com.", dns.TypeA)
+	var passes atomic.Int32
+	next := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+		passes.Add(1)
+		ch.Cancel()
+	})
+	serve := func(addr string) bool {
+		before := passes.Load()
+		ch := middleware.NewChain([]middleware.Handler{r, next})
+		ch.Reset(mock.NewWriter("udp", addr), req.Copy())
+		ch.Next(context.Background())
+		return passes.Load() > before
+	}
+
+	if !serve("10.0.0.1:0") || serve("10.0.0.1:0") {
+		t.Fatal("rate 1: want the first query through and the second dropped")
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				serve("10.0.0.2:0")
+			}
+		}
+	})
+
+	commit, err := r.PrepareReload(&config.Config{ClientRateLimit: 3})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if serve("10.0.0.1:0") {
+		t.Fatal("prepare put the new rate in use")
+	}
+	commit()
+	close(stop)
+	wg.Wait()
+
+	for i := range 3 {
+		if !serve("10.0.0.1:0") {
+			t.Fatalf("rate 3 after commit: query %d dropped", i+1)
+		}
+	}
+	if serve("10.0.0.1:0") {
+		t.Fatal("rate 3 after commit: the fourth query passed")
 	}
 }

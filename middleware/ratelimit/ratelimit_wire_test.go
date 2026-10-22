@@ -379,7 +379,7 @@ func TestProvedEntriesSurviveAnAddressFlood(t *testing.T) {
 	for i := range cacheSize + 10 {
 		r.getLimiter(net.IPv4(10, byte(i>>16), byte(i>>8), byte(i)))
 	}
-	if n := r.verified.Len(); n != 1 {
+	if n := r.limits.Load().verified.Len(); n != 1 {
 		t.Fatalf("the proved store holds %d entries after the flood, want only the proved client's", n)
 	}
 	if got := p.ask(tcp(), "", nil); !got.dropped {
