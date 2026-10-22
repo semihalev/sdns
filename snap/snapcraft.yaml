@@ -1,6 +1,12 @@
 name: sdns
+title: SDNS
 adopt-info: sdns
 summary: A high-performance DNS resolver with DNSSEC support
+license: MIT
+contact: https://github.com/semihalev/sdns/issues
+issues: https://github.com/semihalev/sdns/issues
+source-code: https://github.com/semihalev/sdns
+website: https://sdns.dev
 description: |
   SDNS is a high-performance, recursive DNS resolver server with DNSSEC support,
   focused on preserving privacy. It supports DNS-over-TLS, DNS-over-HTTPS,
