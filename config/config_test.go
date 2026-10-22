@@ -920,8 +920,9 @@ func TestLoadBindAddrs(t *testing.T) {
 		{`bind = "127.0.0.1:5353"`, Addrs{"127.0.0.1:5353"}, ""},
 		{`bind = ["127.0.0.1:5353", "[::1]:5353"]`, Addrs{"127.0.0.1:5353", "[::1]:5353"}, ""},
 		{`bind = ["127.0.0.1:5353"]`, Addrs{"127.0.0.1:5353"}, ""},
-		{`bind = ""`, nil, ""},
-		{`bind = []`, nil, ""},
+		// Unset or empty listens on :53, settled at load.
+		{`bind = ""`, Addrs{":53"}, ""},
+		{`bind = []`, Addrs{":53"}, ""},
 		{`bind = 5353`, nil, "not int64"},
 		{`bind = ["127.0.0.1:5353", 5353]`, nil, "not int64"},
 		{`bind = ["127.0.0.1:5353", "127.0.0.1:5353"]`, nil, "listed twice"},

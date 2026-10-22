@@ -1593,10 +1593,11 @@ func (c *Config) normalizeQnameMinimize() {
 	c.QnameMaxMinimizeCount, c.QnameMinimizeOneLabel = &maxCount, oneLabel
 }
 
-// Load loads the given config file.
+// Load loads the given config file: Parse, with the side effects only a
+// starting server wants. A missing file is generated, IPv6 access is probed
+// when the file leaves it off, the state directory is created and a cookie
+// secret is generated when the file has none. Unknown keys only warn here.
 func Load(cfgfile, version string) (*Config, error) {
-	config := new(Config)
-
 	// A missing config is generated whatever it is called and wherever
 	// it points: the -c flag promises exactly that. (An sdns.toml
 	// fallback lived here once, for configs from the earliest releases;
@@ -1628,67 +1629,17 @@ func Load(cfgfile, version string) (*Config, error) {
 
 	zlog.Info("Loading config file...", zlog.String("path", cfgfile))
 
-	metadata, err := toml.DecodeFile(cfgfile, config)
+	config, err := Parse(cfgfile, func() bool { return ipv6Probe() == nil })
 	if err != nil {
-		return nil, fmt.Errorf("could not load config: %s", err)
-	}
-	if !metadata.IsDefined("serve_stale_max_ttl") {
-		config.ServeStaleMaxTTL.Duration = defaultServeStaleMaxTTL
-	}
-
-	// Before the gate, like the DNSSEC default below, because the checks read
-	// the settled value: outboundip6s is only judged when v6 is in use, and
-	// root6servers only count as roots then too.
-	if !config.IPv6Access {
-		if err := ipv6Probe(); err == nil {
-			config.IPv6Access = true
-		}
-	}
-
-	// Before the gate, because omitting the key means validation is on: the
-	// coercion below used to run after it, so a file naming neither dnssec
-	// nor a trust anchor passed the anchor check as if validation were off
-	// and then ran with it on and nothing to anchor to.
-	if config.DNSSEC == "" {
-		config.DNSSEC = "on"
-	}
-
-	// Also before the gate, for the same reason every effective value is:
-	// the mode check judges what will actually run.
-	if config.RPZ.Mode == "" {
-		config.RPZ.Mode = "shadow"
-	}
-
-	config.RecursionFirewall.Normalize()
-
-	// Keys the file carries that no field claims: a typo, or a setting an
-	// older SDNS understood and this one no longer does. Either way the
-	// operator wrote something that will not take effect, so it is recorded
-	// and logged. Startup only warns, refusing to run over a stale key
-	// would turn an upgrade into an outage, while `sdns -t`, whose whole
-	// job is to answer "is this file right", treats it as a failure.
-	for _, key := range metadata.Undecoded() {
-		config.undecodedKeys = append(config.undecodedKeys, key.String())
-		zlog.Warn("Unknown config key, ignored", "key", key.String(), "path", cfgfile)
-	}
-
-	// One gate, so a file with several mistakes is fixed in one pass rather
-	// than one error per run. When the file is failing anyway, the unknown
-	// keys join the report, they still never cause a failure on their own,
-	// but omitting them here would send the operator back for a second run.
-	if err := config.validateLoaded(); err != nil {
-		if len(config.undecodedKeys) > 0 {
-			return nil, fmt.Errorf("%w\n  - unknown keys (a typo, or settings this version no longer has): %s",
-				err, strings.Join(config.undecodedKeys, ", "))
-		}
 		return nil, err
 	}
 
-	// After the gate, not before: normalizing folds a negative minimization
-	// count to zero and a negative one-label count to the default, so running
-	// it first would hand Validate the settled value and hide what the file
-	// actually said.
-	config.normalizeQnameMinimize()
+	// Startup only warns, refusing to run over a stale key would turn an
+	// upgrade into an outage, while `sdns -t`, whose whole job is to answer
+	// "is this file right", treats it as a failure.
+	for _, key := range config.undecodedKeys {
+		zlog.Warn("Unknown config key, ignored", "key", key, "path", cfgfile)
+	}
 
 	if _, err := os.Stat(config.Directory); os.IsNotExist(err) {
 		if err := os.Mkdir(config.Directory, 0750); err != nil {
@@ -1711,6 +1662,102 @@ func Load(cfgfile, version string) (*Config, error) {
 			return nil, err
 		}
 		config.CookieSecret = hex.EncodeToString(secret)
+	}
+
+	return config, nil
+}
+
+// Parse reads and judges the file at path, with no side effect: it never
+// writes a file, creates a directory, probes the network itself or
+// generates a secret, and a missing file is an error. It is the one gate
+// startup, sdns -t and a reload share.
+//
+// ipv6 answers whether this host has IPv6 access. It is asked only when the
+// file leaves ipv6access off, and before the gate, which judges
+// root6servers and outboundip6s by the answer. nil means no.
+//
+// Keys no field claims are recorded in UndecodedKeys, for the caller to
+// warn about or refuse; they fail Parse only alongside another error.
+func Parse(path string, ipv6 func() bool) (*Config, error) {
+	config := new(Config)
+
+	metadata, err := toml.DecodeFile(path, config)
+	if err != nil {
+		return nil, fmt.Errorf("could not load config: %s", err)
+	}
+	if !metadata.IsDefined("serve_stale_max_ttl") {
+		config.ServeStaleMaxTTL.Duration = defaultServeStaleMaxTTL
+	}
+
+	// Before the gate, like the DNSSEC default below, because the checks read
+	// the settled value: outboundip6s is only judged when v6 is in use, and
+	// root6servers only count as roots then too.
+	if !config.IPv6Access && ipv6 != nil && ipv6() {
+		config.IPv6Access = true
+	}
+
+	// Before the gate, because omitting the key means validation is on: the
+	// coercion below used to run after it, so a file naming neither dnssec
+	// nor a trust anchor passed the anchor check as if validation were off
+	// and then ran with it on and nothing to anchor to.
+	if config.DNSSEC == "" {
+		config.DNSSEC = "on"
+	}
+
+	// Also before the gate, for the same reason every effective value is:
+	// the mode check judges what will actually run.
+	if config.RPZ.Mode == "" {
+		config.RPZ.Mode = "shadow"
+	}
+
+	config.RecursionFirewall.Normalize()
+
+	// Keys the file carries that no field claims: a typo, or a setting an
+	// older SDNS understood and this one no longer does. Either way the
+	// operator wrote something that will not take effect, so it is recorded
+	// for the caller.
+	for _, key := range metadata.Undecoded() {
+		config.undecodedKeys = append(config.undecodedKeys, key.String())
+	}
+
+	// One gate, so a file with several mistakes is fixed in one pass rather
+	// than one error per run. When the file is failing anyway, the unknown
+	// keys join the report, they still never cause a failure on their own,
+	// but omitting them here would send the operator back for a second run.
+	if err := config.validateLoaded(); err != nil {
+		if len(config.undecodedKeys) > 0 {
+			return nil, fmt.Errorf("%w\n  - unknown keys (a typo, or settings this version no longer has): %s",
+				err, strings.Join(config.undecodedKeys, ", "))
+		}
+		return nil, err
+	}
+
+	// After the gate, not before: normalizing folds a negative minimization
+	// count to zero and a negative one-label count to the default, so running
+	// it first would hand Validate the settled value and hide what the file
+	// actually said.
+	config.normalizeQnameMinimize()
+
+	// The defaults handlers would otherwise fill in on the shared config at
+	// construction, settled here so the running configuration is what the
+	// file means and a reload compares like with like.
+	if config.LogLevel == "" {
+		config.LogLevel = "info"
+	}
+	if len(config.Bind) == 0 {
+		config.Bind = Addrs{":53"}
+	}
+	if len(config.AccessList) == 0 {
+		config.AccessList = []string{"0.0.0.0/0", "::0/0"}
+	}
+	if config.BlockListDir == "" {
+		config.BlockListDir = filepath.Join(config.Directory, "blacklists")
+	}
+	if config.Maxdepth == 0 {
+		config.Maxdepth = 30
+	}
+	if config.QueryTimeout.Duration == 0 {
+		config.QueryTimeout.Duration = 10 * time.Second
 	}
 
 	// Set TCP keepalive defaults
