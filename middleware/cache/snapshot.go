@@ -232,7 +232,7 @@ func (s *Store) restoreRecord(rec *snapshotRecord, elapsed time.Duration, now ti
 	}
 
 	key := CacheKey{Question: msg.Question[0], CD: rec.cd}.Hash()
-	e := newCacheEntryAt(filtered, ttl, s.cfg.RateLimit, key, now)
+	e := newCacheEntryAt(filtered, ttl, s.cfg.RateLimit, now)
 	if e == nil {
 		return restoreRefused
 	}

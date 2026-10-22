@@ -10,7 +10,6 @@ import (
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/mock"
 	"github.com/semihalev/sdns/middleware"
-	"golang.org/x/time/rate"
 )
 
 // A wire-ladder decline must not spend the per-entry rate-limit token:
@@ -30,7 +29,7 @@ func TestWireDeclineDoesNotChargeEntryLimiter(t *testing.T) {
 		A:   []byte{192, 0, 2, 8},
 	}}
 	entry := NewCacheEntryWithKey(resp, time.Minute, 1, 42)
-	if entry.GetRateLimiter() == nil {
+	if entry.limiter() == nil {
 		t.Fatal("test needs a rate-limited entry")
 	}
 
@@ -40,14 +39,14 @@ func TestWireDeclineDoesNotChargeEntryLimiter(t *testing.T) {
 	// this serve to the Msg path, before the limiter spends anything.
 	ch.ResetWire(mock.NewWriter("udp", "203.0.113.50:4242"), req)
 
-	var spent *rate.Limiter
+	var spent *CacheEntry
 	if c.serveHitFromWire(context.Background(), ch, entry, &spent) {
 		t.Fatal("expected the incapable writer to decline to the Msg path")
 	}
 	if spent != nil {
 		t.Fatal("declined wire serve recorded a spent limiter")
 	}
-	if !entry.GetRateLimiter().Allow() {
+	if !entry.allowAnswer(limitNow()) {
 		t.Fatal("declined wire serve consumed the entry's only token")
 	}
 }
@@ -90,7 +89,7 @@ func TestChaseDeclineDoesNotChargeEntryLimiter(t *testing.T) {
 	if entry.wireServe&wireChaseSafe != 0 {
 		t.Fatal("fixture must be chase-unsafe")
 	}
-	if entry.GetRateLimiter() == nil {
+	if entry.limiter() == nil {
 		t.Fatal("test needs a rate-limited entry")
 	}
 
@@ -100,14 +99,14 @@ func TestChaseDeclineDoesNotChargeEntryLimiter(t *testing.T) {
 	ch.ResetWire(tr, req)
 	ch.AllowDirectPack()
 
-	var spent *rate.Limiter
+	var spent *CacheEntry
 	if c.serveHitFromWire(context.Background(), ch, entry, &spent) {
 		t.Fatal("expected the uncachable chase to decline to the Msg path")
 	}
 	if spent != nil {
 		t.Fatal("declined chase recorded a spent limiter")
 	}
-	if !entry.GetRateLimiter().Allow() {
+	if !entry.allowAnswer(limitNow()) {
 		t.Fatal("declined chase consumed the entry's only token")
 	}
 }
@@ -125,11 +124,9 @@ func TestExpiredWireHitDoesNotChargeEntryLimiter(t *testing.T) {
 	}}
 	entry := NewCacheEntryWithKey(resp, time.Minute, 1, 0x87670001)
 	entry.storedAt = clockOffset(time.Now().Add(-2 * time.Minute))
-	limiter := entry.GetRateLimiter()
-	if limiter == nil {
+	if entry.limiter() == nil {
 		t.Fatal("test needs a rate-limited entry")
 	}
-	awaitToken(t, limiter)
 
 	req, _ := wireTestRequest(t, "expired-wire.zone.test.", dns.TypeA, false)
 	tr := &leaseTransport{Writer: mock.NewWriter("udp", "203.0.113.63:4242")}
@@ -137,14 +134,14 @@ func TestExpiredWireHitDoesNotChargeEntryLimiter(t *testing.T) {
 	ch.ResetWire(tr, req)
 	ch.AllowDirectPack()
 
-	var spent *rate.Limiter
+	var spent *CacheEntry
 	if c.serveHitFromWire(context.Background(), ch, entry, &spent) {
 		t.Fatal("expired wire entry was served as a normal cache hit")
 	}
 	if spent != nil {
 		t.Fatal("expired wire hit recorded a spent limiter")
 	}
-	if !limiter.Allow() {
+	if !entry.allowAnswer(limitNow()) {
 		t.Fatal("expired wire hit consumed the entry's only token")
 	}
 }
@@ -164,11 +161,9 @@ func TestExpiredMsgHitDoesNotChargeEntryLimiter(t *testing.T) {
 	key := CacheKey{Question: req.Question[0]}.Hash()
 	entry := NewCacheEntryWithKey(resp, time.Minute, 1, key)
 	entry.storedAt = clockOffset(time.Now().Add(-2 * time.Minute))
-	limiter := entry.GetRateLimiter()
-	if limiter == nil {
+	if entry.limiter() == nil {
 		t.Fatal("test needs a rate-limited entry")
 	}
-	awaitToken(t, limiter)
 
 	writer := mock.NewWriter("udp", "203.0.113.64:4242")
 	ch := middleware.NewChain(nil)
@@ -179,7 +174,7 @@ func TestExpiredMsgHitDoesNotChargeEntryLimiter(t *testing.T) {
 	if writer.Written() {
 		t.Fatal("expired Msg entry wrote a normal cache response")
 	}
-	if !limiter.Allow() {
+	if !entry.allowAnswer(limitNow()) {
 		t.Fatal("expired Msg hit consumed the entry's only token")
 	}
 }

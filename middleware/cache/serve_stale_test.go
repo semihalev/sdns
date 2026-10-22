@@ -163,11 +163,9 @@ func TestServeStaleRateLimitsCachedFailureFallback(t *testing.T) {
 	entry := seedStaleEntryWithRate(
 		t, c, staleTestAnswer(req, "192.0.2.80"), netip.Prefix{}, time.Second, time.Hour, 1,
 	)
-	limiter := entry.GetRateLimiter()
-	if limiter == nil {
+	if entry.limiter() == nil {
 		t.Fatal("stale entry carries no rate limiter")
 	}
-	awaitToken(t, limiter)
 
 	failure := new(dns.Msg)
 	failure.SetRcode(req, dns.RcodeServerFailure)
@@ -183,10 +181,7 @@ func TestServeStaleRateLimitsCachedFailureFallback(t *testing.T) {
 			first.Written(), dns.RcodeToString[first.Rcode()])
 	}
 	second := runStaleQueryWriter(c, req.Copy(), downstream, context.Background())
-	if second.Written() {
-		t.Fatalf("rate-limited cached-failure fallback wrote %s; want silent drop",
-			dns.RcodeToString[second.Rcode()])
-	}
+	wantTruncated(t, second, "rate-limited cached-failure fallback")
 	if downstreamCalls != 0 {
 		t.Fatalf("cached failure reached downstream %d times, want 0", downstreamCalls)
 	}
@@ -206,11 +201,9 @@ func TestServeStaleRateLimitsFreshSERVFAILFallback(t *testing.T) {
 	entry := seedStaleEntryWithRate(
 		t, c, staleTestAnswer(req, "192.0.2.81"), netip.Prefix{}, time.Second, time.Hour, 1,
 	)
-	limiter := entry.GetRateLimiter()
-	if limiter == nil {
+	if entry.limiter() == nil {
 		t.Fatal("stale entry carries no rate limiter")
 	}
-	awaitToken(t, limiter)
 
 	downstreamCalls := 0
 	downstream := servfailHandler(&downstreamCalls)
@@ -220,10 +213,7 @@ func TestServeStaleRateLimitsFreshSERVFAILFallback(t *testing.T) {
 			first.Written(), dns.RcodeToString[first.Rcode()])
 	}
 	second := runStaleQueryWriter(c, req.Copy(), downstream, context.Background())
-	if second.Written() {
-		t.Fatalf("rate-limited fresh-SERVFAIL fallback wrote %s; want silent drop",
-			dns.RcodeToString[second.Rcode()])
-	}
+	wantTruncated(t, second, "rate-limited fresh-SERVFAIL fallback")
 	if downstreamCalls != 2 {
 		t.Fatalf("fresh resolution calls = %d, want 2", downstreamCalls)
 	}
@@ -237,11 +227,9 @@ func TestServeStaleRateLimitsDeadlineFallback(t *testing.T) {
 	entry := seedStaleEntryWithRate(
 		t, c, staleTestAnswer(req, "192.0.2.82"), netip.Prefix{}, time.Second, time.Hour, 1,
 	)
-	limiter := entry.GetRateLimiter()
-	if limiter == nil {
+	if entry.limiter() == nil {
 		t.Fatal("stale entry carries no rate limiter")
 	}
-	awaitToken(t, limiter)
 
 	downstreamCalls := 0
 	downstream := middleware.HandlerFunc(func(_ context.Context, _ *middleware.Chain) {
@@ -256,10 +244,7 @@ func TestServeStaleRateLimitsDeadlineFallback(t *testing.T) {
 			first.Written(), dns.RcodeToString[first.Rcode()])
 	}
 	second := runStaleQueryWriter(c, req.Copy(), downstream, deadlineCtx)
-	if second.Written() {
-		t.Fatalf("rate-limited deadline fallback wrote %s; want silent drop",
-			dns.RcodeToString[second.Rcode()])
-	}
+	wantTruncated(t, second, "rate-limited deadline fallback")
 	if downstreamCalls != 0 {
 		t.Fatalf("expired requests reached downstream %d times, want 0", downstreamCalls)
 	}
@@ -393,12 +378,10 @@ func TestServeStaleCompletesCNAMEFromStaleTarget(t *testing.T) {
 		t, c, staleTestAnswer(targetReq, "192.0.2.74"), netip.Prefix{}, time.Second, 3*time.Second, 1,
 	)
 	targetEntry.cutKey = 0x87670002
-	targetLimiter := targetEntry.GetRateLimiter()
-	if targetLimiter == nil {
+	if targetEntry.limiter() == nil {
 		t.Fatal("stale alias target carries no rate limiter")
 	}
-	awaitToken(t, targetLimiter)
-	if !targetLimiter.Allow() {
+	if !targetEntry.allowAnswer(limitNow()) {
 		t.Fatal("failed to drain stale alias target limiter")
 	}
 	targetCalls := 0

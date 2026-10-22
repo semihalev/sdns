@@ -6,7 +6,7 @@ order: 3
 description: Every metric sdns exports, what it means, and the queries worth building a dashboard from.
 ---
 
-sdns exports 74 metrics in Prometheus format on the API listener, alongside the
+sdns exports 75 metrics in Prometheus format on the API listener, alongside the
 Go runtime and process collectors.
 
 ```toml
@@ -63,6 +63,7 @@ is what `domainmetricslimit` exists for.
 | `dns_cache_size` | gauge | `type` | Entries currently held |
 | `dns_cache_evictions_total` | counter | | Answers evicted from the answer cache to stay within `cachesize`; expired answers removed are `dns_cache_pruned_total` |
 | `dns_cache_prefetches_total` | counter | | Background refreshes of popular entries |
+| `dns_cache_answers_limited_total` | counter | `action` | Cache hits over their answer's `ratelimit` from unproved sources: `truncated` (UDP, answered with an empty truncated reply) or `dropped` |
 | `dns_cache_stale_answers_total` | counter | | Expired positive answers served after a resolution failure |
 | `dns_cache_stale_immediate_answers_total` | counter | | Expired positive answers served at once and refreshed in the background (`serve_stale_mode = "immediate"`) |
 | `dns_cache_pruned_total` | counter | | Expired answers the background pruner removed because nothing could serve them again |

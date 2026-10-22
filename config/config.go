@@ -1077,10 +1077,10 @@ maxdepth = 30
 # Rate Limiting
 # ============================
 
-# Cache hit rate limit (queries per second). Cached answers share hashed
-# token buckets of this rate, every ECS-scoped answer one bucket; a hit
-# over its bucket's limit is dropped without a reply. Misses are not
-# limited by it.
+# Cache hit rate limit (queries per second), for each cached answer on its
+# own. A UDP hit over it gets an empty truncated reply, so a real client
+# retries over TCP; TCP, QUIC, a valid cookie and loopback are never
+# limited. Misses are not limited by it.
 # 0 = disabled
 ratelimit = 0
 

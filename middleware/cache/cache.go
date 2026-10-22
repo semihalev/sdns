@@ -2,6 +2,7 @@ package cache
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"net/netip"
 	"slices"
@@ -19,10 +20,10 @@ import (
 	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/internal/waitgroup"
+	"github.com/semihalev/sdns/internal/wire"
 	"github.com/semihalev/sdns/middleware"
 	"github.com/semihalev/sdns/middleware/resolver/dnssec"
 	"github.com/semihalev/zlog/v2"
-	"golang.org/x/time/rate"
 )
 
 var debugns = debugenv.DebugNS()
@@ -448,7 +449,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	var spent *rate.Limiter
+	var spent *CacheEntry
 	if ch.Request.Undecoded() && !ch.Replay() && c.serveWire(ctx, ch, &spent) {
 		return
 	}
@@ -799,6 +800,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	rw.clientScope = clientScope
 	rw.meta = meta
 	rw.internal = internal
+	rw.proved = ch.SourceProved()
 	ch.Writer = rw
 	defer func() {
 		ch.Writer = w
@@ -811,6 +813,7 @@ func (c *Cache) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		rw.denialMissWitness = nil
 		rw.meta = nil
 		rw.internal = false
+		rw.proved = false
 		c.writerPool.Put(rw)
 	}()
 
@@ -841,7 +844,7 @@ func (c *Cache) stopCanceledRequest(
 	if errors.Is(err, context.DeadlineExceeded) {
 		req := ch.Request.Msg()
 		if handled, _ := c.writeStaleResponse(
-			ctx, ch.Writer, req, req.CheckingDisabled, clientScope, ch.Writer.Internal(),
+			ctx, ch.Writer, req, req.CheckingDisabled, clientScope, ch.Writer.Internal(), ch.SourceProved(),
 		); handled {
 			ch.Cancel()
 			return
@@ -1179,7 +1182,7 @@ func (c *Cache) handleFailureHit(
 	hit FailureHit,
 ) {
 	if handled, _ := c.writeStaleResponse(
-		ctx, ch.Writer, ch.Request.Msg(), ch.Request.CD(), clientScope, ch.Writer.Internal(),
+		ctx, ch.Writer, ch.Request.Msg(), ch.Request.CD(), clientScope, ch.Writer.Internal(), ch.SourceProved(),
 	); handled {
 		ch.Cancel()
 		return
@@ -1200,7 +1203,7 @@ func (c *Cache) handleFailureHit(
 // answered through the writer lease without a decoded request. A false
 // return is the composite-miss transition point, the caller materializes
 // and runs the ordinary body.
-func (c *Cache) serveWire(ctx context.Context, ch *middleware.Chain, spent **rate.Limiter) bool {
+func (c *Cache) serveWire(ctx context.Context, ch *middleware.Chain, spent **CacheEntry) bool {
 	req := ch.Request
 	if req.HasECS() {
 		return false
@@ -1277,34 +1280,101 @@ func entryMatchesWire(entry *CacheEntry, req *middleware.Request) bool {
 	return entryMatchesWireQuestion(entry, req.WireName(), req.Qtype(), req.Qclass(), req.CD())
 }
 
+// answerAllowed charges one answer from entry to its own rate limit. A
+// source already proved is not charged: the limit exists against
+// reflection, which a proved source cannot be doing, so the TCP retry a
+// truncated reply asks for is always answered.
+func answerAllowed(entry *CacheEntry, proved bool) bool {
+	return entry.rateLimit <= 0 || proved || entry.allowAnswer(limitNow())
+}
+
+// refuseAnswer answers a query its answer's limit refused and stops the
+// chain. A datagram gets an empty truncated reply, so a real client
+// retries over TCP while a spoofed source gets nothing worth reflecting;
+// any other transport, an unproved one such as DoH3 early data, gets
+// nothing.
+func refuseAnswer(ch *middleware.Chain) {
+	if ch.Writer.Proto() == "udp" {
+		answersTruncated.Inc()
+		if !truncateOnWire(ch) {
+			ch.CancelTruncated()
+		}
+		return
+	}
+	answersDropped.Inc()
+	ch.Cancel()
+}
+
+// truncateOnWire writes the truncated reply straight into the transport's
+// lease, its header and question taken from the request's own bytes, so
+// the reply a flood draws allocates nothing; the edns layer appends the
+// client's OPT as it does to any byte-path answer. False, with nothing
+// written, when the request or the writer cannot take the byte path.
+func truncateOnWire(ch *middleware.Chain) bool {
+	req := ch.Request
+	if req.Raw() == nil {
+		return false
+	}
+	ww, ok := ch.Writer.(middleware.WireWriter)
+	if !ok {
+		return false
+	}
+	capability, ready := ww.WireReady()
+	if !ready {
+		return false
+	}
+	leaser, ok := ww.(middleware.WireBodyLeaser)
+	if !ok {
+		return false
+	}
+	name := req.WireName()
+	size := wire.HeaderLen + len(name) + 4
+	dst := leaser.BeginWire(size, capability.Reserve)
+	if dst == nil {
+		return false
+	}
+	body := dst[:size]
+	clear(body[:wire.HeaderLen])
+	binary.BigEndian.PutUint16(body[4:6], 1)
+	copy(body[wire.HeaderLen:], name)
+	binary.BigEndian.PutUint16(body[size-4:], req.Qtype())
+	binary.BigEndian.PutUint16(body[size-2:], req.Qclass())
+	wire.ApplyReply(body, req.ID(), req.Opcode(), req.RD(), req.CD())
+	binary.BigEndian.PutUint16(body[2:4], binary.BigEndian.Uint16(body[2:4])|wire.FlagTC|wire.FlagRA)
+	if err := leaser.CommitWire(body, middleware.WireInfo{}); errors.Is(err, middleware.ErrWireFallback) {
+		return false
+	}
+	ch.Cancel()
+	return true
+}
+
 // chargeEntryLimiter pays the per-entry rate-limit token immediately
 // before a wire serve commits to answering. A false return means the
-// token was refused: the query is cancelled and counted as a hit, the
-// Msg path counts a rate-limited hit as a hit, and the byte path must
-// answer the same question the same way.
+// token was refused: the hit is counted, the Msg path counts a
+// rate-limited hit as a hit, and the caller answers it with refuseAnswer
+// once any lease of its own is released, the byte path answering the
+// same question the same way.
 //
-// The permit is remembered in spent, keyed by the limiter it was spent
-// on: the declines that remain past this point, a lease the writer
-// cannot grant, a body that fails to build, a transport fallback, fall
-// to the Msg body of the same call, which checks the same limiter again
-// and must not charge the same question twice. (A refresh replacing the
-// entry under the same key shares the limiter, so the memo survives it.)
+// The permit is remembered in spent, the entry it was paid on: the
+// declines that remain past this point, a lease the writer cannot grant,
+// a body that fails to build, a transport fallback, fall to the Msg body
+// of the same call, which checks the same question again and must not
+// charge it twice. The memo matches by question, not by entry, so a
+// refresh replacing the entry under the same key does not defeat it.
 // Across the inline/replay boundary no local can carry the permit, which
 // is why both serve branches, the flat copy and the chase composition,
 // check every decline they can before this charge; what stays past it
 // are commit-time backstops, and an inline query dropped there pays a
 // second token on the replay, accepted as the rare case.
-func (c *Cache) chargeEntryLimiter(ch *middleware.Chain, entry *CacheEntry, spent **rate.Limiter) bool {
-	limiter := entry.GetRateLimiter()
-	if limiter == nil || *spent == limiter {
+func (c *Cache) chargeEntryLimiter(ch *middleware.Chain, entry *CacheEntry, spent **CacheEntry) bool {
+	if entry.rateLimit <= 0 || entry.sameQuestion(*spent) {
 		return true
 	}
-	if !limiter.Allow() {
+	if !answerAllowed(entry, ch.SourceProved()) {
 		c.metrics.Hit()
-		ch.Cancel()
 		return false
 	}
-	*spent = limiter
+	*spent = entry
 	return true
 }
 
@@ -1312,7 +1382,7 @@ func (c *Cache) chargeEntryLimiter(ch *middleware.Chain, entry *CacheEntry, spen
 // writer's lease. Anything the byte path cannot express declines to the
 // ordinary body rather than half-serving.
 func (c *Cache) serveHitFromWire(
-	ctx context.Context, ch *middleware.Chain, entry *CacheEntry, spent **rate.Limiter,
+	ctx context.Context, ch *middleware.Chain, entry *CacheEntry, spent **CacheEntry,
 ) bool {
 	w := ch.Writer
 	if w.Internal() || isStaleAliasChase(ctx) {
@@ -1382,6 +1452,7 @@ func (c *Cache) serveHitFromWire(
 		return false
 	}
 	if !c.chargeEntryLimiter(ch, entry, spent) {
+		refuseAnswer(ch)
 		return true
 	}
 	dst := leaser.BeginWire(len(stored), capability.Reserve+entry.wireEDEReserve())
@@ -1430,7 +1501,7 @@ func (c *Cache) handleCacheHit(
 	entry *CacheEntry,
 	key uint64,
 	scope netip.Prefix,
-	spent *rate.Limiter,
+	spent *CacheEntry,
 ) bool {
 	w := ch.Writer
 	req := ch.Request.Msg()
@@ -1476,18 +1547,17 @@ func (c *Cache) handleCacheHit(
 	// ctx.Value walk, kept on the hot path for throughput;
 	// middleware.IsInternal(ctx) remains available for code paths
 	// without a writer in scope.
-	// spent is the limiter the byte path already paid a token to on this
-	// same query, before declining to here. Compared by limiter and not
-	// by entry: a refresh replaces the entry but keeps the limiter, and
-	// one question must cost one token however many entry objects it
-	// passed through.
-	limiter := entry.GetRateLimiter()
+	// spent is the entry the byte path already paid a token on for this
+	// same query, before declining to here. Compared by question and not
+	// by entry: a refresh replaces the entry, and one question must cost
+	// one token however many entry objects it passed through.
 	// Asked once and kept: the chase below needs the answer too, and a
 	// writer may make more of the question than a field read (a test double
 	// treats each call as a rendezvous).
 	internal := w.Internal()
-	if !internal && limiter != nil && limiter != spent && !limiter.Allow() {
-		ch.Cancel()
+	if !internal && entry.rateLimit > 0 && !entry.sameQuestion(spent) &&
+		!answerAllowed(entry, ch.SourceProved()) {
+		refuseAnswer(ch)
 		return true
 	}
 
@@ -1787,7 +1857,7 @@ func (c *Cache) Set(key uint64, msg *dns.Msg) {
 		return
 	}
 
-	entry := newCacheEntryAt(filtered, ttl, c.config.RateLimit, key, now)
+	entry := newCacheEntryAt(filtered, ttl, c.config.RateLimit, now)
 	if entry == nil {
 		return
 	}
@@ -1898,6 +1968,10 @@ type ResponseWriter struct {
 	// cannot change within a request, and one call per request is a
 	// contract test doubles rely on.
 	internal bool
+	// proved is whether the client's source is proved, read once in
+	// ServeDNS: a stale answer written here is exempt from its answer
+	// limit when it is.
+	proved bool
 }
 
 // (*ResponseWriter).WriteMsg writeMsg implements the ResponseWriter interface.
@@ -2088,7 +2162,7 @@ func (w *ResponseWriter) writeResolutionFailure(ctx context.Context, res *dns.Ms
 			req = res
 		}
 		if handled, err := w.cache.writeStaleResponse(
-			ctx, w.ResponseWriter, req, w.requestCD, w.clientScope, w.internal,
+			ctx, w.ResponseWriter, req, w.requestCD, w.clientScope, w.internal, w.proved,
 		); handled {
 			return err
 		}

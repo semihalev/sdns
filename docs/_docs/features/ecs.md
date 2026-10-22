@@ -69,9 +69,8 @@ faster than a general TTL suggests, and a misconfigured upstream should not be
 able to pin an audience-specific answer for hours. Omitted, or `0`, there is no
 cap; the generated configuration file sets `5m`.
 
-Scoped entries are rate limited together: with `ratelimit` set, every
-ECS-scoped answer draws from one shared bucket rather than from the hashed
-buckets ordinary answers spread across, see
+With `ratelimit` set, each scoped entry is limited on its own, like any
+other cached answer, see
 [Rate limits]({{ '/docs/configuration/access-control/' | relative_url }}#rate-limits).
 
 `min_scope_v4` and `min_scope_v6` widen a narrower SCOPE before it becomes part

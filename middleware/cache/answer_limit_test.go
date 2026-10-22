@@ -1,0 +1,265 @@
+package cache
+
+import (
+	"context"
+	"os"
+	"testing"
+	"time"
+
+	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/lease"
+	"github.com/semihalev/sdns/internal/mock"
+	"github.com/semihalev/sdns/middleware"
+	"github.com/semihalev/sdns/middleware/edns"
+)
+
+// storeAnswer caches rr as the answer to its own name and type.
+func storeAnswer(t *testing.T, c *Cache, rr string) {
+	t.Helper()
+	r := makeRR(rr)
+	q := new(dns.Msg)
+	q.SetQuestion(r.Header().Name, r.Header().Rrtype)
+	resp := new(dns.Msg)
+	resp.SetReply(q)
+	resp.Answer = []dns.RR{r}
+	c.store.SetFromResponse(resp, false, time.Time{})
+}
+
+// wantTruncated fails unless w was answered with an empty truncated reply,
+// what an answer over its limit gets over UDP.
+func wantTruncated(t *testing.T, w *mock.Writer, what string) {
+	t.Helper()
+	if !w.Written() {
+		t.Fatalf("%s wrote nothing; want a truncated reply", what)
+	}
+	m := w.Msg()
+	if !m.Truncated || len(m.Answer)+len(m.Ns) != 0 || m.Rcode != dns.RcodeSuccess {
+		t.Fatalf("%s = TC %v, %d answers, rcode %s; want an empty truncated reply",
+			what, m.Truncated, len(m.Answer), dns.RcodeToString[m.Rcode])
+	}
+}
+
+// askWire sends one wire-born query for name and qtype from addr over
+// proto through the cache alone, and returns the writer it answered on.
+func askWire(t *testing.T, c *Cache, proto, addr, name string, qtype uint16) *mock.Writer {
+	t.Helper()
+	req, _ := wireTestRequest(t, name, qtype, false)
+	w := mock.NewWriter(proto, addr)
+	ch := middleware.NewChain([]middleware.Handler{c})
+	ch.ResetWire(w, req)
+	ch.Next(context.Background())
+	return w
+}
+
+// A flood on one answer must not silence another. The limit used to be
+// held in a fixed pool of shared buckets that answers hashed into, so an
+// answer drained by a flood took every answer sharing its bucket down
+// with it. These two are such a pair: a flood of root DNSKEY queries left
+// this A record unanswerable on every transport.
+func TestAFloodedAnswerLimitsNoOther(t *testing.T) {
+	cfg := makeTestConfig()
+	cfg.RateLimit = 100
+	defer os.RemoveAll(cfg.Directory)
+	c := New(cfg)
+	defer c.Stop()
+
+	storeAnswer(t, c, cfg.RootKeys[1])
+	storeAnswer(t, c, "api.cloudflare.com. 300 IN A 192.0.2.53")
+
+	for range 300 {
+		askWire(t, c, "udp", "203.0.113.9:53000", ".", dns.TypeDNSKEY)
+	}
+
+	w := askWire(t, c, "udp", "198.51.100.7:53000", "api.cloudflare.com.", dns.TypeA)
+	if !w.Written() {
+		t.Fatal("api.cloudflare.com A went unanswered while the root DNSKEY " +
+			"answer was flooded: the two share a limit")
+	}
+	if m := w.Msg(); m.Truncated || answerA(m) != "192.0.2.53" {
+		t.Fatalf("api.cloudflare.com A answered %v, want the cached address", m)
+	}
+}
+
+// A datagram over its answer's rate is told to retry over TCP: an empty
+// truncated reply carrying the question, no larger than the query, so it
+// reflects nothing worth spoofing for, while a real client still gets
+// its answer.
+func TestAnswerOverItsRateIsTruncatedOverUDP(t *testing.T) {
+	cfg := makeTestConfig()
+	cfg.RateLimit = 2
+	defer os.RemoveAll(cfg.Directory)
+	c := New(cfg)
+	defer c.Stop()
+
+	storeAnswer(t, c, "limit.example. 300 IN A 192.0.2.1")
+
+	var truncated int
+	for i := range 10 {
+		w := askWire(t, c, "udp", "203.0.113.9:53000", "limit.example.", dns.TypeA)
+		if !w.Written() {
+			t.Fatalf("query %d over the limit was dropped without a reply", i)
+		}
+		m := w.Msg()
+		if !m.Truncated {
+			continue
+		}
+		truncated++
+		if len(m.Answer)+len(m.Ns) != 0 || m.Rcode != dns.RcodeSuccess {
+			t.Fatalf("truncated reply carries records or rcode %s: %v", dns.RcodeToString[m.Rcode], m)
+		}
+		if len(m.Question) != 1 || m.Question[0].Name != "limit.example." || m.Question[0].Qtype != dns.TypeA {
+			t.Fatalf("truncated reply does not echo the question: %v", m.Question)
+		}
+	}
+	if truncated < 7 {
+		t.Fatalf("%d of 10 queries truncated at a limit of 2, want at least 7", truncated)
+	}
+}
+
+// A client that sends cookies does not need TCP to get past the limit: the
+// truncated reply carries the server cookie like any other answer, and the
+// retry that returns it has proved its address and is answered over UDP.
+func TestTruncatedReplyHandsOutTheCookieThatProvesTheRetry(t *testing.T) {
+	cfg := makeTestConfig()
+	cfg.RateLimit = 1
+	cfg.CookieSecret = "6c6f6f6b61686172646c6f6f6b6168617264"
+	defer os.RemoveAll(cfg.Directory)
+	c := New(cfg)
+	defer c.Stop()
+	storeAnswer(t, c, "cookie-retry.example. 300 IN A 192.0.2.7")
+	e := edns.New(cfg)
+
+	ask := func(cookieHex string) *dns.Msg {
+		t.Helper()
+		q := new(dns.Msg)
+		q.SetQuestion("cookie-retry.example.", dns.TypeA)
+		q.SetEdns0(1232, false)
+		q.IsEdns0().Option = []dns.EDNS0{&dns.EDNS0_COOKIE{Code: dns.EDNS0COOKIE, Cookie: cookieHex}}
+		raw, err := q.Pack()
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := new(middleware.Request)
+		if !req.ParseWire(raw, time.Now(), nil) {
+			t.Fatal("eligible query refused")
+		}
+		w := &captureSink{Writer: mock.NewWriter("udp", "203.0.113.9:53000")}
+		ch := middleware.NewChain([]middleware.Handler{e, c})
+		ch.ResetWire(w, req)
+		ch.AllowDirectPack()
+		ch.Next(context.Background())
+		if w.last == nil {
+			t.Fatal("query went unanswered")
+		}
+		m := new(dns.Msg)
+		if err := m.Unpack(w.last); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	serverCookie := func(m *dns.Msg) string {
+		if opt := m.IsEdns0(); opt != nil {
+			for _, o := range opt.Option {
+				if c, ok := o.(*dns.EDNS0_COOKIE); ok && len(c.Cookie) > 16 {
+					return c.Cookie
+				}
+			}
+		}
+		return ""
+	}
+
+	const client = "0102030405060708"
+	if m := ask(client); m.Truncated || answerA(m) != "192.0.2.7" {
+		t.Fatalf("first query = %v, want the answer", m)
+	}
+	tc := ask(client)
+	if !tc.Truncated {
+		t.Fatalf("second query = %v, want truncated at a limit of 1", tc)
+	}
+	full := serverCookie(tc)
+	if full == "" {
+		t.Fatalf("truncated reply carries no server cookie: %v", tc)
+	}
+	if m := ask(full); m.Truncated || answerA(m) != "192.0.2.7" {
+		t.Fatalf("retry with the server cookie = %v, want the answer over UDP", m)
+	}
+}
+
+// A chain composed on the byte path is charged to its alias after the
+// chain's body has been leased, so its refusal must release that lease
+// before the truncated reply takes one of its own: the reply is the
+// truncated one, through the edns layer like any other.
+func TestComposedChainOverItsLimitIsTruncated(t *testing.T) {
+	cfg := makeTestConfig()
+	cfg.RateLimit = 1
+	cfg.CookieSecret = "6c6f6f6b61686172646c6f6f6b6168617264"
+	defer os.RemoveAll(cfg.Directory)
+	c := New(cfg)
+	defer c.Stop()
+	e := edns.New(cfg)
+
+	const alias, host = "www.chain-limit.test.", "edge.chain-limit.test."
+	c.store.SetFromResponseWithCut(seamResponse(alias, &dns.CNAME{
+		Hdr:    dns.RR_Header{Name: alias, Rrtype: dns.TypeCNAME, Class: dns.ClassINET, Ttl: 300},
+		Target: host,
+	}), false, lease.Lease{})
+	c.store.SetFromResponseWithCut(seamResponse(host, seamA(host)), false, lease.Lease{})
+
+	ask := func() *dns.Msg {
+		t.Helper()
+		req, _ := wireTestRequest(t, alias, dns.TypeA, false)
+		w := &captureSink{Writer: mock.NewWriter("udp", "203.0.113.9:53000")}
+		ch := middleware.NewChain([]middleware.Handler{e, c, middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+			ch.Cancel()
+		})})
+		ch.ResetWire(w, req)
+		ch.AllowDirectPack()
+		ch.Next(context.Background())
+		if w.last == nil {
+			t.Fatal("query went unanswered")
+		}
+		m := new(dns.Msg)
+		if err := m.Unpack(w.last); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+
+	before := wireChaseServed.Value()
+	if m := ask(); m.Truncated || len(m.Answer) != 2 || wireChaseServed.Value() == before {
+		t.Fatalf("first query = %v, want the chain composed on the byte path", m)
+	}
+	m := ask()
+	if !m.Truncated || len(m.Answer) != 0 || len(m.Question) != 1 || m.Question[0].Name != alias {
+		t.Fatalf("second query = %v, want an empty truncated reply to the alias", m)
+	}
+	if m.IsEdns0() == nil {
+		t.Fatal("truncated reply carries no OPT; the edns layer never saw it")
+	}
+}
+
+// The limit exists against reflection, and a source that has proved its
+// address cannot be reflecting: a TCP client completed a handshake, a
+// loopback one cannot be spoofed from outside. Neither is limited, so the
+// TCP retry a truncated reply asks for is always answered.
+func TestProvedSourcesAreNotAnswerLimited(t *testing.T) {
+	cfg := makeTestConfig()
+	cfg.RateLimit = 2
+	defer os.RemoveAll(cfg.Directory)
+	c := New(cfg)
+	defer c.Stop()
+
+	storeAnswer(t, c, "proved.example. 300 IN A 192.0.2.2")
+
+	for _, src := range []struct{ proto, addr string }{
+		{"tcp", "203.0.113.9:53000"},
+		{"udp", "127.0.0.1:53000"},
+	} {
+		for i := range 10 {
+			w := askWire(t, c, src.proto, src.addr, "proved.example.", dns.TypeA)
+			if !w.Written() || w.Msg().Truncated || answerA(w.Msg()) != "192.0.2.2" {
+				t.Fatalf("%s query %d from %s was limited: written=%v", src.proto, i, src.addr, w.Written())
+			}
+		}
+	}
+}

@@ -151,10 +151,16 @@ func TestRateLimitNarrowsWithoutWrapping(t *testing.T) {
 	}
 	over, under := int64(4294967297), int64(-4294967295)
 	e := NewCacheEntry(snapAnswer("a.test.", 300, "192.0.2.1"), time.Minute, int(over))
-	if l := e.GetRateLimiter(); l == nil || l.Limit() < math.MaxInt32 {
-		t.Fatalf("a rate limit past int32 became %v", l)
+	if e.rateLimit != math.MaxInt32 {
+		t.Fatalf("a rate limit past int32 became %d", e.rateLimit)
 	}
-	if NewCacheEntry(snapAnswer("a.test.", 300, "192.0.2.1"), time.Minute, int(under)).GetRateLimiter() != nil {
+	now := limitNow()
+	for i := range 1000 {
+		if !e.allowAnswer(now) {
+			t.Fatalf("a rate limit past int32 refused answer %d in one instant", i)
+		}
+	}
+	if NewCacheEntry(snapAnswer("a.test.", 300, "192.0.2.1"), time.Minute, int(under)).limiter() != nil {
 		t.Fatal("a negative rate limit became a limit")
 	}
 }

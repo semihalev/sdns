@@ -9,7 +9,6 @@ import (
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/lease"
 	"github.com/semihalev/sdns/middleware"
-	"golang.org/x/time/rate"
 )
 
 const staleAnswerTTL = 30 * time.Second
@@ -108,9 +107,11 @@ func (c *Cache) staleResponse(
 // question or leave the outer response with only a partial alias chain.
 //
 // handled is true both when the response was written and when the limiter
-// refused it. The latter is deliberately terminal and silent, matching the
-// ordinary cache-hit path instead of falling back to the SERVFAIL that made
-// the retained answer eligible.
+// refused it. The latter is deliberately terminal, answered as the
+// ordinary cache-hit path answers it, a truncated reply to a datagram and
+// nothing otherwise, instead of falling back to the SERVFAIL that made the
+// retained answer eligible. proved is whether the client's source is
+// proved, which exempts it from the limit.
 func (c *Cache) writeStaleResponse(
 	ctx context.Context,
 	w middleware.ResponseWriter,
@@ -118,6 +119,7 @@ func (c *Cache) writeStaleResponse(
 	requestCD bool,
 	clientScope netip.Prefix,
 	internal bool,
+	proved bool,
 ) (handled bool, err error) {
 	// The charge lands after the candidate walk, not before it as on the
 	// ordinary hit path, because the entry to charge is what the walk
@@ -134,10 +136,13 @@ func (c *Cache) writeStaleResponse(
 		return false, nil
 	}
 
-	if !internal && !isStaleAliasChase(ctx) {
-		if limiter := entry.GetRateLimiter(); limiter != nil && !limiter.Allow() {
+	if !internal && !isStaleAliasChase(ctx) && !answerAllowed(entry, proved) {
+		if w.Proto() != "udp" {
+			answersDropped.Inc()
 			return true, nil
 		}
+		answersTruncated.Inc()
+		return true, w.WriteMsg(middleware.TruncatedReply(req))
 	}
 
 	boundRequestToStaleLifetime(ctx, entry, time.Now())
@@ -159,7 +164,7 @@ func (c *Cache) serveStaleImmediately(
 	ch *middleware.Chain,
 	req *dns.Msg,
 	cacheKey uint64,
-	spent **rate.Limiter,
+	spent **CacheEntry,
 ) bool {
 	if !c.config.ServeStaleImmediate || c.prefetchQueue == nil {
 		return false
@@ -191,6 +196,7 @@ func (c *Cache) serveStaleImmediately(
 	}
 
 	if !c.chargeEntryLimiter(ch, entry, spent) {
+		refuseAnswer(ch)
 		return true
 	}
 	boundRequestToStaleLifetime(ctx, entry, now)

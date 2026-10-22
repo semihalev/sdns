@@ -16,6 +16,19 @@ import (
 // nothing; there only a valid server cookie does.
 func (ch *Chain) SourceVerified() bool { return ch.verified }
 
+// SourceProved reports whether the client's address is known to be its
+// own: proved by the transport, by a valid server cookie an earlier layer
+// classified, or a loopback address, which no outside host can claim. A
+// query whose source is proved cannot be reflecting traffic at someone
+// else. A cookie not yet classified counts as unproved.
+func (ch *Chain) SourceProved() bool {
+	if ch.verified || ch.cookieSet && ch.cookie.Verdict == cookie.Valid {
+		return true
+	}
+	ip := ch.Writer.RemoteIP()
+	return ip != nil && ip.IsLoopback()
+}
+
 // Cookie returns the request's COOKIE classification under s, made on the
 // first call and kept for the rest of the request, its replay included,
 // so every layer that asks sees the same verdict and a cookie is verified

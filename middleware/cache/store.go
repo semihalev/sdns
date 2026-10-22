@@ -673,14 +673,11 @@ func (s *Store) setFromResponseWithKey(key uint64, resp *dns.Msg, scope netip.Pr
 		if scoped {
 			e = newScopedCacheEntryAt(msg, ttl, s.cfg.RateLimit, scope, now)
 		} else {
-			e = newCacheEntryAt(msg, ttl, s.cfg.RateLimit, key, now)
+			e = newCacheEntryAt(msg, ttl, s.cfg.RateLimit, now)
 		}
 		if e == nil {
 			// Unpackable response: never cacheable, callers skip the write.
 			return nil
-		}
-		if scoped {
-			e.rateLimKey = key
 		}
 		// The entry's identity is the key's, not the message's: callers
 		// name the CD partition they keyed with, and a hit is verified
@@ -763,6 +760,7 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 			return nil
 		}
 		entry.cd = expected.cd
+		entry.limit.inherit(&expected.limit)
 		entry.setRare(expected.scopeKey(), entry.edeOption())
 		entry.setLease(cut)
 		s.stampSidecar(entry, filtered)
@@ -778,13 +776,13 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 		if ttl <= 0 {
 			return false
 		}
-		entry := inherit(newCacheEntryAt(filtered, ttl, s.cfg.RateLimit, key, now))
+		entry := inherit(newCacheEntryAt(filtered, ttl, s.cfg.RateLimit, now))
 		if entry == nil {
 			return false
 		}
 		return s.positive.cache.CompareAndSwapUntil(key, expected, entry, s.positive.servableUntil(entry, now))
 	case dnsutil.TypeServerFailure:
-		entry := inherit(newCacheEntryAt(filtered, s.negative.ttl.Calculate(msgTTL), s.cfg.RateLimit, key, now))
+		entry := inherit(newCacheEntryAt(filtered, s.negative.ttl.Calculate(msgTTL), s.cfg.RateLimit, now))
 		if entry == nil {
 			return false
 		}

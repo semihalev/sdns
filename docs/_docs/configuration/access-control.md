@@ -28,7 +28,7 @@ Watch `dns_accesslist_denied_total` to see whether anything is being dropped.
 ## Rate limits
 
 ```toml
-ratelimit       = 0     # cache hits per second, per answer bucket; 0 disables
+ratelimit       = 0     # cache hits per second, per cached answer; 0 disables
 clientratelimit = 0     # queries per minute, per client IP; 0 disables
 ```
 
@@ -36,15 +36,28 @@ Both are off by default. `clientratelimit` is the more useful of the two on a
 resolver serving known clients: it contains one misbehaving host without
 capping the server.
 
-`ratelimit` is not a server-wide ceiling. It limits how often cached answers
-are served. Each cached answer is mapped, by a hash of its cache key, to one of
-997 shared token buckets, each refilling at `ratelimit` tokens a second with a
-burst of the same size; answers that hash to the same bucket share it. Answers
-cached under an ECS scope are the exception: they all share a single bucket,
-so with `[ecs]` on, every scoped hit draws from the same `ratelimit` budget. A
-cache hit over its bucket's rate is dropped without a reply. Cache misses, and
-everything answered before the cache, are not limited by it, and these drops
-are not counted in `dns_ratelimit_exceeded_total`.
+`ratelimit` is not a server-wide ceiling. It limits how often each cached
+answer is served to sources that have not proved their address, and exists
+against reflection: a spoofed query for a large answer, the root's DNSKEY set
+for one, aims that answer at the address the query claims to come from. Every
+cached answer, ECS-scoped ones included, keeps its own token bucket, refilling
+at `ratelimit` tokens a second with a burst of the same size, so a flood of
+one question never slows the answer to another.
+
+A UDP query over its answer's rate gets an empty truncated reply: the
+question, the reply OPT every answer carries, and no records. It is no larger
+than the query, so it reflects nothing worth sending, and a real client
+retries over TCP and gets its answer there; one that sends DNS cookies can
+instead retry over UDP with the server cookie the truncated reply carried. An
+unproved query on another transport, DNS over HTTP/3 early data, is dropped
+over the rate. A query whose source is proved, by a TCP or QUIC handshake, a
+valid server cookie, or a loopback address, is never limited, so the retry a
+truncated reply asks for is always answered. Cache misses, and everything
+answered before the cache, are not limited by it.
+
+Each limited query increments `dns_cache_answers_limited_total`, labelled
+`action="truncated"` or `action="dropped"`; these are not counted in
+`dns_ratelimit_exceeded_total`.
 
 `clientratelimit` keeps two buckets per client address. Queries whose source is
 proved, by a TCP or QUIC handshake or by a valid DNS server cookie (RFC 7873),
