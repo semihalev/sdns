@@ -448,7 +448,9 @@ func (w *ResponseWriter) WriteMsg(m *dns.Msg) error {
 
 		// Add server options if not already present
 		w.setCookie()
-		w.setNSID()
+		if !truncatedEmpty(m) {
+			w.setNSID()
+		}
 
 		// Only add our options if they're not already in the response OPT
 		switch {
@@ -642,6 +644,16 @@ func (w *ResponseWriter) serverCookie() ([]byte, bool) {
 		}
 	}
 	return w.reply[:], w.replyState == 2
+}
+
+// truncatedEmpty reports whether m is truncated and carries no answer or
+// authority records: a reply that only sends the client to TCP. It carries
+// no NSID, which the client gets on its TCP retry. A reply to a datagram
+// that may be spoofed must not grow past the query, and a configured NSID
+// can be long enough to make even an empty one an amplifier. The cookie
+// stays, since it is how a client proves itself over UDP.
+func truncatedEmpty(m *dns.Msg) bool {
+	return m.Truncated && len(m.Answer) == 0 && len(m.Ns) == 0
 }
 
 func (w *ResponseWriter) setNSID() {

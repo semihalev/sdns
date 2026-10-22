@@ -84,15 +84,17 @@ func (pc *PositiveCache) Set(key uint64, entry *CacheEntry) {
 // setAt is Set for an admission that already read the clock: now is the
 // instant entry was stored at, and its end is placed from it.
 func (pc *PositiveCache) setAt(key uint64, entry *CacheEntry, now time.Time) {
+	until := pc.servableUntil(entry, now)
 	// A new answer for a question already cached takes over its answer
 	// limit, so a flooded answer is not handed a full bucket each time it
 	// is refreshed.
 	if entry.rateLimit > 0 {
 		if old, ok := pc.cache.Get(key); ok && entry.sameQuestion(old) {
-			entry.limit.inherit(&old.limit)
+			carryLimit(entry, old, func() { pc.cache.AddUntil(key, entry, until) })
+			return
 		}
 	}
-	pc.cache.AddUntil(key, entry, pc.servableUntil(entry, now))
+	pc.cache.AddUntil(key, entry, until)
 }
 
 // (*PositiveCache).Remove remove deletes an entry from the positive cache.

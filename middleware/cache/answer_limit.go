@@ -38,7 +38,26 @@ func (l *answerLimit) allow(rate int32, now int64) bool {
 	}
 }
 
-// inherit takes over from's state, so an entry replacing another under the
-// same key, a refresh, starts from the bucket its predecessor left rather
-// than a full one.
-func (l *answerLimit) inherit(from *answerLimit) { l.tat.Store(from.tat.Load()) }
+// fold takes from's state when it is the emptier bucket: every token
+// either has granted stays spent.
+func (l *answerLimit) fold(from *answerLimit) {
+	want := from.tat.Load()
+	for {
+		tat := l.tat.Load()
+		if tat >= want || l.tat.CompareAndSwap(tat, want) {
+			return
+		}
+	}
+}
+
+// carryLimit hands entry the answer limit of old, the entry it replaces
+// under the same question, a refresh, across publish, the store write
+// that makes entry the one served. Folded in before, entry is published
+// with the bucket old left rather than a full one; folded again after, a
+// token old granted to a query still holding it while publish ran stays
+// spent too.
+func carryLimit(entry, old *CacheEntry, publish func()) {
+	entry.limit.fold(&old.limit)
+	publish()
+	entry.limit.fold(&old.limit)
+}

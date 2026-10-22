@@ -45,8 +45,8 @@ at `ratelimit` tokens a second with a burst of the same size, so a flood of
 one question never slows the answer to another.
 
 A UDP query over its answer's rate gets an empty truncated reply: the
-question, the reply OPT every answer carries, and no records. It is no larger
-than the query, so it reflects nothing worth sending, and a real client
+question, the reply OPT with the server cookie but without NSID, and no
+records. It is no larger than the query, so it reflects nothing worth sending, and a real client
 retries over TCP and gets its answer there; one that sends DNS cookies can
 instead retry over UDP with the server cookie the truncated reply carried. An
 unproved query on another transport, DNS over HTTP/3 early data, is dropped

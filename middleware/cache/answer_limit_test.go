@@ -2,7 +2,9 @@ package cache
 
 import (
 	"context"
+	"net/netip"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -235,6 +237,147 @@ func TestComposedChainOverItsLimitIsTruncated(t *testing.T) {
 	}
 	if m.IsEdns0() == nil {
 		t.Fatal("truncated reply carries no OPT; the edns layer never saw it")
+	}
+}
+
+// A refresh publishes its entry while the entry it replaces is still being
+// served, and a token the old entry grants in that window was spent on the
+// same question: the new entry must not grant it again.
+func TestRefreshKeepsTokensSpentWhileItPublishes(t *testing.T) {
+	q := new(dns.Msg)
+	q.SetQuestion("publish.example.", dns.TypeA)
+	resp := new(dns.Msg)
+	resp.SetReply(q)
+	resp.Answer = []dns.RR{makeRR("publish.example. 300 IN A 192.0.2.1")}
+	old := NewCacheEntry(resp, time.Minute, 1)
+	fresh := NewCacheEntry(resp, time.Minute, 1)
+
+	now := limitNow()
+	carryLimit(fresh, old, func() {
+		if !old.allowAnswer(now) {
+			t.Fatal("the old entry had no token to spend")
+		}
+	})
+	if fresh.allowAnswer(now) {
+		t.Fatal("the refreshed entry granted again the token its predecessor " +
+			"spent while the refresh was publishing")
+	}
+}
+
+// The cache key folds ASCII case, so a refresh that comes back spelled
+// differently is the same question: it keeps the bucket, and a query whose
+// byte path paid on the old spelling is not charged again on the new.
+func TestRefreshUnderAnotherCaseIsTheSameQuestion(t *testing.T) {
+	cfg := makeTestConfig()
+	cfg.RateLimit = 1
+	defer os.RemoveAll(cfg.Directory)
+	c := New(cfg)
+	defer c.Stop()
+
+	store := func(name string) *CacheEntry {
+		q := new(dns.Msg)
+		q.SetQuestion(name, dns.TypeA)
+		resp := new(dns.Msg)
+		resp.SetReply(q)
+		resp.Answer = []dns.RR{makeRR(name + " 300 IN A 192.0.2.1")}
+		c.store.SetFromResponse(resp, false, time.Time{})
+		entry, ok := c.store.LookupByKey(CacheKey{Question: q.Question[0]}.Hash())
+		if !ok {
+			t.Fatal("entry not stored")
+		}
+		return entry
+	}
+
+	first := store("case.example.")
+	if !first.allowAnswer(limitNow()) {
+		t.Fatal("the first entry had no token to spend")
+	}
+	second := store("CASE.EXAMPLE.")
+	if second == first {
+		t.Fatal("the store reused the entry; this test needs a replacement")
+	}
+	if !second.sameQuestion(first) {
+		t.Fatal("a refresh spelled in another case is not the same question")
+	}
+	if second.limit.tat.Load() != first.limit.tat.Load() {
+		t.Fatal("a refresh spelled in another case started from a full bucket")
+	}
+
+	q := new(dns.Msg)
+	q.SetQuestion("case.example.", dns.TypeA)
+	w := mock.NewWriter("udp", "203.0.113.9:53000")
+	ch := middleware.NewChain([]middleware.Handler{c})
+	ch.Reset(w, q)
+	c.handleCacheHit(context.Background(), ch, second, CacheKey{Question: q.Question[0]}.Hash(), netip.Prefix{}, first)
+	if !w.Written() || w.Msg().Truncated {
+		t.Fatal("a question that had already paid was charged again because the " +
+			"entry answering it is spelled in another case")
+	}
+}
+
+// A truncated reply must not grow past the query that drew it: optional
+// options a client can ask for, NSID among them, are left off it, so a
+// long configured NSID gives a flood nothing to amplify.
+func TestTruncatedReplyIsNoLargerThanTheQuery(t *testing.T) {
+	cfg := makeTestConfig()
+	cfg.RateLimit = 1
+	cfg.NSID = strings.Repeat("n", 1000)
+	defer os.RemoveAll(cfg.Directory)
+	c := New(cfg)
+	defer c.Stop()
+	storeAnswer(t, c, "nsid.example. 300 IN A 192.0.2.1")
+	e := edns.New(cfg)
+
+	q := new(dns.Msg)
+	q.SetQuestion("nsid.example.", dns.TypeA)
+	q.SetEdns0(1232, false)
+	q.IsEdns0().Option = []dns.EDNS0{&dns.EDNS0_NSID{Code: dns.EDNS0NSID}}
+	raw, err := q.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []struct {
+		name string
+		wire bool
+	}{{"byte path", true}, {"message path", false}} {
+		t.Run(path.name, func(t *testing.T) {
+			var last []byte
+			ask := func() *dns.Msg {
+				req := new(middleware.Request)
+				if !req.ParseWire(raw, time.Now(), nil) {
+					t.Fatal("eligible query refused")
+				}
+				sink := &captureSink{Writer: mock.NewWriter("udp", "203.0.113.9:53000")}
+				ch := middleware.NewChain([]middleware.Handler{e, c})
+				ch.ResetWire(sink, req)
+				if path.wire {
+					ch.AllowDirectPack()
+				}
+				ch.Next(context.Background())
+				last = sink.last
+				if path.wire {
+					m := new(dns.Msg)
+					if err := m.Unpack(last); err != nil {
+						t.Fatal(err)
+					}
+					return m
+				}
+				m := sink.Msg()
+				if packed, err := m.Pack(); err == nil {
+					last = packed
+				}
+				return m
+			}
+			ask()
+			m := ask()
+			if !m.Truncated {
+				t.Fatalf("second query = %v, want truncated at a limit of 1", m)
+			}
+			if len(last) > len(raw) {
+				t.Fatalf("truncated reply is %d bytes for a %d byte query: %v", len(last), len(raw), m)
+			}
+		})
 	}
 }
 

@@ -655,9 +655,16 @@ func (e *CacheEntry) allowAnswer(now int64) bool {
 }
 
 // sameQuestion reports whether e and o answer the same question in the
-// same CD partition: an entry and the one a refresh replaced it with.
+// same CD partition: an entry and the one a refresh replaced it with. The
+// name is compared under the cache key's ASCII case folding, so a refresh
+// spelled differently is still the same question.
 func (e *CacheEntry) sameQuestion(o *CacheEntry) bool {
-	return e == o || o != nil && e.cd == o.cd && e.question == o.question
+	if e == o {
+		return true
+	}
+	return o != nil && e.cd == o.cd &&
+		e.question.Qtype == o.question.Qtype && e.question.Qclass == o.question.Qclass &&
+		equalNameASCIIFold(e.question.Name, o.question.Name)
 }
 
 // CacheKey represents a structured cache key.
