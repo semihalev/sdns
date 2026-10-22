@@ -60,25 +60,12 @@ func setup() error {
 		return fmt.Errorf("config loading failed: %w", err)
 	}
 
-	if cfg.LogLevel == "" {
-		cfg.LogLevel = "info"
-	}
-
 	// Create structured logger with zero allocations
 	logger := zlog.NewStructured()
 
 	// Set log level based on config
-	var lvl zlog.Level
-	switch cfg.LogLevel {
-	case "debug":
-		lvl = zlog.LevelDebug
-	case "info":
-		lvl = zlog.LevelInfo
-	case "warn":
-		lvl = zlog.LevelWarn
-	case "error":
-		lvl = zlog.LevelError
-	default:
+	lvl, ok := cfg.LogVerbosity()
+	if !ok {
 		return fmt.Errorf("log verbosity level unknown: %s", cfg.LogLevel)
 	}
 
@@ -125,7 +112,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	api := api.New(cfg)
 	api.Run(ctx)
 
-	// Set up SIGHUP handler for certificate reload
+	// SIGHUP reloads the configuration and the TLS certificate.
 	sigHup := make(chan os.Signal, 1)
 	signal.Notify(sigHup, syscall.SIGHUP)
 	defer signal.Stop(sigHup)
@@ -134,7 +121,13 @@ func runServer(cmd *cobra.Command, args []string) error {
 		for {
 			select {
 			case <-sigHup:
-				zlog.Info("Received SIGHUP, reloading TLS certificate")
+				zlog.Info("Received SIGHUP, reloading configuration and TLS certificate")
+				logReload(middleware.Reload(cfgPath))
+				// A server with no certificate has none to reload, and
+				// saying so on every reload would only be noise.
+				if cfg.TLSCertificate == "" {
+					continue
+				}
 				if err := srv.ReloadCertificate(); err != nil {
 					zlog.Error("Failed to reload certificate", "error", err.Error())
 				}
@@ -188,6 +181,24 @@ const (
 	persistWalk = 3 * time.Second
 	persistExit = 5 * time.Second
 )
+
+// logReload records one configuration reload in a single line.
+func logReload(r middleware.ReloadResult) {
+	applied, restart := strings.Join(r.Applied, ", "), strings.Join(r.Restart, ", ")
+	if applied == "" {
+		applied = "none"
+	}
+	switch r.Outcome {
+	case middleware.ReloadRejected:
+		zlog.Error("Configuration reload refused, the running configuration is unchanged", "error", r.Err.Error())
+	case middleware.ReloadRestartNeeded:
+		zlog.Warn("Configuration reloaded, some changes need a restart", "applied", applied, "restart", restart)
+	case middleware.ReloadApplied:
+		zlog.Info("Configuration reloaded", "applied", applied)
+	default:
+		zlog.Info("Configuration reloaded, nothing changed")
+	}
+}
 
 // shutdownDrainBudget is how long runServer waits for listeners to finish
 // draining in-flight queries. A positive querytimeout is that budget. Zero,

@@ -30,9 +30,13 @@ const name = "rpz"
 const localDataTTL = 300
 
 // RPZ is the middleware. The compiled policy store swaps atomically on
-// reload; everything else is set at construction and read-only after.
+// reload, and so does the mode; everything else is set at construction
+// and read-only after.
 type RPZ struct {
-	enforce bool
+	// enforce is read once per query, and the query's wrap carries that
+	// reading, so a mode flip mid-query never judges a match in one mode
+	// and counts it in the other.
+	enforce atomic.Bool
 	// enabled gates the sidecar seam: a disabled middleware returns nil
 	// provider halves so the cache stays entirely unwired.
 	enabled bool
@@ -59,7 +63,8 @@ type RPZ struct {
 // the reload watcher, and says so loudly, rather than a refused startup:
 // the config gate (`sdns -t`) is where a broken feed is a hard failure.
 func New(cfg *config.Config) *RPZ {
-	r := &RPZ{enforce: cfg.RPZ.Mode == "enforce"}
+	r := &RPZ{}
+	r.enforce.Store(cfg.RPZ.Mode == "enforce")
 	if !cfg.RPZ.Enabled || len(cfg.RPZ.Zones) == 0 {
 		r.publishStore(&rpz.Store{})
 		return r
@@ -117,6 +122,16 @@ func loadZone(zc config.RPZZone) *rpz.Zone {
 // Name implements the Handler interface.
 func (r *RPZ) Name() string { return name }
 
+// ReloadKeys implements middleware.Reloader. Only the mode applies live:
+// the zone list, and turning RPZ on or off, need a restart.
+func (r *RPZ) ReloadKeys() []string { return []string{"rpz.mode"} }
+
+// PrepareReload implements middleware.Reloader.
+func (r *RPZ) PrepareReload(cfg *config.Config) (func(), error) {
+	enforce := cfg.RPZ.Mode == "enforce"
+	return func() { r.enforce.Store(enforce) }, nil
+}
+
 // ClientOnly keeps policy off internal sub-queries: rewriting the
 // resolver's own probes would corrupt resolution itself.
 func (r *RPZ) ClientOnly() bool { return true }
@@ -143,6 +158,13 @@ func (r *RPZ) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if w.Internal() || !req.RD() || req.Qclass() != dns.ClassINET {
 		ch.Next(ctx)
 		return
+	}
+
+	// A replay finishes in the mode its inline pass read.
+	enforce, pinned := ch.PinnedEnforce()
+	if !pinned {
+		enforce = r.enforce.Load()
+		ch.PinEnforce(enforce)
 	}
 
 	// The query key, in canonical-labels form, built on the stack. The
@@ -196,7 +218,7 @@ func (r *RPZ) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			// Held: an earlier zone's response triggers may displace
 			// this match. Everything decodes so the merge sees the
 			// message.
-			wrap, prev := r.installWrap(ctx, ch, winner, observed, wrapHold)
+			wrap, prev := r.installWrap(ctx, ch, winner, observed, wrapHold, enforce)
 			defer r.restoreWrap(ch, prev, wrap)
 			ch.Next(ctx)
 			return
@@ -205,7 +227,7 @@ func (r *RPZ) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			// match. The wrap's own gate judges byte serves with this
 			// query's context, the disabled query-time matches ride
 			// along and are counted winner-bounded on either path.
-			wrap, prev := r.installWrap(ctx, ch, rpz.ZoneMatch{}, observed, wrapPoliced)
+			wrap, prev := r.installWrap(ctx, ch, rpz.ZoneMatch{}, observed, wrapPoliced, enforce)
 			defer r.restoreWrap(ch, prev, wrap)
 			ch.Next(ctx)
 			return
@@ -215,7 +237,7 @@ func (r *RPZ) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 			// query continues, shadow, PASSTHRU, TCP-Only over TCP,
 			// the response side is silenced for it: zones past the
 			// winner count in neither mode.
-			wrap, prev := r.installWrap(ctx, ch, rpz.ZoneMatch{}, nil, wrapBypass)
+			wrap, prev := r.installWrap(ctx, ch, rpz.ZoneMatch{}, nil, wrapBypass, enforce)
 			defer r.restoreWrap(ch, prev, wrap)
 		}
 	}
@@ -245,7 +267,7 @@ func (r *RPZ) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	if !r.enforce {
+	if !enforce {
 		if firstPass {
 			countMatch(winner, outcomeObserved)
 			if debugLogEnabled() {
@@ -292,7 +314,7 @@ func (r *RPZ) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 // wrapper that only delegates (§5.11). After the restore nothing can
 // reach the object, writes happen within the continuation or on a
 // replay pass that installs its own.
-func (r *RPZ) installWrap(ctx context.Context, ch *middleware.Chain, held rpz.ZoneMatch, heldObserved []rpz.ZoneMatch, mode wrapMode) (*responseWrap, middleware.ResponseWriter) {
+func (r *RPZ) installWrap(ctx context.Context, ch *middleware.Chain, held rpz.ZoneMatch, heldObserved []rpz.ZoneMatch, mode wrapMode, enforce bool) (*responseWrap, middleware.ResponseWriter) {
 	w := ch.Writer
 	wrap := wrapPool.Get().(*responseWrap)
 	*wrap = responseWrap{
@@ -300,6 +322,7 @@ func (r *RPZ) installWrap(ctx context.Context, ch *middleware.Chain, held rpz.Zo
 		r:              r,
 		ctx:            ctx,
 		mode:           mode,
+		enforce:        enforce,
 		held:           held,
 		heldObserved:   heldObserved,
 	}

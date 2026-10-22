@@ -182,7 +182,7 @@ func TestRateLimitBypassConditions(t *testing.T) {
 
 	// Test disabled rate limiting (rate = 0)
 	t.Run("DisabledRateLimit", func(t *testing.T) {
-		rl.rate = 0 // Disable rate limiting
+		rl.limits.Load().rate = 0 // Disable rate limiting
 
 		for i := 0; i < 100; i++ {
 			mw := mock.NewWriter("udp", fmt.Sprintf("10.1.1.%d:53", i))
@@ -202,7 +202,7 @@ func TestRateLimitBypassConditions(t *testing.T) {
 			}
 		}
 
-		rl.rate = 1 // Re-enable for other tests
+		rl.limits.Load().rate = 1 // Re-enable for other tests
 	})
 }
 
@@ -266,16 +266,16 @@ func TestRateLimitStoreCleanup(t *testing.T) {
 		rl.ServeDNS(context.Background(), ch)
 	}
 
-	initialCount := rl.store.Len()
+	initialCount := rl.limits.Load().store.Len()
 	if !reflect.DeepEqual(100, initialCount) {
 		t.Errorf("%s: initialCount = %v, want %v", "Should have 100 limiters", initialCount, 100)
 	}
 
 	// Wait a bit and trigger cleanup
 	time.Sleep(100 * time.Millisecond)
-	rl.store.Cleanup(50 * time.Millisecond)
+	rl.limits.Load().store.Cleanup(50 * time.Millisecond)
 
-	finalCount := rl.store.Len()
+	finalCount := rl.limits.Load().store.Len()
 	if !reflect.DeepEqual(0, finalCount) {
 		t.Errorf("%s: finalCount = %v, want %v", "All limiters should be cleaned up", finalCount, 0)
 	}
@@ -316,9 +316,9 @@ func TestRateLimitPerformanceUnderAttack(t *testing.T) {
 	// runner walks past a five-second budget while the limiter is fine.
 	// Throughput belongs to BenchmarkRateLimitRandomIPAttack, which
 	// measures it without a threshold nobody can hold.
-	if rl.store.Len() > cacheSize {
-		t.Errorf("%s: rl.store.Len() = %v, want <= %v", "Cache should not exceed size limit", rl.store.Len(), cacheSize)
+	if rl.limits.Load().store.Len() > cacheSize {
+		t.Errorf("%s: rl.limits.Load().store.Len() = %v, want <= %v", "Cache should not exceed size limit", rl.limits.Load().store.Len(), cacheSize)
 	}
 
-	t.Logf("Processed 100k attack requests in %v, cache size: %d", elapsed, rl.store.Len())
+	t.Logf("Processed 100k attack requests in %v, cache size: %d", elapsed, rl.limits.Load().store.Len())
 }

@@ -3,6 +3,7 @@ package ratelimit
 import (
 	"context"
 	"net"
+	"sync/atomic"
 	"time"
 
 	"github.com/cespare/xxhash/v2"
@@ -38,33 +39,55 @@ type limiter struct {
 type RateLimit struct {
 	secret cookie.Secret
 
-	// store holds the unproved buckets, verified the proved ones.
+	// limits is swapped whole by a reload of the rate.
+	limits atomic.Pointer[limits]
+}
+
+// limits is one rate and the buckets charged at it: store holds the
+// unproved buckets, verified the proved ones.
+type limits struct {
 	store    *LimiterStore
 	verified *LimiterStore
 	rate     int
 }
 
+func newLimits(rate int) *limits {
+	l := &limits{
+		store:    NewLimiterStore(cacheSize, rate),
+		verified: NewLimiterStore(cacheSize, rate),
+		rate:     rate,
+	}
+	l.store.challenges = true
+	return l
+}
+
 // New return accesslist.
 func New(cfg *config.Config) *RateLimit {
-	r := &RateLimit{
-		secret:   cookie.NewSecret(cfg.CookieSecret),
-		store:    NewLimiterStore(cacheSize, cfg.ClientRateLimit),
-		verified: NewLimiterStore(cacheSize, cfg.ClientRateLimit),
-		rate:     cfg.ClientRateLimit,
-	}
-	r.store.challenges = true
+	r := &RateLimit{secret: cookie.NewSecret(cfg.CookieSecret)}
+	r.limits.Store(newLimits(cfg.ClientRateLimit))
 
 	// Periodic cleanup of old limiters (every 5 minutes)
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			r.store.Cleanup(10 * time.Minute)
-			r.verified.Cleanup(10 * time.Minute)
+			l := r.limits.Load()
+			l.store.Cleanup(10 * time.Minute)
+			l.verified.Cleanup(10 * time.Minute)
 		}
 	}()
 
 	return r
+}
+
+// ReloadKeys implements middleware.Reloader.
+func (r *RateLimit) ReloadKeys() []string { return []string{"clientratelimit"} }
+
+// PrepareReload implements middleware.Reloader. A new rate gets new
+// buckets, so every client starts the new rate with a full quota.
+func (r *RateLimit) PrepareReload(cfg *config.Config) (func(), error) {
+	l := newLimits(cfg.ClientRateLimit)
+	return func() { r.limits.Store(l) }, nil
 }
 
 // (*RateLimit).Name name return middleware name.
@@ -96,7 +119,8 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	if r.rate == 0 {
+	lim := r.limits.Load()
+	if lim.rate == 0 {
 		ch.Next(ctx)
 		return
 	}
@@ -111,7 +135,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	st := ch.Cookie(r.secret)
 	if ch.SourceVerified() || st.Verdict == cookie.Valid {
-		if r.verified.Get(ipKey(w.RemoteIP())).rl.Allow() {
+		if lim.verified.Get(ipKey(w.RemoteIP())).rl.Allow() {
 			ch.Next(ctx)
 			return
 		}
@@ -120,7 +144,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 		return
 	}
 
-	l := r.getLimiter(w.RemoteIP())
+	l := lim.store.Get(ipKey(w.RemoteIP()))
 	if l.rl.Allow() {
 		ch.Next(ctx)
 		return
@@ -143,7 +167,7 @@ func (r *RateLimit) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 // getLimiter returns the unproved bucket of remoteip.
 func (r *RateLimit) getLimiter(remoteip net.IP) *limiter {
-	return r.store.Get(ipKey(remoteip))
+	return r.limits.Load().store.Get(ipKey(remoteip))
 }
 
 // ipKey hashes the address in one form: transports hand an IPv4 address

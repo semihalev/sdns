@@ -185,6 +185,12 @@ func Setup(cfg *config.Config) {
 	if !setupDone.CompareAndSwap(false, true) {
 		panic("middleware: Setup already called")
 	}
+	// What a reload compares against, taken before the handlers see cfg.
+	started := *cfg
+	reloads.Lock()
+	reloads.started, reloads.applied = &started, &started
+	reloads.Unlock()
+
 	DefaultRegistry.loadPlugins(cfg)
 	p := DefaultRegistry.Build(cfg)
 	// Auto-wire BEFORE publishing the pipeline. The resolver's
@@ -402,4 +408,7 @@ func Reset() {
 	globalPipeline.Store(nil)
 	setupDone.Store(false)
 	DefaultRegistry = NewRegistry()
+	reloads.Lock()
+	reloads.started, reloads.applied = nil, nil
+	reloads.Unlock()
 }

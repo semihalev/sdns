@@ -82,6 +82,7 @@ func (b *BlockList) loadInitial() {
 	for _, entry := range b.cfg.Whitelist {
 		b.w[dns.CanonicalName(entry)] = true
 	}
+	b.configured = b.cfg.Blocklist
 	b.mu.Unlock()
 
 	for _, entry := range b.cfg.Blocklist {

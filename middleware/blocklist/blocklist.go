@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -96,6 +97,10 @@ type BlockList struct {
 	wild map[string]bool // wildcard domains suffix -> true (e.g., "example.com." from "*.example.com."); subdomains only
 	w    map[string]bool // whitelist
 
+	// configured is the blocklist key as last applied, to tell a reload
+	// which entries the file dropped. Guarded by mu.
+	configured []string
+
 	cfg *config.Config
 }
 
@@ -141,6 +146,42 @@ func New(cfg *config.Config) *BlockList {
 
 // (*BlockList).Name name return middleware name.
 func (b *BlockList) Name() string { return name }
+
+// ReloadKeys implements middleware.Reloader.
+func (b *BlockList) ReloadKeys() []string { return []string{"blocklist", "whitelist"} }
+
+// PrepareReload implements middleware.Reloader. On commit the whitelist is
+// replaced, the configuration is its only source, and then the configured
+// blocks are added, in the order startup applies them, so a name both
+// carry is exempt. Nothing is persisted. A block the file dropped is not
+// removed: an API write saves the whole set, configured blocks included,
+// so it may be saved there too; it is logged, to be removed through the
+// API.
+func (b *BlockList) PrepareReload(cfg *config.Config) (func(), error) {
+	w := make(map[string]bool, len(cfg.Whitelist))
+	for _, entry := range cfg.Whitelist {
+		w[dns.CanonicalName(entry)] = true
+	}
+	blocks := slices.Clone(cfg.Blocklist)
+
+	return func() {
+		b.mu.Lock()
+		dropped := slices.DeleteFunc(slices.Clone(b.configured), func(entry string) bool {
+			return slices.Contains(blocks, entry)
+		})
+		b.w = w
+		for _, entry := range blocks {
+			b.addLocked(dns.CanonicalName(entry))
+		}
+		b.configured = blocks
+		b.mu.Unlock()
+
+		if len(dropped) > 0 {
+			zlog.Warn("Blocklist entries removed from the configuration are not unblocked by a reload, remove them through the API",
+				"entries", strings.Join(dropped, ", "))
+		}
+	}, nil
+}
 
 // (*BlockList).ServeDNS serveDNS implements the Handle interface.
 func (b *BlockList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
@@ -451,7 +492,15 @@ func (b *BlockList) setLocked(key string) bool {
 	if matchHierarchy(key, b.w) {
 		return false
 	}
+	return b.addLocked(key)
+}
 
+// addLocked adds a canonical key whatever the whitelist says, for the
+// configured and listed blocks: Exists matches the whitelist first, so an
+// exempt block stays harmless, and it is in place the moment a reload
+// takes the exemption away, as a restart would put it. Caller must hold
+// b.mu.
+func (b *BlockList) addLocked(key string) bool {
 	set := b.m
 	if strings.HasPrefix(key, "*.") {
 		set, key = b.wild, key[2:]
@@ -464,11 +513,12 @@ func (b *BlockList) setLocked(key string) bool {
 }
 
 // set is the no-persist variant used by loadInitial and the remote
-// refresh path; it does not write to disk.
+// refresh path; it does not write to disk, and it keeps blocks the
+// whitelist exempts (see addLocked).
 func (b *BlockList) set(key string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.setLocked(key)
+	return b.addLocked(dns.CanonicalName(key))
 }
 
 // (*BlockList).Exists exists returns whether or not a key exists in the cache.

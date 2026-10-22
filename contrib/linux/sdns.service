@@ -15,6 +15,7 @@ Environment="SDNS_DEBUGNS=false"
 Environment="SDNS_PPROF=false"
 WorkingDirectory=/var/lib/sdns
 ExecStart=/usr/bin/sdns --config=/etc/sdns.conf
+ExecReload=/bin/kill -HUP $MAINPID
 PermissionsStartOnly=true
 StandardOutput=syslog
 StandardError=journal

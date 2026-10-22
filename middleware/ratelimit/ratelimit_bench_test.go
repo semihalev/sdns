@@ -41,7 +41,7 @@ func BenchmarkRateLimitNormalTraffic(b *testing.B) {
 		}
 	})
 
-	b.ReportMetric(float64(rl.store.Len()), "limiters")
+	b.ReportMetric(float64(rl.limits.Load().store.Len()), "limiters")
 }
 
 // BenchmarkRateLimitRandomIPAttack tests performance under random IP attack
@@ -68,7 +68,7 @@ func BenchmarkRateLimitRandomIPAttack(b *testing.B) {
 		}
 	})
 
-	b.ReportMetric(float64(rl.store.Len()), "limiters")
+	b.ReportMetric(float64(rl.limits.Load().store.Len()), "limiters")
 }
 
 // BenchmarkRateLimitMixedTraffic tests with 90% normal + 10% attack traffic
@@ -107,7 +107,7 @@ func BenchmarkRateLimitMixedTraffic(b *testing.B) {
 		}
 	})
 
-	b.ReportMetric(float64(rl.store.Len()), "limiters")
+	b.ReportMetric(float64(rl.limits.Load().store.Len()), "limiters")
 }
 
 // TestRateLimitEvictionPerformance tests eviction doesn't cause CPU spikes
@@ -135,11 +135,11 @@ func TestRateLimitEvictionPerformance(t *testing.T) {
 	// remain. A one-second budget for that loop is a statement about the
 	// runner, and a shared one misses it while the eviction works exactly
 	// as intended.
-	if rl.store.Len() > cacheSize {
-		t.Errorf("Cache size exceeded: %d > %d", rl.store.Len(), cacheSize)
+	if rl.limits.Load().store.Len() > cacheSize {
+		t.Errorf("Cache size exceeded: %d > %d", rl.limits.Load().store.Len(), cacheSize)
 	}
 
-	t.Logf("Processed %d IPs in %v, cache size: %d", cacheSize*2, elapsed, rl.store.Len())
+	t.Logf("Processed %d IPs in %v, cache size: %d", cacheSize*2, elapsed, rl.limits.Load().store.Len())
 }
 
 // TestRateLimitActualRateEnforcement tests that rate limiting actually works
@@ -222,14 +222,14 @@ func TestRateLimitCleanup(t *testing.T) {
 		_ = rl.getLimiter(ip)
 	}
 
-	initialSize := rl.store.Len()
+	initialSize := rl.limits.Load().store.Len()
 
 	// Manually trigger cleanup of entries older than 1 nanosecond (all of them)
 	time.Sleep(10 * time.Millisecond)
-	rl.store.Cleanup(1 * time.Nanosecond)
+	rl.limits.Load().store.Cleanup(1 * time.Nanosecond)
 
-	if rl.store.Len() != 0 {
-		t.Errorf("Cleanup failed: %d limiters remaining", rl.store.Len())
+	if rl.limits.Load().store.Len() != 0 {
+		t.Errorf("Cleanup failed: %d limiters remaining", rl.limits.Load().store.Len())
 	}
 
 	t.Logf("Cleaned up %d limiters", initialSize)
