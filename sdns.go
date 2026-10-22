@@ -127,6 +127,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 			case <-sigHup:
 				zlog.Info("Received SIGHUP, reloading configuration and TLS certificate")
 				logReload(middleware.Reload(cfgPath))
+				// A server with no certificate has none to reload, and
+				// saying so on every reload would only be noise.
+				if cfg.TLSCertificate == "" {
+					continue
+				}
 				if err := srv.ReloadCertificate(); err != nil {
 					zlog.Error("Failed to reload certificate", "error", err.Error())
 				}

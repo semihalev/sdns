@@ -49,6 +49,35 @@ Startup only warns about it. The asymmetry is deliberate: you want the strict
 answer when you are checking a change, and you do not want a stale key left in
 the file to turn an upgrade into an outage.
 
+## Reloading without a restart
+
+```bash
+systemctl reload sdns       # the packaged unit sends SIGHUP
+kill -HUP "$(pidof sdns)"   # anywhere else
+```
+
+On `SIGHUP` sdns reads the file again and passes it through the same gate as
+`sdns -t`, unknown keys included. A file that fails changes nothing: the error
+is logged and the running configuration stays. The TLS certificate is reloaded
+on the same signal.
+
+These keys take effect without a restart:
+
+| Key | On reload |
+|---|---|
+| `loglevel` | The new level applies at once |
+| `accesslist` | The new list replaces the old one |
+| `clientratelimit` | Every client starts the new rate with a full quota |
+| `whitelist` | The new list replaces the old one |
+| `blocklist` | Added entries are blocked. An entry removed from the file stays blocked, since the API may have saved it too; remove it through the API |
+| `[[views]]` | The new views replace the old ones |
+| `rpz.mode` | `shadow` and `enforce` switch at once |
+
+Any other changed key needs a restart. It is listed in the reload's log line
+on every reload until the server restarts or the file goes back. Either all
+the live keys of a reload apply or none do: when one of them is refused, nothing
+changes. `dns_config_reloads_total` counts reloads by outcome.
+
 ## Upgrading
 
 The file carries no version. One generated before 1.9.1 starts with a

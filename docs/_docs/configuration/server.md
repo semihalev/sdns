@@ -55,7 +55,8 @@ Both are PEM files, and both are required before DoT, DoH or DoQ will start.
 `sdns -t` opens them, so a path typo or a key the process cannot read is caught
 before a restart rather than after it.
 
-The certificate is reloaded without a restart: on `SIGHUP`, when the
+The certificate is reloaded without a restart: on `SIGHUP`, which also
+[reloads the configuration]({{ '/docs/configuration/overview/' | relative_url }}#reloading-without-a-restart), when the
 certificate file's modification time moves forward, and on a recheck every five
 minutes in case a change was missed. Only the certificate file is timed, so a
 new key under an unchanged certificate needs a `SIGHUP`; write the key first and
