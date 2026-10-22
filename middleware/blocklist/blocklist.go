@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -96,6 +97,10 @@ type BlockList struct {
 	wild map[string]bool // wildcard domains suffix -> true (e.g., "example.com." from "*.example.com."); subdomains only
 	w    map[string]bool // whitelist
 
+	// configured is the blocklist key as last applied, to tell a reload
+	// which entries the file dropped. Guarded by mu.
+	configured []string
+
 	cfg *config.Config
 }
 
@@ -141,6 +146,42 @@ func New(cfg *config.Config) *BlockList {
 
 // (*BlockList).Name name return middleware name.
 func (b *BlockList) Name() string { return name }
+
+// ReloadKeys implements middleware.Reloader.
+func (b *BlockList) ReloadKeys() []string { return []string{"blocklist", "whitelist"} }
+
+// PrepareReload implements middleware.Reloader. On commit the whitelist is
+// replaced, the configuration is its only source, and then the configured
+// blocks are added, in the order startup applies them, so a name both
+// carry is exempt. Nothing is persisted. A block the file dropped is not
+// removed: an API write saves the whole set, configured blocks included,
+// so it may be saved there too; it is logged, to be removed through the
+// API.
+func (b *BlockList) PrepareReload(cfg *config.Config) (func(), error) {
+	w := make(map[string]bool, len(cfg.Whitelist))
+	for _, entry := range cfg.Whitelist {
+		w[dns.CanonicalName(entry)] = true
+	}
+	blocks := slices.Clone(cfg.Blocklist)
+
+	return func() {
+		b.mu.Lock()
+		dropped := slices.DeleteFunc(slices.Clone(b.configured), func(entry string) bool {
+			return slices.Contains(blocks, entry)
+		})
+		b.w = w
+		for _, entry := range blocks {
+			b.setLocked(entry)
+		}
+		b.configured = blocks
+		b.mu.Unlock()
+
+		if len(dropped) > 0 {
+			zlog.Warn("Blocklist entries removed from the configuration stay blocked, remove them through the API",
+				"entries", strings.Join(dropped, ", "))
+		}
+	}, nil
+}
 
 // (*BlockList).ServeDNS serveDNS implements the Handle interface.
 func (b *BlockList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
