@@ -6,7 +6,7 @@ order: 3
 description: Every metric sdns exports, what it means, and the queries worth building a dashboard from.
 ---
 
-sdns exports 75 metrics in Prometheus format on the API listener, alongside the
+sdns exports 76 metrics in Prometheus format on the API listener, alongside the
 Go runtime and process collectors.
 
 ```toml
@@ -233,6 +233,7 @@ performance one. It should be zero.
 | `dns64_passthrough_total` | counter | `reason` | Queries DNS64 left untouched; `internal`, `no_rd`, `cd_bit` and `client_excluded` count queries of every type, the other reasons AAAA queries |
 | `dns64_a_lookup_failures_total` | counter | `reason` | Failures of the secondary A lookup |
 | `dns64_ptr_translated_total` | counter | | `ip6.arpa` PTRs answered with a CNAME to `in-addr.arpa` |
+| `dns_config_reloads_total` | counter | `outcome` | Configuration reloads on SIGHUP: `applied`, `restart_needed` when some changed keys wait for a restart, `unchanged`, or `rejected` when the file or a handler refused it and nothing changed |
 
 `dns64_passthrough_total{reason="dnssec_fail"}` is worth watching: it counts
 the cases where synthesis was declined because it would have masked a

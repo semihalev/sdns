@@ -1593,6 +1593,32 @@ func (c *Config) normalizeQnameMinimize() {
 	c.QnameMaxMinimizeCount, c.QnameMinimizeOneLabel = &maxCount, oneLabel
 }
 
+// Inherit takes from running what Load generated rather than read from the
+// file: the cookie secret, when this file names none, and the server
+// version. A reload calls it on a parsed file before comparing the two.
+func (c *Config) Inherit(running *Config) {
+	if c.CookieSecret == "" {
+		c.CookieSecret = running.CookieSecret
+	}
+	c.sVersion = running.sVersion
+}
+
+// LogVerbosity is the logger level loglevel names; ok is false for a name
+// the gate would refuse.
+func (c *Config) LogVerbosity() (level zlog.Level, ok bool) {
+	switch c.LogLevel {
+	case "debug":
+		return zlog.LevelDebug, true
+	case "info", "":
+		return zlog.LevelInfo, true
+	case "warn":
+		return zlog.LevelWarn, true
+	case "error":
+		return zlog.LevelError, true
+	}
+	return 0, false
+}
+
 // Load loads the given config file: Parse, with the side effects only a
 // starting server wants. A missing file is generated, IPv6 access is probed
 // when the file leaves it off, the state directory is created and a cookie
