@@ -3,6 +3,7 @@ package views
 import (
 	"context"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -847,7 +848,7 @@ func TestViewsOwnerModeMatchingAlloc(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := New(&config.Config{Views: []config.ViewConfig{{Mode: "authoritative-owner", Answers: []string{tc.owner + ` 60 IN A 192.0.2.1`}}}})
-			cv := v.views[0]
+			cv := (*v.views.Load())[0]
 			q := dns.Question{Name: tc.qname, Qtype: dns.TypeAAAA, Qclass: dns.ClassINET}
 			answers, found := cv.ownerAnswers(q)
 			if !found || len(answers) != 0 {
@@ -863,5 +864,55 @@ func TestViewsOwnerModeMatchingAlloc(t *testing.T) {
 				t.Fatalf("ownerAnswers = (%v, %v), want selected NODATA owner", got, gotFound)
 			}
 		})
+	}
+}
+
+// A reload compiles the new views without touching the ones in use and
+// swaps them in on commit, while queries keep arriving. Views can be added
+// to a server that started with none.
+func TestReloadSwapsTheViewsOnCommit(t *testing.T) {
+	v := New(&config.Config{})
+	answered := func() bool {
+		ch := makeChain(v, "192.0.2.7:0", "printer.local.", dns.TypeA)
+		v.ServeDNS(context.Background(), ch)
+		return ch.Writer.Written()
+	}
+	office := []config.ViewConfig{{
+		Zone:     "office",
+		Networks: []string{"192.0.2.0/24"},
+		Answers:  []string{"printer.local. 60 IN A 192.0.2.10"},
+	}}
+
+	if _, err := v.PrepareReload(&config.Config{Views: []config.ViewConfig{{
+		Zone: "bad", Networks: []string{"192.0.2.0/24"}, Answers: []string{"not a record"},
+	}}}); err == nil {
+		t.Fatal("prepared a view whose answer does not parse")
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				answered()
+			}
+		}
+	})
+
+	commit, err := v.PrepareReload(&config.Config{Views: office})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	if answered() {
+		t.Fatal("prepare put the new views in use")
+	}
+	commit()
+	close(stop)
+	wg.Wait()
+	if !answered() {
+		t.Fatal("commit did not put the new views in use")
 	}
 }

@@ -7,7 +7,9 @@ package views
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/miekg/dns"
 	"github.com/semihalev/sdns/config"
@@ -21,7 +23,8 @@ import (
 // Views is the configured set of per-CIDR static-answer views,
 // evaluated in the order they appeared in cfg.Views.
 type Views struct {
-	views []*compiledView
+	// views is swapped whole by a reload.
+	views atomic.Pointer[[]*compiledView]
 }
 
 type compiledView struct {
@@ -38,10 +41,29 @@ type compiledView struct {
 // config.
 func New(cfg *config.Config) *Views {
 	v := &Views{}
-	for _, vc := range cfg.Views {
+	views, problems := compile(cfg.Views)
+	for _, p := range problems {
+		zlog.Error(p.msg, append([]any{"view", p.view}, p.args...)...)
+	}
+	v.views.Store(&views)
+	return v
+}
+
+// problem is an entry compile skipped.
+type problem struct {
+	msg  string
+	view string
+	args []any
+}
+
+func compile(configured []config.ViewConfig) ([]*compiledView, []problem) {
+	var views []*compiledView
+	var problems []problem
+	for _, vc := range configured {
 		networks, bad := ipset.New(vc.Networks)
 		for _, entry := range bad {
-			zlog.Error("View network CIDR parse failed", "view", vc.Zone, "cidr", entry.CIDR, "error", entry.Err.Error())
+			problems = append(problems, problem{"View network CIDR parse failed", vc.Zone,
+				[]any{"cidr", entry.CIDR, "error", entry.Err.Error()}})
 		}
 		cv := &compiledView{
 			zone:     vc.Zone,
@@ -55,14 +77,30 @@ func New(cfg *config.Config) *Views {
 				if err != nil {
 					msg = err.Error()
 				}
-				zlog.Error("View answer parse failed", "view", vc.Zone, "answer", rr, "error", msg)
+				problems = append(problems, problem{"View answer parse failed", vc.Zone,
+					[]any{"answer", rr, "error", msg}})
 				continue
 			}
 			cv.answers = append(cv.answers, parsed)
 		}
-		v.views = append(v.views, cv)
+		views = append(views, cv)
 	}
-	return v
+	return views, problems
+}
+
+// ReloadKeys implements middleware.Reloader.
+func (v *Views) ReloadKeys() []string { return []string{"views"} }
+
+// PrepareReload implements middleware.Reloader: the new views are compiled
+// here, refusing any entry startup would have skipped, and put in use on
+// commit.
+func (v *Views) PrepareReload(cfg *config.Config) (func(), error) {
+	views, problems := compile(cfg.Views)
+	if len(problems) > 0 {
+		p := problems[0]
+		return nil, fmt.Errorf("view %q: %s %v", p.view, p.msg, p.args)
+	}
+	return func() { v.views.Store(&views) }, nil
 }
 
 // (*Views).Name returns the middleware name.
@@ -78,7 +116,8 @@ func (v *Views) ClientOnly() bool { return true }
 // matching records; authoritative-owner also answers missing types at a
 // selected IN owner. Other requests fall through.
 func (v *Views) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	if len(v.views) == 0 || ch.Writer.Internal() {
+	views := *v.views.Load()
+	if len(views) == 0 || ch.Writer.Internal() {
 		ch.Next(ctx)
 		return
 	}
@@ -96,7 +135,7 @@ func (v *Views) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 
 	q := req.Question[0]
 
-	for _, cv := range v.views {
+	for _, cv := range views {
 		if !cv.networks.ContainsIP(clientIP) {
 			continue
 		}
