@@ -11,7 +11,6 @@ import (
 	"github.com/semihalev/sdns/internal/dnsutil"
 	"github.com/semihalev/sdns/internal/wire"
 	"github.com/semihalev/sdns/middleware"
-	"golang.org/x/time/rate"
 )
 
 // The cache-contained CNAME chase on the wire: an alias entry whose answer
@@ -69,7 +68,7 @@ func (c *Cache) serveChaseHit(
 	alias *CacheEntry,
 	capability middleware.WireCapability,
 	leaser middleware.WireBodyLeaser,
-	spent **rate.Limiter,
+	spent **CacheEntry,
 ) bool {
 	var segs [maxWireChaseHops]wireChaseSegment
 	n, ok := c.collectWireChase(ch.Request, alias, capability.DO, segs[:])
@@ -125,11 +124,13 @@ func (c *Cache) serveChaseHit(
 		return false
 	}
 
-	// The last gate before the commit: a refusal here drops the query
-	// with Msg-path parity (counted as a hit, cancelled), and a granted
-	// token is spent on a serve that no longer declines.
+	// The last gate before the commit: a refusal here is answered with
+	// Msg-path parity (counted as a hit, refused as the Msg path refuses
+	// it) once the chain's lease is released, and a granted token is
+	// spent on a serve that no longer declines.
 	if !c.chargeEntryLimiter(ch, alias, spent) {
 		leaser.AbortWire()
+		refuseAnswer(ch)
 		return true
 	}
 

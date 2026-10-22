@@ -477,7 +477,7 @@ func TestAdditionalSignatureIsJudgedOnTheEntrysClock(t *testing.T) {
 		resp.Answer = []dns.RR{mx(2)}
 		resp.Extra = []dns.RR{a("target.example."), rrsig("target.example.", dns.TypeA, 1, now.Add(time.Hour))}
 
-		entry := newCacheEntryAt(resp, 2*time.Second, 0, 0, now)
+		entry := newCacheEntryAt(resp, 2*time.Second, 0, now)
 		if entry == nil {
 			t.Fatal("entry not built")
 		}

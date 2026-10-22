@@ -27,7 +27,7 @@ func deriveAt(t *testing.T, source *CacheEntry, hit time.Time) *CacheEntry {
 	msg := snapAnswer("derived.test.", source.servedTTL(hit), "192.0.2.2")
 	mt, _ := dnsutil.ClassifyResponse(msg, hit)
 	ttl := NewTTLManager(minTTL, maxTTL).Bound(dnsutil.CalculateCacheTTLAt(msg, mt, hit))
-	derived := newCacheEntryAt(msg, ttl, 0, 0, hit)
+	derived := newCacheEntryAt(msg, ttl, 0, hit)
 	derived.setLease(meta.Cut())
 	return derived
 }
@@ -59,7 +59,7 @@ func TestDerivedAnswerNeverOutlivesItsSource(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			admit := time.Now()
-			source := newCacheEntryAt(snapAnswer("source.test.", uint32(tc.ttl/time.Second), "192.0.2.1"), tc.ttl, 0, 0, admit) //nolint:gosec // seconds
+			source := newCacheEntryAt(snapAnswer("source.test.", uint32(tc.ttl/time.Second), "192.0.2.1"), tc.ttl, 0, admit) //nolint:gosec // seconds
 			source.setLease(lease.Of(wallOnly(admit.Add(tc.wallLease)), 7))
 
 			derived := deriveAt(t, source, clockAfter(t, admit, tc.hitMono, tc.hitWall))

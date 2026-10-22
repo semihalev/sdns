@@ -40,6 +40,13 @@ var (
 		Help: "Total number of RFC 9520 cached resolution failures served",
 	})
 
+	answersLimited = metric.NewCounterVec(nil, prometheus.CounterOpts{
+		Name: "dns_cache_answers_limited_total",
+		Help: "Cache answers refused by their answer rate limit, by what was sent instead",
+	}, []string{"action"})
+	answersTruncated = answersLimited.Register("truncated")
+	answersDropped   = answersLimited.Register("dropped")
+
 	staleAnswers = metric.NewCounter(nil, prometheus.CounterOpts{
 		Name: "dns_cache_stale_answers_total",
 		Help: "Total number of expired positive answers served after a resolution failure",

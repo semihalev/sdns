@@ -113,6 +113,13 @@ func (w *ResponseWriter) wireOPTLen() (int, bool) {
 	return length, true
 }
 
+// wireTruncatedEmpty is truncatedEmpty for a packed reply, read from its
+// header; a body too short to hold one is not.
+func wireTruncatedEmpty(body []byte) bool {
+	h, ok := wire.ParseHeader(body)
+	return ok && h.Flags&wire.FlagTC != 0 && h.ANCount == 0 && h.NSCount == 0
+}
+
 // paddingZeros is the payload every padding option is cut from.
 var paddingZeros [paddingBlock]byte
 
@@ -152,7 +159,7 @@ func (w *ResponseWriter) appendWireOPT(body []byte, info middleware.WireInfo) ([
 			body = wire.AppendOption(body, dns.EDNS0COOKIE, cookie)
 		}
 	}
-	if w.nsidstr != "" && w.nsid {
+	if w.nsidstr != "" && w.nsid && !wireTruncatedEmpty(body) {
 		body = wire.AppendOptionString(body, dns.EDNS0NSID, w.nsidstr)
 	}
 	if w.keepalive {

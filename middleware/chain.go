@@ -1075,6 +1075,31 @@ func (ch *Chain) CancelWithRcode(rcode int, do bool) {
 	ch.count = 0
 }
 
+// TruncatedReply is an empty truncated reply to req, the question and no
+// records: a client told so retries over TCP. It is no larger than the
+// query, so it is the reply to send a source that may be spoofed in place
+// of an answer worth reflecting.
+func TruncatedReply(req *dns.Msg) *dns.Msg {
+	m := new(dns.Msg)
+	m.SetRcode(req, dns.RcodeSuccess)
+	m.RecursionAvailable = true
+	m.Truncated = true
+	return m
+}
+
+// CancelTruncated writes TruncatedReply and stops the chain.
+func (ch *Chain) CancelTruncated() {
+	req := ch.Request.Msg()
+	if req == nil {
+		if req = ch.Request.materialize(); req == nil {
+			ch.count = 0
+			return
+		}
+	}
+	_ = ch.Writer.WriteMsg(TruncatedReply(req))
+	ch.count = 0
+}
+
 // Reset rebinds the chain to a fresh writer + decoded request for pool
 // reuse. The internal sub-pipeline, DoH/DoQ and embedders enter here; the
 // server's raw ingress enters through ResetWire.

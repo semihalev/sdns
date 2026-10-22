@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"runtime"
 	"time"
 
 	"github.com/semihalev/sdns/internal/cache"
@@ -84,7 +85,30 @@ func (pc *PositiveCache) Set(key uint64, entry *CacheEntry) {
 // setAt is Set for an admission that already read the clock: now is the
 // instant entry was stored at, and its end is placed from it.
 func (pc *PositiveCache) setAt(key uint64, entry *CacheEntry, now time.Time) {
-	pc.cache.AddUntil(key, entry, pc.servableUntil(entry, now))
+	until := pc.servableUntil(entry, now)
+	// A new answer for a question already cached takes over its answer
+	// limit, so a flooded answer is not handed a full bucket each time it
+	// is refreshed. It stores by compare and swap, so the entry whose limit
+	// it takes is the one it displaced, never one another writer stored
+	// meanwhile; a writer that finds that entry being replaced yields and
+	// reads the key again.
+	for entry.rateLimit > 0 {
+		old, ok := pc.cache.Get(key)
+		if !ok {
+			if pc.cache.AddIfAbsentUntil(key, entry, until) {
+				return
+			}
+			continue
+		}
+		if !entry.sameQuestion(old) {
+			break
+		}
+		if carryLimit(entry, old, func() bool { return pc.cache.CompareAndSwapUntil(key, old, entry, until) }) {
+			return
+		}
+		runtime.Gosched()
+	}
+	pc.cache.AddUntil(key, entry, until)
 }
 
 // (*PositiveCache).Remove remove deletes an entry from the positive cache.

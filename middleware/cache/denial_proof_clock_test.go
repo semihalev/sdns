@@ -153,7 +153,7 @@ func TestDenialProofHitCarriesBothClocks(t *testing.T) {
 			}
 
 			admit := time.Now()
-			derived := newCacheEntryAt(snapAnswer("derived.test.", 3600, "192.0.2.2"), time.Hour, 0, 0, admit)
+			derived := newCacheEntryAt(snapAnswer("derived.test.", 3600, "192.0.2.2"), time.Hour, 0, admit)
 			derived.setLease(bound)
 			if derived.remaining(clockAfter(t, admit, time.Second, time.Second)) <= 0 {
 				t.Fatal("bad fixture: the derived answer is dead with both clocks steady")

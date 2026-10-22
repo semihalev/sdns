@@ -51,10 +51,9 @@ func wireFastTestPipeline(tb testing.TB, entryMsg *dns.Msg) (*Cache, *edns.EDNS)
 	tb.Helper()
 	cfg := makeTestConfig()
 	cfg.CookieSecret = "6c6f6f6b61686172646c6f6f6b6168617264"
-	// Per-entry rate limiters live in a process-wide map keyed by
-	// (limit, key), so a benchmark's millions of hits would exhaust one
-	// and turn later iterations into silent cancels. Serving is what these
-	// cases measure; rate limiting has its own coverage.
+	// A benchmark's millions of hits would exhaust the entry's answer
+	// limit and turn later iterations into truncated replies. Serving is
+	// what these cases measure; rate limiting has its own coverage.
 	cfg.RateLimit = 0
 	c := New(cfg)
 	tb.Cleanup(c.Stop)

@@ -92,7 +92,7 @@ The page that explains each top-level key is listed under
 | `ingressqueue` | *(commented)* | Ready-queue depth of the plain DNS UDP listener only; 64 while unset |
 | `ingresstcpconns` | *(commented)* | TCP/DoT connection cap; derived at startup while unset |
 | `memorytrim` | *(commented)* | Return burst memory to the OS after about two minutes idle; off while unset |
-| `ratelimit` | `0` | Cache hits per second for each of 997 shared buckets that cached answers hash into (every ECS-scoped answer shares one bucket); a hit over the rate is dropped without a reply; misses are not limited; `0` disables |
+| `ratelimit` | `0` | Cache hits per second for each cached answer, from sources that have not proved their address; a UDP hit over the rate gets an empty truncated reply, so the client retries over TCP; TCP, QUIC, a valid cookie and loopback are not limited; misses are not limited; `0` disables |
 | `clientratelimit` | `0` | Queries per minute per client address; loopback clients exempt; `0` disables |
 | `domainmetrics` | `false` | Per-domain query counters |
 | `domainmetricslimit` | `1000` | Domains tracked; `0` or omitted is unlimited |

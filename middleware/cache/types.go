@@ -15,7 +15,6 @@ import (
 	"github.com/semihalev/sdns/middleware"
 	// Aliased: this file's local "wire" is the packed body itself.
 	wirepack "github.com/semihalev/sdns/internal/wire"
-	"golang.org/x/time/rate"
 )
 
 // DCache defines the interface for DNS cache implementations.
@@ -92,8 +91,9 @@ type CacheEntry struct {
 	// in the answer cache's expiry index, which costs the entry nothing.
 	prefetch refreshClaim
 	// rateLimit is the per-entry rate limit (0 = no limit).
-	rateLimit  int32
-	rateLimKey uint64 // Key for shared rate limiter lookup
+	rateLimit int32
+	// limit is the answer's own bucket for rateLimit.
+	limit answerLimit
 
 	// rare holds what few entries carry: an ECS scope, an EDE. nil for
 	// the rest, which is almost all of them.
@@ -345,7 +345,7 @@ func NewScopedCacheEntry(msg *dns.Msg, ttl time.Duration, rateLimit int, scope n
 }
 
 func newScopedCacheEntryAt(msg *dns.Msg, ttl time.Duration, rateLimit int, scope netip.Prefix, now time.Time) *CacheEntry {
-	e := newCacheEntryAt(msg, ttl, rateLimit, 0, now)
+	e := newCacheEntryAt(msg, ttl, rateLimit, now)
 	if e == nil {
 		return nil
 	}
@@ -363,14 +363,16 @@ func (e *CacheEntry) scoped() bool { return e.scopeKey().IsValid() }
 // shared-key entry instead, wrong answer for the wrong audience.
 func (e *CacheEntry) PrefetchEligible() bool { return !e.scoped() }
 
-// NewCacheEntryWithKey creates a new cache entry with a specific key for rate
-// limiting. It returns nil for a message that cannot be packed, such a
-// response was never servable on the wire, so declining to cache it is the
-// safe outcome, and for an explicit RRSIG answer the stored view would
-// thin, which a hit may not answer with fewer signatures than the first
-// response did. Callers treat nil as "not cacheable" either way.
-func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64) *CacheEntry {
-	return newCacheEntryAt(msg, ttl, rateLimit, key, time.Now())
+// NewCacheEntryWithKey creates a new cache entry. The key is no longer
+// used: it once chose the shared rate limiter the entry drew from, and
+// every entry now keeps its own. It returns nil for a message that cannot
+// be packed, such a response was never servable on the wire, so declining
+// to cache it is the safe outcome, and for an explicit RRSIG answer the
+// stored view would thin, which a hit may not answer with fewer signatures
+// than the first response did. Callers treat nil as "not cacheable" either
+// way.
+func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, _ uint64) *CacheEntry {
+	return newCacheEntryAt(msg, ttl, rateLimit, time.Now())
 }
 
 // newCacheEntryAt is NewCacheEntryWithKey anchored at now: the instant the
@@ -379,7 +381,7 @@ func NewCacheEntryWithKey(msg *dns.Msg, ttl time.Duration, rateLimit int, key ui
 // lifetime and the signatures judged against it never disagree by the
 // moment between two readings. Monotonic, never UTC-converted: a backward
 // wall-clock step must not extend the entry.
-func newCacheEntryAt(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64, now time.Time) *CacheEntry {
+func newCacheEntryAt(msg *dns.Msg, ttl time.Duration, rateLimit int, now time.Time) *CacheEntry {
 	// Assemble the storable view and filter out OPT records (matching V1
 	// behavior): OPT is per-client hop metadata the serve path rebuilds.
 	msgCopy := new(dns.Msg)
@@ -438,13 +440,12 @@ func newCacheEntryAt(msg *dns.Msg, ttl time.Duration, rateLimit int, key uint64,
 		// The anchoring instant, monotonic reading kept. Converting to UTC
 		// strips it and would let a backward wall-clock adjustment extend
 		// both the TTL and an inherited delegation cut.
-		storedAt:   clockOffset(now),
-		ttl:        ttl,
-		origTTL:    uint32(ttl.Seconds()),
-		rateLimit:  clampRateLimit(rateLimit),
-		rateLimKey: key,
-		cd:         msg.CheckingDisabled,
-		compress:   msg.Compress,
+		storedAt:  clockOffset(now),
+		ttl:       ttl,
+		origTTL:   uint32(ttl.Seconds()),
+		rateLimit: clampRateLimit(rateLimit),
+		cd:        msg.CheckingDisabled,
+		compress:  msg.Compress,
 	}
 	entry.setRare(netip.Prefix{}, ede)
 	if len(msg.Question) > 0 {
@@ -639,12 +640,31 @@ func clampRateLimit(n int) int32 {
 	return int32(n)
 }
 
-// (*CacheEntry).GetRateLimiter returns the shared rate limiter for this entry
-func (e *CacheEntry) GetRateLimiter() *rate.Limiter {
+// limiter returns the entry's answer limit, nil when it has none.
+func (e *CacheEntry) limiter() *answerLimit {
 	if e.rateLimit <= 0 {
 		return nil
 	}
-	return getSharedRateLimiter(int(e.rateLimit), e.rateLimKey)
+	return &e.limit
+}
+
+// allowAnswer charges one answer to the entry's limit at now, true when it
+// has none.
+func (e *CacheEntry) allowAnswer(now int64) bool {
+	return e.rateLimit <= 0 || e.limit.allow(e.rateLimit, now)
+}
+
+// sameQuestion reports whether e and o answer the same question in the
+// same CD partition: an entry and the one a refresh replaced it with. The
+// name is compared under the cache key's ASCII case folding, so a refresh
+// spelled differently is still the same question.
+func (e *CacheEntry) sameQuestion(o *CacheEntry) bool {
+	if e == o {
+		return true
+	}
+	return o != nil && e.cd == o.cd &&
+		e.question.Qtype == o.question.Qtype && e.question.Qclass == o.question.Qclass &&
+		equalNameASCIIFold(e.question.Name, o.question.Name)
 }
 
 // CacheKey represents a structured cache key.
