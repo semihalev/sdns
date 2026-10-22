@@ -159,6 +159,8 @@ type responseWrap struct {
 	r    *RPZ
 	ctx  context.Context
 	mode wrapMode
+	// enforce is the mode this query read once, at the handler.
+	enforce bool
 
 	// held is the enabled-zone query-time match §5.4 held; heldObserved
 	// the disabled-zone matches gathered on the way.
@@ -243,7 +245,7 @@ func (w *responseWrap) judgeList(s *policyStore, list []rpz.ResponseMatch) middl
 		return middleware.WireHitServe
 	}
 	winner, observed := s.Merge(rpz.ZoneMatch{}, w.heldObserved, list)
-	if winner.Zone != nil && w.r.enforce && winner.Effective() != rpz.ActionPassthru {
+	if winner.Zone != nil && w.enforce && winner.Effective() != rpz.ActionPassthru {
 		w.decided = false
 		return middleware.WireHitDecode
 	}
@@ -267,7 +269,7 @@ func (w *responseWrap) countDecided() {
 	if w.decidedWinner.Zone == nil {
 		return
 	}
-	if w.r.enforce {
+	if w.enforce {
 		// A byte serve committed under an enforcing winner means the
 		// action was PASSTHRU, acting, by not acting.
 		countMatch(w.decidedWinner, outcomeEnforced)
@@ -293,7 +295,7 @@ func (w *responseWrap) WriteMsg(m *dns.Msg) error {
 	if winner.Zone == nil {
 		return w.ResponseWriter.WriteMsg(m)
 	}
-	if !w.r.enforce {
+	if !w.enforce {
 		countMatch(winner, outcomeObserved)
 		if debugLogEnabled() {
 			debugMatch("RPZ response match in shadow", winner)
