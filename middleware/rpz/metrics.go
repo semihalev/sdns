@@ -3,6 +3,7 @@ package rpz
 import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/semihalev/sdns/internal/metric"
 	rpzengine "github.com/semihalev/sdns/internal/rpz"
 )
 
@@ -17,7 +18,10 @@ const (
 )
 
 var (
-	actionTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+	// Charged on every match, so it goes through the sharded shim. The
+	// zone label comes from the configuration; a zone a reload removes
+	// keeps its series for the life of the process, as it did before.
+	actionTotal = metric.NewCounterVec(nil, prometheus.CounterOpts{
 		Name: "rpz_action_total",
 		Help: "RPZ matches under the winner-bounded counting semantic, by zone, trigger, action, and whether the match acted (enforced) or only would have (observed)",
 	}, []string{"zone", "trigger", "action", "outcome"})

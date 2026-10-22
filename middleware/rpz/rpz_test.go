@@ -11,6 +11,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/dnsutil"
+	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/internal/mock"
 	rpzengine "github.com/semihalev/sdns/internal/rpz"
 	"github.com/semihalev/sdns/middleware"
@@ -375,17 +376,15 @@ func TestLocalDataCNAMEChasesThroughTheQueryer(t *testing.T) {
 	}
 }
 
-// counterValue reads one rpz_action_total series without pulling in an
-// assertion or test-util dependency: client_model is already a direct
-// dependency, and a counter writes itself into its dto.
+// counterValue reads one rpz_action_total series live, ahead of the
+// shim's flush into Prometheus.
 func counterValue(t *testing.T, zone, action, outcome string) float64 {
 	t.Helper()
-	m := &dto.Metric{}
-	if err := actionTotal.WithLabelValues(zone, "qname", action, outcome).Write(m); err != nil {
-		t.Fatal(err)
-	}
-	return m.GetCounter().GetValue()
+	return counterFloat(actionTotal.WithLabelValues(zone, "qname", action, outcome))
 }
+
+// counterFloat is a shim counter's live value.
+func counterFloat(c *metric.Counter) float64 { return float64(c.Value()) }
 
 // TestReplayDoesNotDoubleCount pins the counting rule for the inline
 // handoff dance: a pass-through match counted on the first pass must not
@@ -682,11 +681,7 @@ func TestClientIPCountsUnderItsOwnTriggerLabel(t *testing.T) {
 	r := newRPZ(t, "shadow", config.RPZZone{Name: "ciplabel", File: writeZone(t, clientIPTestZone)})
 
 	before := func(trigger string) float64 {
-		m := &dto.Metric{}
-		if err := actionTotal.WithLabelValues("ciplabel", trigger, "drop", outcomeObserved).Write(m); err != nil {
-			t.Fatal(err)
-		}
-		return m.GetCounter().GetValue()
+		return counterFloat(actionTotal.WithLabelValues("ciplabel", trigger, "drop", outcomeObserved))
 	}
 	b := before("client-ip")
 	serveFrom(t, r, "192.0.2.55:40000", "x.example.", dns.TypeA)
