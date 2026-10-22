@@ -149,12 +149,6 @@ func (r *RPZ) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	}
 
 	req, w := ch.Request, ch.Writer
-	// A replay finishes in the mode its inline pass read.
-	enforce, pinned := ch.PinnedEnforce()
-	if !pinned {
-		enforce = r.enforce.Load()
-		ch.PinEnforce(enforce)
-	}
 
 	// Policy is recursive-service policy for external clients (design
 	// §5.4). The RD gate is load-bearing, not decoration: the cache sits
@@ -164,6 +158,13 @@ func (r *RPZ) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	if w.Internal() || !req.RD() || req.Qclass() != dns.ClassINET {
 		ch.Next(ctx)
 		return
+	}
+
+	// A replay finishes in the mode its inline pass read.
+	enforce, pinned := ch.PinnedEnforce()
+	if !pinned {
+		enforce = r.enforce.Load()
+		ch.PinEnforce(enforce)
 	}
 
 	// The query key, in canonical-labels form, built on the stack. The

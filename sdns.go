@@ -60,10 +60,6 @@ func setup() error {
 		return fmt.Errorf("config loading failed: %w", err)
 	}
 
-	if cfg.LogLevel == "" {
-		cfg.LogLevel = "info"
-	}
-
 	// Create structured logger with zero allocations
 	logger := zlog.NewStructured()
 
@@ -189,6 +185,9 @@ const (
 // logReload records one configuration reload in a single line.
 func logReload(r middleware.ReloadResult) {
 	applied, restart := strings.Join(r.Applied, ", "), strings.Join(r.Restart, ", ")
+	if applied == "" {
+		applied = "none"
+	}
 	switch r.Outcome {
 	case middleware.ReloadRejected:
 		zlog.Error("Configuration reload refused, the running configuration is unchanged", "error", r.Err.Error())

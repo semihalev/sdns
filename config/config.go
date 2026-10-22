@@ -1693,10 +1693,12 @@ func Load(cfgfile, version string) (*Config, error) {
 	return config, nil
 }
 
-// Parse reads and judges the file at path, with no side effect: it never
-// writes a file, creates a directory, probes the network itself or
-// generates a secret, and a missing file is an error. It is the one gate
-// startup, sdns -t and a reload share.
+// Parse reads and judges the file at path. It never generates a config
+// file, creates the state directory, probes the network itself or
+// generates a secret, and a missing file is an error. Its checks only
+// look, apart from the writability probe of a blocklist directory, which
+// removes what it creates. It is the one gate startup, sdns -t and a
+// reload share.
 //
 // ipv6 answers whether this host has IPv6 access. It is asked only when the
 // file leaves ipv6access off, and before the gate, which judges

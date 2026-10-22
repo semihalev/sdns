@@ -147,7 +147,7 @@ func reload(path string) ReloadResult {
 	var level zlog.Level
 	if slices.Contains(result.Applied, loglevelKey) {
 		lvl, ok := next.LogVerbosity()
-		if !ok {
+		if !ok { // the gate refuses an unknown level; kept as a backstop
 			return ReloadResult{Outcome: ReloadRejected, Err: fmt.Errorf("loglevel = %q: unknown", next.LogLevel)}
 		}
 		level = lvl

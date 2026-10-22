@@ -98,7 +98,7 @@ func (v *Views) PrepareReload(cfg *config.Config) (func(), error) {
 	views, problems := compile(cfg.Views)
 	if len(problems) > 0 {
 		p := problems[0]
-		return nil, fmt.Errorf("view %q: %s %v", p.view, p.msg, p.args)
+		return nil, fmt.Errorf("view %q: %s: %s %q", p.view, p.msg, p.args[0], p.args[1])
 	}
 	return func() { v.views.Store(&views) }, nil
 }

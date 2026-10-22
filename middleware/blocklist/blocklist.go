@@ -177,7 +177,7 @@ func (b *BlockList) PrepareReload(cfg *config.Config) (func(), error) {
 		b.mu.Unlock()
 
 		if len(dropped) > 0 {
-			zlog.Warn("Blocklist entries removed from the configuration stay blocked, remove them through the API",
+			zlog.Warn("Blocklist entries removed from the configuration are not unblocked by a reload, remove them through the API",
 				"entries", strings.Join(dropped, ", "))
 		}
 	}, nil
