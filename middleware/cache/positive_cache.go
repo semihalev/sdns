@@ -90,7 +90,7 @@ func (pc *PositiveCache) setAt(key uint64, entry *CacheEntry, now time.Time) {
 	// is refreshed.
 	if entry.rateLimit > 0 {
 		if old, ok := pc.cache.Get(key); ok && entry.sameQuestion(old) {
-			carryLimit(entry, old, func() { pc.cache.AddUntil(key, entry, until) })
+			carryLimit(entry, old, func() bool { pc.cache.AddUntil(key, entry, until); return true })
 			return
 		}
 	}

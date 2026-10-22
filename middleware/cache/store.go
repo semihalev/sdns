@@ -779,21 +779,17 @@ func (s *Store) ReplaceIfCurrent(key uint64, expected *CacheEntry, resp *dns.Msg
 		if entry == nil {
 			return false
 		}
-		var swapped bool
-		carryLimit(entry, expected, func() {
-			swapped = s.positive.cache.CompareAndSwapUntil(key, expected, entry, s.positive.servableUntil(entry, now))
+		return carryLimit(entry, expected, func() bool {
+			return s.positive.cache.CompareAndSwapUntil(key, expected, entry, s.positive.servableUntil(entry, now))
 		})
-		return swapped
 	case dnsutil.TypeServerFailure:
 		entry := inherit(newCacheEntryAt(filtered, s.negative.ttl.Calculate(msgTTL), s.cfg.RateLimit, now))
 		if entry == nil {
 			return false
 		}
-		var swapped bool
-		carryLimit(entry, expected, func() {
-			swapped = s.negative.cache.CompareAndSwap(key, expected, entry)
+		return carryLimit(entry, expected, func() bool {
+			return s.negative.cache.CompareAndSwap(key, expected, entry)
 		})
-		return swapped
 	}
 	return false
 }

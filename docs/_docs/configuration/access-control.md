@@ -46,8 +46,9 @@ one question never slows the answer to another.
 
 A UDP query over its answer's rate gets an empty truncated reply: the
 question, the reply OPT with the server cookie but without NSID, and no
-records. It is no larger than the query, so it reflects nothing worth sending, and a real client
-retries over TCP and gets its answer there; one that sends DNS cookies can
+records. It is no larger than the query, except that a query carrying a DNS
+cookie gets the 16-byte server cookie added, so it reflects nothing worth
+sending, and a real client retries over TCP and gets its answer there; one that sends DNS cookies can
 instead retry over UDP with the server cookie the truncated reply carried. An
 unproved query on another transport, DNS over HTTP/3 early data, is dropped
 over the rate. A query whose source is proved, by a TCP or QUIC handshake, a

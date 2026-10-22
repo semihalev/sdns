@@ -38,10 +38,17 @@ func (l *answerLimit) allow(rate int32, now int64) bool {
 	}
 }
 
-// fold takes from's state when it is the emptier bucket: every token
-// either has granted stays spent.
-func (l *answerLimit) fold(from *answerLimit) {
-	want := from.tat.Load()
+// retiredTAT marks the bucket of an entry a refresh has replaced. It lies
+// far enough ahead to refuse every charge, and far enough from the int64
+// limit that allow's arithmetic on it cannot overflow.
+const retiredTAT = int64(1) << 62
+
+// fold takes tat when it is the emptier state: every token granted under
+// it stays spent. A retired bucket's mark is not a state to take.
+func (l *answerLimit) fold(want int64) {
+	if want == retiredTAT {
+		return
+	}
 	for {
 		tat := l.tat.Load()
 		if tat >= want || l.tat.CompareAndSwap(tat, want) {
@@ -52,12 +59,19 @@ func (l *answerLimit) fold(from *answerLimit) {
 
 // carryLimit hands entry the answer limit of old, the entry it replaces
 // under the same question, a refresh, across publish, the store write
-// that makes entry the one served. Folded in before, entry is published
-// with the bucket old left rather than a full one; folded again after, a
-// token old granted to a query still holding it while publish ran stays
-// spent too.
-func carryLimit(entry, old *CacheEntry, publish func()) {
-	entry.limit.fold(&old.limit)
-	publish()
-	entry.limit.fold(&old.limit)
+// that makes entry the one served and reports whether it did. Folded in
+// before, entry is published with the bucket old left rather than a full
+// one. Once published, old's bucket is retired in one swap: a token it
+// granted before the swap is folded into entry, and a query still holding
+// old after it is refused, so the question never has two buckets.
+func carryLimit(entry, old *CacheEntry, publish func() bool) bool {
+	if entry == old {
+		return publish()
+	}
+	entry.limit.fold(old.limit.tat.Load())
+	if !publish() {
+		return false
+	}
+	entry.limit.fold(old.limit.tat.Swap(retiredTAT))
+	return true
 }

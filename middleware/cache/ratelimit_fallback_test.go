@@ -123,6 +123,7 @@ func TestReplacedEntryStillCostsOneToken(t *testing.T) {
 	if !first.allowAnswer(limitNow()) {
 		t.Fatal("the limiter had no token to spend")
 	}
+	spent := first.limit.tat.Load()
 
 	// A refresh replaces the entry under the same key while the query is
 	// still in flight.
@@ -130,7 +131,7 @@ func TestReplacedEntryStillCostsOneToken(t *testing.T) {
 	if second == first {
 		t.Skip("the store reused the entry object; this test needs a replacement")
 	}
-	if second.limit.tat.Load() != first.limit.tat.Load() {
+	if second.limit.tat.Load() != spent {
 		t.Fatal("the replacement started from a full bucket; a refresh would " +
 			"hand a flooded answer a fresh burst")
 	}

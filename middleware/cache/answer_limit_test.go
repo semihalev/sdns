@@ -253,14 +253,55 @@ func TestRefreshKeepsTokensSpentWhileItPublishes(t *testing.T) {
 	fresh := NewCacheEntry(resp, time.Minute, 1)
 
 	now := limitNow()
-	carryLimit(fresh, old, func() {
+	carryLimit(fresh, old, func() bool {
 		if !old.allowAnswer(now) {
 			t.Fatal("the old entry had no token to spend")
 		}
+		return true
 	})
 	if fresh.allowAnswer(now) {
 		t.Fatal("the refreshed entry granted again the token its predecessor " +
 			"spent while the refresh was publishing")
+	}
+}
+
+// A query that looked the old entry up before the refresh published can
+// still be charging it after the refresh is done. The question has one
+// bucket, so it and a query on the new entry must not both be answered.
+func TestRefreshLeavesNoTokenOnTheEntryItReplaced(t *testing.T) {
+	q := new(dns.Msg)
+	q.SetQuestion("retired.example.", dns.TypeA)
+	resp := new(dns.Msg)
+	resp.SetReply(q)
+	resp.Answer = []dns.RR{makeRR("retired.example. 300 IN A 192.0.2.1")}
+	old := NewCacheEntry(resp, time.Minute, 1)
+	fresh := NewCacheEntry(resp, time.Minute, 1)
+
+	now := limitNow()
+	carryLimit(fresh, old, func() bool { return true })
+	late, current := old.allowAnswer(now), fresh.allowAnswer(now)
+	if late && current {
+		t.Fatal("ratelimit 1 answered twice: once from the replaced entry " +
+			"after the refresh, once from the entry that replaced it")
+	}
+	if !current {
+		t.Fatal("the refreshed entry refused the question's only token")
+	}
+
+	// A second refresh that read the same old entry before the first
+	// published inherits nothing from it, and is not refused for it.
+	again := NewCacheEntry(resp, time.Minute, 1)
+	carryLimit(again, old, func() bool { return true })
+	if !again.allowAnswer(now) {
+		t.Fatal("a refresh of an already replaced entry started empty")
+	}
+
+	// A refresh that loses its swap leaves the entry it found serving.
+	kept := NewCacheEntry(resp, time.Minute, 1)
+	lost := NewCacheEntry(resp, time.Minute, 1)
+	carryLimit(lost, kept, func() bool { return false })
+	if !kept.allowAnswer(now) {
+		t.Fatal("a refresh that never published took the current entry's token")
 	}
 }
 
@@ -292,6 +333,7 @@ func TestRefreshUnderAnotherCaseIsTheSameQuestion(t *testing.T) {
 	if !first.allowAnswer(limitNow()) {
 		t.Fatal("the first entry had no token to spend")
 	}
+	spent := first.limit.tat.Load()
 	second := store("CASE.EXAMPLE.")
 	if second == first {
 		t.Fatal("the store reused the entry; this test needs a replacement")
@@ -299,7 +341,7 @@ func TestRefreshUnderAnotherCaseIsTheSameQuestion(t *testing.T) {
 	if !second.sameQuestion(first) {
 		t.Fatal("a refresh spelled in another case is not the same question")
 	}
-	if second.limit.tat.Load() != first.limit.tat.Load() {
+	if second.limit.tat.Load() != spent {
 		t.Fatal("a refresh spelled in another case started from a full bucket")
 	}
 
