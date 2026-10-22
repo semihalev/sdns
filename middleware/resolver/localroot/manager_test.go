@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/middleware/resolver/localroot/roottest"
 )
 
@@ -389,5 +390,36 @@ func TestAnchorFingerprintIgnoresTTL(t *testing.T) {
 	}
 	if anchor.Header().Ttl != 172800 {
 		t.Fatal("fingerprinting mutated the anchor it was given")
+	}
+}
+
+// Each Count function charges its own kind and no other, so the kinds still
+// sum to the consults once the counters are pre-registered.
+func TestCountsChargeTheirOwnKind(t *testing.T) {
+	kinds := []struct {
+		count   func()
+		counter *metric.Counter
+	}{
+		{CountReferral, answerReferral},
+		{CountDenial, answerDenial},
+		{CountDS, answerDS},
+		{CountApex, answerApex},
+		{CountFallback, answerFallback},
+	}
+	for i, k := range kinds {
+		before := make([]int64, len(kinds))
+		for j, o := range kinds {
+			before[j] = o.counter.Value()
+		}
+		k.count()
+		for j, o := range kinds {
+			want := before[j]
+			if i == j {
+				want++
+			}
+			if got := o.counter.Value(); got != want {
+				t.Fatalf("count %d moved counter %d from %d to %d, want %d", i, j, before[j], got, want)
+			}
+		}
 	}
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/zlog/v2"
 )
 
@@ -70,30 +71,37 @@ var (
 		Name: "dns_localroot_transfers_total",
 		Help: "Root zone transfer attempts by outcome",
 	}, []string{"outcome"})
-	metricAnswers = promauto.NewCounterVec(prometheus.CounterOpts{
+	// Walk consultations are on the query path, so they go through the
+	// sharded shim, every kind registered here so a count does no lookup.
+	metricAnswers = metric.NewCounterVec(nil, prometheus.CounterOpts{
 		Name: "dns_localroot_answers_total",
 		Help: "Walk consultations answered from the local root copy",
 	}, []string{"kind"})
+	answerReferral = metricAnswers.Register("referral")
+	answerDenial   = metricAnswers.Register("denial")
+	answerDS       = metricAnswers.Register("ds")
+	answerApex     = metricAnswers.Register("apex")
+	answerFallback = metricAnswers.Register("fallback")
 )
 
 // CountReferral, CountDenial, CountDS and CountFallback attribute walk
 // consultations on the resolver side without exporting the metric vec.
-func CountReferral() { metricAnswers.WithLabelValues("referral").Inc() }
+func CountReferral() { answerReferral.Inc() }
 
 // CountDenial counts an NXDOMAIN synthesized from the local copy.
-func CountDenial() { metricAnswers.WithLabelValues("denial").Inc() }
+func CountDenial() { answerDenial.Inc() }
 
 // CountDS counts a DS answer served from the local copy.
-func CountDS() { metricAnswers.WithLabelValues("ds").Inc() }
+func CountDS() { answerDS.Inc() }
 
 // CountApex counts a question at the root's own name answered from the copy.
-func CountApex() { metricAnswers.WithLabelValues("apex").Inc() }
+func CountApex() { answerApex.Inc() }
 
 // CountFallback counts a root consult the copy did not answer, so the walk
 // went to the real root servers: no verified copy was active, or the copy
 // held no proof of the answer being asked for. Every consult is either an
 // answer of one kind or a fallback, so the kinds sum to the consults.
-func CountFallback() { metricAnswers.WithLabelValues("fallback").Inc() }
+func CountFallback() { answerFallback.Inc() }
 
 // Manager owns the verified snapshot and its refresh lifecycle. Refresh
 // follows the zone's own SOA schedule (RFC 8806 defers to RFC 1035
