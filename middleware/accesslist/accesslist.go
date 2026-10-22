@@ -2,6 +2,8 @@ package accesslist
 
 import (
 	"context"
+	"fmt"
+	"sync/atomic"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/semihalev/sdns/config"
@@ -21,7 +23,8 @@ var accessDenied = metric.NewCounter(nil, prometheus.CounterOpts{
 
 // List type.
 type List struct {
-	allowed *ipset.Set
+	// allowed is swapped whole by a reload.
+	allowed atomic.Pointer[ipset.Set]
 }
 
 // New return accesslist.
@@ -36,9 +39,26 @@ func New(cfg *config.Config) *List {
 	for _, entry := range bad {
 		zlog.Error("Access list parse cidr failed", "cidr", entry.CIDR, "error", entry.Err.Error())
 	}
-	a.allowed = set
+	a.allowed.Store(set)
 
 	return a
+}
+
+// ReloadKeys implements middleware.Reloader.
+func (a *List) ReloadKeys() []string { return []string{"accesslist"} }
+
+// PrepareReload implements middleware.Reloader: the new list is compiled
+// here and put in use on commit.
+func (a *List) PrepareReload(cfg *config.Config) (func(), error) {
+	entries := cfg.AccessList
+	if len(entries) == 0 {
+		entries = []string{"0.0.0.0/0", "::0/0"}
+	}
+	set, bad := ipset.New(entries)
+	if len(bad) > 0 {
+		return nil, fmt.Errorf("accesslist entry %q: %v", bad[0].CIDR, bad[0].Err)
+	}
+	return func() { a.allowed.Store(set) }, nil
 }
 
 // (*List).Name name return middleware name.
@@ -61,7 +81,7 @@ func (a *List) ServeDNS(ctx context.Context, ch *middleware.Chain) {
 	// answers: the lookup is a binary search over compiled ranges and
 	// allocates nothing, which is why the open default no longer needs a
 	// flag to skip it.
-	if !a.allowed.ContainsIP(ch.Writer.RemoteIP()) {
+	if !a.allowed.Load().ContainsIP(ch.Writer.RemoteIP()) {
 		accessDenied.Inc()
 		// no reply to client
 		ch.Cancel()
