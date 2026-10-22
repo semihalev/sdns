@@ -4,7 +4,6 @@ import (
 	"context"
 	"reflect"
 	"sync"
-	"sync/atomic"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -73,17 +72,18 @@ func TestReloadSwapsTheRateOnCommit(t *testing.T) {
 	r := New(&config.Config{ClientRateLimit: 1})
 	req := new(dns.Msg)
 	req.SetQuestion("example.com.", dns.TypeA)
-	var passes atomic.Int32
-	next := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
-		passes.Add(1)
-		ch.Cancel()
-	})
+	// Each call its own flag: queries from the goroutine below must not
+	// count as this one passing.
 	serve := func(addr string) bool {
-		before := passes.Load()
+		passed := false
+		next := middleware.HandlerFunc(func(_ context.Context, ch *middleware.Chain) {
+			passed = true
+			ch.Cancel()
+		})
 		ch := middleware.NewChain([]middleware.Handler{r, next})
 		ch.Reset(mock.NewWriter("udp", addr), req.Copy())
 		ch.Next(context.Background())
-		return passes.Load() > before
+		return passed
 	}
 
 	if !serve("10.0.0.1:0") || serve("10.0.0.1:0") {

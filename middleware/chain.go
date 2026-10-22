@@ -868,6 +868,10 @@ type Chain struct {
 	cookie    cookie.State
 	cookieSet bool
 	challenge bool
+
+	// policyMode is the policy mode a handler read for this query, carried
+	// to a replay (see PinEnforce): 0 unread, 1 shadow, 2 enforce.
+	policyMode uint8
 }
 
 // Encrypted reports whether the request arrived over an encrypted
@@ -1116,6 +1120,7 @@ func (ch *Chain) Reset(w Transport, r *dns.Msg) {
 	ch.replay = false
 	ch.cookieSet = false
 	ch.challenge = false
+	ch.policyMode = 0
 }
 
 // rebindWriter points the chain's pooled base writer at the next
@@ -1150,6 +1155,7 @@ func (ch *Chain) ResetWire(w Transport, r *Request) {
 	ch.replay = false
 	ch.cookieSet = false
 	ch.challenge = false
+	ch.policyMode = 0
 }
 
 // SetInlineOnly declares that this serve runs on a transport reader that

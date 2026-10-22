@@ -102,13 +102,34 @@ func (ch *Chain) CookieChallenged() bool { return ch.challenge }
 // Carry is what an inline pass hands the replay that finishes its query:
 // the facts made once per request.
 type Carry struct {
-	cookie    cookie.State
-	cookieSet bool
+	cookie     cookie.State
+	cookieSet  bool
+	policyMode uint8
 }
 
 // Carry returns the facts this serve made once, for the replay.
-func (ch *Chain) Carry() Carry { return Carry{cookie: ch.cookie, cookieSet: ch.cookieSet} }
+func (ch *Chain) Carry() Carry {
+	return Carry{cookie: ch.cookie, cookieSet: ch.cookieSet, policyMode: ch.policyMode}
+}
 
 // Restore gives a replay the facts its inline pass made; call it after
 // ResetWire and SetReplay.
-func (ch *Chain) Restore(c Carry) { ch.cookie, ch.cookieSet = c.cookie, c.cookieSet }
+func (ch *Chain) Restore(c Carry) {
+	ch.cookie, ch.cookieSet, ch.policyMode = c.cookie, c.cookieSet, c.policyMode
+}
+
+// PinEnforce records the policy mode a handler read for this query, so
+// the replay finishing it, which a reload may reach after the mode
+// changed, judges it in the same mode its inline pass did.
+func (ch *Chain) PinEnforce(enforce bool) {
+	ch.policyMode = 1
+	if enforce {
+		ch.policyMode = 2
+	}
+}
+
+// PinnedEnforce reports the mode PinEnforce recorded; ok is false when
+// none was.
+func (ch *Chain) PinnedEnforce() (enforce, ok bool) {
+	return ch.policyMode == 2, ch.policyMode != 0
+}

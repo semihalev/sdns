@@ -2,6 +2,7 @@ package blocklist
 
 import (
 	"os"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -73,5 +74,28 @@ func TestReloadAppliesTheConfiguredListsOnCommit(t *testing.T) {
 	}
 	if !block("kept-open.example.") || !b.Exists("kept-open.example.") {
 		t.Fatal("a name the new whitelist dropped still cannot be blocked")
+	}
+}
+
+// A block a list file carries while the whitelist exempts it is still
+// loaded, so taking the name out of the whitelist on reload blocks it, as
+// a restart with the same files would.
+func TestReloadUnshadowsAListedBlock(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "hosts"), []byte("0.0.0.0 shadow.example.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b := New(&config.Config{BlockListDir: dir, Whitelist: []string{"shadow.example."}})
+	if b.Exists("shadow.example.") {
+		t.Fatal("the whitelist does not exempt its name")
+	}
+
+	commit, err := b.PrepareReload(&config.Config{BlockListDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	commit()
+	if !b.Exists("shadow.example.") {
+		t.Fatal("a listed block the whitelist no longer exempts is not blocked")
 	}
 }

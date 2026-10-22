@@ -46,10 +46,13 @@ func newReloadFixture(t *testing.T, body string, handlers ...*reloadable) *reloa
 	root := t.TempDir()
 	f := &reloadFixture{path: filepath.Join(root, "sdns.conf"), dir: filepath.Join(root, "db")}
 	f.write(t, body)
-	cfg, err := config.Load(f.path, "test")
+	// What Load would give, without its probe: no IPv6, and a generated
+	// cookie secret the file does not name.
+	cfg, err := config.Parse(f.path, func() bool { return false })
 	if err != nil {
-		t.Fatalf("load: %v", err)
+		t.Fatalf("parse: %v", err)
 	}
+	cfg.CookieSecret = generatedSecret
 	Reset()
 	t.Cleanup(Reset)
 	for _, h := range handlers {
@@ -62,7 +65,7 @@ func newReloadFixture(t *testing.T, body string, handlers ...*reloadable) *reloa
 
 func (f *reloadFixture) write(t *testing.T, body string) {
 	t.Helper()
-	content := "directory = '" + f.dir + "'\nipv6access = true\ndnssec = \"off\"\nrootservers = [\"192.0.2.1:53\"]\n" + body
+	content := "directory = '" + f.dir + "'\ndnssec = \"off\"\nrootservers = [\"192.0.2.1:53\"]\n" + body
 	if err := os.WriteFile(f.path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -174,8 +177,10 @@ func TestReloadReportsKeysThatNeedARestart(t *testing.T) {
 	}
 }
 
+const generatedSecret = "ffeeddccbbaa99887766554433221100" //nolint:gosec // G101 - test fixture, not a credential
+
 // The cookie secret Load generated survives a file that names none; a file
-// that names a different one needs a restart.
+// that names a different one needs a restart, until it is taken out again.
 func TestReloadKeepsTheGeneratedCookieSecret(t *testing.T) {
 	f := newReloadFixture(t, "")
 	if r := Reload(f.path); r.Outcome != ReloadUnchanged {
@@ -184,6 +189,24 @@ func TestReloadKeepsTheGeneratedCookieSecret(t *testing.T) {
 	f.write(t, "cookiesecret = \"00112233445566778899aabbccddeeff\"\n")
 	if r := Reload(f.path); !slices.Equal(r.Restart, []string{"cookiesecret"}) {
 		t.Fatalf("restart %v, want [cookiesecret]", r.Restart)
+	}
+	f.write(t, "")
+	if r := Reload(f.path); r.Outcome != ReloadUnchanged {
+		t.Fatalf("secret taken out again: outcome %q restart %v, want unchanged", r.Outcome, r.Restart)
+	}
+}
+
+// IPv6 access the file leaves off is what the server started with, not
+// what the last reloaded file said.
+func TestReloadTakesIPv6AccessFromStartup(t *testing.T) {
+	f := newReloadFixture(t, "")
+	f.write(t, "ipv6access = true\n")
+	if r := Reload(f.path); !slices.Equal(r.Restart, []string{"ipv6access"}) {
+		t.Fatalf("restart %v, want [ipv6access]", r.Restart)
+	}
+	f.write(t, "")
+	if r := Reload(f.path); r.Outcome != ReloadUnchanged {
+		t.Fatalf("ipv6access taken out again: outcome %q restart %v, want unchanged", r.Outcome, r.Restart)
 	}
 }
 

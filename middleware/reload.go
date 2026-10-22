@@ -86,9 +86,11 @@ func reload(path string) ReloadResult {
 	if p == nil || reloads.applied == nil {
 		return ReloadResult{Outcome: ReloadRejected, Err: errors.New("server is not set up")}
 	}
-	running := reloads.applied
+	running, started := reloads.applied, reloads.started
 
-	next, err := config.Parse(path, func() bool { return running.IPv6Access })
+	// What Load probed or generated is the server's, from startup: a value
+	// an earlier file named and a later one dropped is not in effect.
+	next, err := config.Parse(path, func() bool { return started.IPv6Access })
 	if err != nil {
 		return ReloadResult{Outcome: ReloadRejected, Err: err}
 	}
@@ -97,7 +99,7 @@ func reload(path string) ReloadResult {
 			Err: fmt.Errorf("unknown keys (a typo, or settings this version no longer has): %s", strings.Join(keys, ", "))}
 	}
 
-	next.Inherit(running)
+	next.Inherit(started)
 
 	owners := map[string][]Reloader{}
 	var order []Reloader
@@ -117,7 +119,7 @@ func reload(path string) ReloadResult {
 			result.Applied = append(result.Applied, key)
 		}
 	}
-	for _, key := range config.ChangedKeys(reloads.started, next) {
+	for _, key := range config.ChangedKeys(started, next) {
 		if !live(key) {
 			result.Restart = append(result.Restart, key)
 		}

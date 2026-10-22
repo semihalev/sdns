@@ -171,7 +171,7 @@ func (b *BlockList) PrepareReload(cfg *config.Config) (func(), error) {
 		})
 		b.w = w
 		for _, entry := range blocks {
-			b.setLocked(entry)
+			b.addLocked(dns.CanonicalName(entry))
 		}
 		b.configured = blocks
 		b.mu.Unlock()
@@ -492,7 +492,15 @@ func (b *BlockList) setLocked(key string) bool {
 	if matchHierarchy(key, b.w) {
 		return false
 	}
+	return b.addLocked(key)
+}
 
+// addLocked adds a canonical key whatever the whitelist says, for the
+// configured and listed blocks: Exists matches the whitelist first, so an
+// exempt block stays harmless, and it is in place the moment a reload
+// takes the exemption away, as a restart would put it. Caller must hold
+// b.mu.
+func (b *BlockList) addLocked(key string) bool {
 	set := b.m
 	if strings.HasPrefix(key, "*.") {
 		set, key = b.wild, key[2:]
@@ -505,11 +513,12 @@ func (b *BlockList) setLocked(key string) bool {
 }
 
 // set is the no-persist variant used by loadInitial and the remote
-// refresh path; it does not write to disk.
+// refresh path; it does not write to disk, and it keeps blocks the
+// whitelist exempts (see addLocked).
 func (b *BlockList) set(key string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.setLocked(key)
+	return b.addLocked(dns.CanonicalName(key))
 }
 
 // (*BlockList).Exists exists returns whether or not a key exists in the cache.
