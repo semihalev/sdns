@@ -10,7 +10,6 @@ import (
 
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/semihalev/sdns/config"
 	"github.com/semihalev/sdns/internal/metric"
 	"github.com/semihalev/sdns/internal/mock"
@@ -362,10 +361,10 @@ func TestCountingParityAcrossPaths(t *testing.T) {
 	counter := actionTotal.WithLabelValues("resp", rpzengine.TriggerResponseIP, "passthru", "enforced")
 	h.serve(t, "pass.test.", "192.0.2.1:40000", true) // miss: the wrap counts
 
-	base := testutil.ToFloat64(counter)
+	base := counterFloat(counter)
 	servedBase := wireServed(t, "served")
 	w := h.serve(t, "pass.test.", "192.0.2.1:40000", true)
-	byteDelta := testutil.ToFloat64(counter) - base
+	byteDelta := counterFloat(counter) - base
 	if wireServed(t, "served")-servedBase != 1 {
 		t.Fatal("the matched PASSTHRU hit decoded; §5.11 wants it on the wire path")
 	}
@@ -373,10 +372,10 @@ func TestCountingParityAcrossPaths(t *testing.T) {
 		t.Fatal("byte-path hit did not serve the truth")
 	}
 
-	base = testutil.ToFloat64(counter)
+	base = counterFloat(counter)
 	servedBase = wireServed(t, "served")
 	w = h.serve(t, "pass.test.", "192.0.2.1:40000", false) // decoded hit
-	decodedDelta := testutil.ToFloat64(counter) - base
+	decodedDelta := counterFloat(counter) - base
 	if wireServed(t, "served")-servedBase != 0 {
 		t.Fatal("the decoded leg served bytes; the parity comparison measured nothing")
 	}
@@ -415,16 +414,16 @@ func TestChaseCountsAZoneOnceWithTheRankBest(t *testing.T) {
 
 	counter := actionTotal.WithLabelValues("resp", rpzengine.TriggerResponseIP, "passthru", "enforced")
 	other := actionTotal.WithLabelValues("resp", rpzengine.TriggerResponseIP, "nxdomain", "enforced")
-	baseP, baseN := testutil.ToFloat64(counter), testutil.ToFloat64(other)
+	baseP, baseN := counterFloat(counter), counterFloat(other)
 
 	w := h.serve(t, "alias.chase.test.", "192.0.2.1:40000", true)
 	if !w.Written() || w.Rcode() != dns.RcodeSuccess {
 		t.Fatalf("PASSTHRU chase did not serve the truth: rcode=%d", w.Rcode())
 	}
-	if d := testutil.ToFloat64(counter) - baseP; d != 1 {
+	if d := counterFloat(counter) - baseP; d != 1 {
 		t.Fatalf("rank-best (/32 passthru) counted %v times, want 1", d)
 	}
-	if d := testutil.ToFloat64(other) - baseN; d != 0 {
+	if d := counterFloat(other) - baseN; d != 0 {
 		t.Fatalf("the zone was counted twice across the chase (+%v nxdomain)", d)
 	}
 }
@@ -436,7 +435,7 @@ func TestShadowObservesResponseMatches(t *testing.T) {
 	h.truth["bad.test."] = "203.0.113.10"
 
 	counter := actionTotal.WithLabelValues("resp", rpzengine.TriggerResponseIP, "nxdomain", "observed")
-	base := testutil.ToFloat64(counter)
+	base := counterFloat(counter)
 
 	if w := h.serve(t, "bad.test.", "192.0.2.1:40000", true); w.Rcode() != dns.RcodeSuccess {
 		t.Fatalf("shadow rewrote: %d", w.Rcode())
@@ -449,7 +448,7 @@ func TestShadowObservesResponseMatches(t *testing.T) {
 	if wireServed(t, "served")-servedBase != 1 {
 		t.Fatal("shadow's matched hit decoded; observation must not cost the wire path")
 	}
-	if d := testutil.ToFloat64(counter) - base; d != 2 {
+	if d := counterFloat(counter) - base; d != 2 {
 		t.Fatalf("shadow observed %v matches over miss+hit, want 2", d)
 	}
 }
@@ -567,10 +566,10 @@ victim.example.com.rpz.test. IN CNAME .
 		)
 		h.truth["victim.example.com."] = "203.0.113.10" // matches zone 1's response rule
 
-		base := testutil.ToFloat64(respAfter)
+		base := counterFloat(respAfter)
 		h.serve(t, "victim.example.com.", "192.0.2.1:40000", true) // miss
 		h.serve(t, "victim.example.com.", "192.0.2.1:40000", true) // hit
-		if d := testutil.ToFloat64(respAfter) - base; d != 0 {
+		if d := counterFloat(respAfter) - base; d != 0 {
 			t.Fatalf("%s: a response zone past the final winner was counted %v times", mode, d)
 		}
 	}
@@ -625,17 +624,17 @@ victim.example.com.rpz.test. IN CNAME *.
 	wrap := &responseWrap{r: h.r, mode: wrapPoliced, heldObserved: []rpzengine.ZoneMatch{held}}
 
 	counter := actionTotal.WithLabelValues("obs", rpzengine.TriggerQNAME, "nodata", "observed")
-	base := testutil.ToFloat64(counter)
+	base := counterFloat(counter)
 	if v := wrap.JudgeWireHit(nil); v != middleware.WireHitServe {
 		t.Fatalf("verdict = %v, want Serve", v)
 	}
 	wrap.CountWireHit(nil)
-	if d := testutil.ToFloat64(counter) - base; d != 1 {
+	if d := counterFloat(counter) - base; d != 1 {
 		t.Fatalf("the held observation was dropped with the vanished rules: counted %v times", d)
 	}
 	// Exactly once: a second commit without a new judge counts nothing.
 	wrap.CountWireHit(nil)
-	if d := testutil.ToFloat64(counter) - base; d != 1 {
+	if d := counterFloat(counter) - base; d != 1 {
 		t.Fatalf("the decision was counted twice: %v", d)
 	}
 }
@@ -672,12 +671,12 @@ victim.example.com.rpz.test. IN CNAME .
 	// Judge 2 finds nothing to decide; the commit after it must count
 	// nothing, never judge 1's stale memo.
 	counter := actionTotal.WithLabelValues("resp", rpzengine.TriggerResponseIP, "nxdomain", "observed")
-	base := testutil.ToFloat64(counter)
+	base := counterFloat(counter)
 	if v := wrap.JudgeWireHit(sc); v != middleware.WireHitServe {
 		t.Fatalf("second verdict = %v, want Serve", v)
 	}
 	wrap.CountWireHit(sc)
-	if d := testutil.ToFloat64(counter) - base; d != 0 {
+	if d := counterFloat(counter) - base; d != 0 {
 		t.Fatalf("an abandoned judge's decision was counted by a later commit: %v", d)
 	}
 }
@@ -787,10 +786,10 @@ func TestNeutralGateServesExemptQueriesUntouched(t *testing.T) {
 
 	// Counting nothing is the whole point.
 	counter := actionTotal.WithLabelValues("resp", rpzengine.TriggerResponseIP, "nxdomain", "enforced")
-	base := testutil.ToFloat64(counter)
+	base := counterFloat(counter)
 	h.r.CountWireHit(matching)
 	h.r.CountWireChase(chain)
-	if d := testutil.ToFloat64(counter) - base; d != 0 {
+	if d := counterFloat(counter) - base; d != 0 {
 		t.Fatalf("the neutral gate counted an exempt query: %v", d)
 	}
 
