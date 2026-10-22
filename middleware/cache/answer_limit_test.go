@@ -5,6 +5,8 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -240,9 +242,9 @@ func TestComposedChainOverItsLimitIsTruncated(t *testing.T) {
 	}
 }
 
-// A refresh publishes its entry while the entry it replaces is still being
-// served, and a token the old entry grants in that window was spent on the
-// same question: the new entry must not grant it again.
+// A token the old entry granted was spent on the same question: the entry
+// a refresh publishes must not grant it again, and the old one, closed
+// while the refresh publishes, grants nothing in that window.
 func TestRefreshKeepsTokensSpentWhileItPublishes(t *testing.T) {
 	q := new(dns.Msg)
 	q.SetQuestion("publish.example.", dns.TypeA)
@@ -253,9 +255,13 @@ func TestRefreshKeepsTokensSpentWhileItPublishes(t *testing.T) {
 	fresh := NewCacheEntry(resp, time.Minute, 1)
 
 	now := limitNow()
+	if !old.allowAnswer(now) {
+		t.Fatal("the old entry had no token to spend")
+	}
 	carryLimit(fresh, old, func() bool {
-		if !old.allowAnswer(now) {
-			t.Fatal("the old entry had no token to spend")
+		// An hour on, an open bucket would have refilled.
+		if old.allowAnswer(now + int64(time.Hour)) {
+			t.Fatal("the entry being replaced granted while the refresh published")
 		}
 		return true
 	})
@@ -277,23 +283,22 @@ func TestRefreshLeavesNoTokenOnTheEntryItReplaced(t *testing.T) {
 	old := NewCacheEntry(resp, time.Minute, 1)
 	fresh := NewCacheEntry(resp, time.Minute, 1)
 
+	// Queries charge both entries the moment the store write lands, while
+	// the refresh has yet to take the old bucket over, and again once it
+	// has. Every charge is at one instant, so one token is all there is.
 	now := limitNow()
-	carryLimit(fresh, old, func() bool { return true })
-	late, current := old.allowAnswer(now), fresh.allowAnswer(now)
-	if late && current {
-		t.Fatal("ratelimit 1 answered twice: once from the replaced entry " +
-			"after the refresh, once from the entry that replaced it")
+	granted := 0
+	charge := func() {
+		for _, e := range []*CacheEntry{old, fresh} {
+			if e.allowAnswer(now) {
+				granted++
+			}
+		}
 	}
-	if !current {
-		t.Fatal("the refreshed entry refused the question's only token")
-	}
-
-	// A second refresh that read the same old entry before the first
-	// published inherits nothing from it, and is not refused for it.
-	again := NewCacheEntry(resp, time.Minute, 1)
-	carryLimit(again, old, func() bool { return true })
-	if !again.allowAnswer(now) {
-		t.Fatal("a refresh of an already replaced entry started empty")
+	carryLimit(fresh, old, func() bool { charge(); return true })
+	charge()
+	if granted != 1 {
+		t.Fatalf("ratelimit 1 answered %d times across a refresh, want 1", granted)
 	}
 
 	// A refresh that loses its swap leaves the entry it found serving.
@@ -302,6 +307,48 @@ func TestRefreshLeavesNoTokenOnTheEntryItReplaced(t *testing.T) {
 	carryLimit(lost, kept, func() bool { return false })
 	if !kept.allowAnswer(now) {
 		t.Fatal("a refresh that never published took the current entry's token")
+	}
+}
+
+// Writers storing the same question at once each replace what the one
+// before left, and queries charge whatever is current between them. At one
+// instant and ratelimit 1, all of them together get one answer: no write
+// may hand the question a bucket that another write's entry already spent.
+func TestConcurrentWritesShareOneBucket(t *testing.T) {
+	q := new(dns.Msg)
+	q.SetQuestion("writers.example.", dns.TypeA)
+	resp := new(dns.Msg)
+	resp.SetReply(q)
+	resp.Answer = []dns.RR{makeRR("writers.example. 300 IN A 192.0.2.1")}
+	key := CacheKey{Question: q.Question[0]}.Hash()
+
+	// Half the rounds start from an empty key, where the first writers
+	// race to store the question's first entry.
+	const writers = 8
+	for round := range 400 {
+		pc := NewPositiveCache(1024, time.Second, time.Hour, &CacheMetrics{})
+		if round%2 == 0 {
+			pc.Set(key, NewCacheEntry(resp, time.Minute, 1))
+		}
+		now := limitNow()
+		var granted atomic.Int32
+		var wg sync.WaitGroup
+		for range writers {
+			wg.Go(func() {
+				pc.Set(key, NewCacheEntry(resp, time.Minute, 1))
+				if e, ok := pc.Get(key); ok && e.allowAnswer(now) {
+					granted.Add(1)
+				}
+			})
+		}
+		wg.Wait()
+		if e, ok := pc.Get(key); ok && e.allowAnswer(now) {
+			granted.Add(1)
+		}
+		if n := granted.Load(); n > 1 {
+			t.Fatalf("ratelimit 1 answered %d times across concurrent writes, want 1", n)
+		}
+		pc.cache.Stop()
 	}
 }
 

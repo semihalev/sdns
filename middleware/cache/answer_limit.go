@@ -38,40 +38,42 @@ func (l *answerLimit) allow(rate int32, now int64) bool {
 	}
 }
 
-// retiredTAT marks the bucket of an entry a refresh has replaced. It lies
-// far enough ahead to refuse every charge, and far enough from the int64
-// limit that allow's arithmetic on it cannot overflow.
-const retiredTAT = int64(1) << 62
-
-// fold takes tat when it is the emptier state: every token granted under
-// it stays spent. A retired bucket's mark is not a state to take.
-func (l *answerLimit) fold(want int64) {
-	if want == retiredTAT {
-		return
-	}
-	for {
-		tat := l.tat.Load()
-		if tat >= want || l.tat.CompareAndSwap(tat, want) {
-			return
-		}
-	}
-}
+// closedTAT marks the bucket of an entry being replaced, which grants
+// nothing. It lies far enough ahead to refuse every charge, and far enough
+// from the int64 limit that allow's arithmetic on it cannot overflow.
+const closedTAT = int64(1) << 62
 
 // carryLimit hands entry the answer limit of old, the entry it replaces
-// under the same question, a refresh, across publish, the store write
-// that makes entry the one served and reports whether it did. Folded in
-// before, entry is published with the bucket old left rather than a full
-// one. Once published, old's bucket is retired in one swap: a token it
-// granted before the swap is folded into entry, and a query still holding
-// old after it is refused, so the question never has two buckets.
+// under the same question, across publish, the store write that puts
+// entry in old's place and reports whether it did. old is closed first,
+// taking its state in the same compare and swap, and entry is published
+// holding that state, so at every instant at most one of the two grants
+// and a question never has two buckets. A query charging old while
+// publish runs is refused.
+//
+// Only one writer can close old. Another that finds it closed reports
+// false without publishing, to read the key again once the first is done;
+// a failed publish reopens old as it was.
 func carryLimit(entry, old *CacheEntry, publish func() bool) bool {
 	if entry == old {
 		return publish()
 	}
-	entry.limit.fold(old.limit.tat.Load())
+	var tat int64
+	for {
+		tat = old.limit.tat.Load()
+		if tat == closedTAT {
+			return false
+		}
+		if old.limit.tat.CompareAndSwap(tat, closedTAT) {
+			break
+		}
+	}
+	own := entry.limit.tat.Load()
+	entry.limit.tat.Store(max(own, tat))
 	if !publish() {
+		entry.limit.tat.Store(own)
+		old.limit.tat.Store(tat)
 		return false
 	}
-	entry.limit.fold(old.limit.tat.Swap(retiredTAT))
 	return true
 }
