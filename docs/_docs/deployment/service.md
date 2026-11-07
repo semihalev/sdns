@@ -31,7 +31,7 @@ Environment="SDNS_PPROF=false"
 WorkingDirectory=/var/lib/sdns
 ExecStart=/usr/bin/sdns --config=/etc/sdns.conf
 PermissionsStartOnly=true
-StandardOutput=syslog
+StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=sdns
 AmbientCapabilities=CAP_NET_BIND_SERVICE
