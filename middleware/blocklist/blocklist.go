@@ -72,7 +72,8 @@ func init() {
 //     expect.
 //   - A "*.example.com" wildcard blocks subdomains only, not the apex.
 type BlockList struct {
-	mu sync.RWMutex
+	mu      sync.RWMutex
+	compact *compactManager
 
 	// version is a monotonic counter bumped under mu every time a
 	// snapshot is taken. It lets persist() drop a stale snapshot
@@ -119,27 +120,36 @@ type blockSnapshot struct {
 // active as soon as New returns. Remote blocklist refresh
 // runs asynchronously, a slow or unreachable source used to
 // leave ServeDNS with empty maps for the entire HTTP timeout
-// window even when local files were available.
+// window even when local files were available. Compact mode installs the initial
+// policy, including remote feeds, synchronously. On warm startup it opens the
+// last durable policy before polling remote feeds in the background.
 func New(cfg *config.Config) *BlockList {
 	b := &BlockList{
 		nullroute:  net.ParseIP(cfg.Nullroute),
 		null6route: net.ParseIP(cfg.Nullroutev6),
-
-		m:    make(map[string]bool),
-		wild: make(map[string]bool),
-		w:    make(map[string]bool),
-
-		cfg: cfg,
+		cfg:        cfg,
 	}
 
-	b.loadInitial()
+	var installed bool
+	if cfg.BlocklistCompact {
+		var err error
+		if installed, err = b.initCompact(compactAdmissionObserver{}); err != nil {
+			zlog.Fatal("Initialize compact blocklist failed", zlog.String("error", err.Error()))
+		}
+	} else {
+		b.m, b.wild, b.w = make(map[string]bool), make(map[string]bool), make(map[string]bool)
+		b.loadInitial()
+	}
 
 	// Publish before the refresh goroutine starts so a scrape landing
 	// during the initial remote fetch already reports the local count.
 	length := b.Length
 	blocklistLen.Store(&length)
-
-	go b.refreshRemote()
+	if b.compact != nil {
+		b.startCompactWorkers(installed)
+	} else {
+		go b.refreshRemote()
+	}
 
 	return b
 }
@@ -158,6 +168,9 @@ func (b *BlockList) ReloadKeys() []string { return []string{"blocklist", "whitel
 // so it may be saved there too; it is logged, to be removed through the
 // API.
 func (b *BlockList) PrepareReload(cfg *config.Config) (func(), error) {
+	if b.compact != nil {
+		return b.prepareCompactReload(cfg)
+	}
 	w := make(map[string]bool, len(cfg.Whitelist))
 	for _, entry := range cfg.Whitelist {
 		w[dns.CanonicalName(entry)] = true
@@ -166,9 +179,7 @@ func (b *BlockList) PrepareReload(cfg *config.Config) (func(), error) {
 
 	return func() {
 		b.mu.Lock()
-		dropped := slices.DeleteFunc(slices.Clone(b.configured), func(entry string) bool {
-			return slices.Contains(blocks, entry)
-		})
+		dropped := droppedBlocklistEntries(b.configured, blocks)
 		b.w = w
 		for _, entry := range blocks {
 			b.addLocked(dns.CanonicalName(entry))
@@ -176,18 +187,25 @@ func (b *BlockList) PrepareReload(cfg *config.Config) (func(), error) {
 		b.configured = blocks
 		b.mu.Unlock()
 
-		if len(dropped) > 0 {
-			zlog.Warn("Blocklist entries removed from the configuration are not unblocked by a reload, remove them through the API",
-				"entries", strings.Join(dropped, ", "))
-		}
+		warnDroppedBlocklistEntries(dropped)
 	}, nil
+}
+
+func droppedBlocklistEntries(previous, next []string) []string {
+	return slices.DeleteFunc(slices.Clone(previous), func(entry string) bool { return slices.Contains(next, entry) })
+}
+
+func warnDroppedBlocklistEntries(dropped []string) {
+	if len(dropped) > 0 {
+		zlog.Warn("Blocklist entries removed from the configuration are not unblocked by a reload, remove them through the API",
+			"entries", strings.Join(dropped, ", "))
+	}
 }
 
 // (*BlockList).ServeDNS serveDNS implements the Handle interface.
 func (b *BlockList) ServeDNS(ctx context.Context, ch *middleware.Chain) {
-	// Fast path: skip if no blocklist entries
 	b.mu.RLock()
-	hasEntries := len(b.m) > 0 || len(b.wild) > 0
+	hasEntries := b.lengthLocked() > 0
 	b.mu.RUnlock()
 
 	if !hasEntries {
@@ -313,6 +331,9 @@ func (b *BlockList) existsWire(wire []byte) (blocked, ok bool) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
+	if b.compact != nil {
+		return b.compactMatch(key), true
+	}
 	if matchHierarchyBytes(key, b.w) {
 		return false, true
 	}
@@ -362,11 +383,13 @@ func (b *BlockList) Get(key string) (bool, error) {
 
 	key = dns.CanonicalName(key)
 	val, ok := b.m[key]
-
+	if b.compact != nil {
+		val = b.compact.containsExact(key)
+		ok = val
+	}
 	if !ok {
 		return false, errors.New("block not found")
 	}
-
 	return val, nil
 }
 
@@ -375,6 +398,9 @@ func (b *BlockList) Get(key string) (bool, error) {
 // The disk write happens outside b.mu so concurrent DNS queries
 // (which take mu.RLock in ServeDNS) are not blocked during I/O.
 func (b *BlockList) Remove(key string) bool {
+	if b.compact != nil {
+		return b.compactMutate([]string{key}, false) == 1
+	}
 	b.mu.Lock()
 	ok := b.removeLocked(key)
 	if !ok {
@@ -415,6 +441,9 @@ func (b *BlockList) removeLocked(key string) bool {
 // The disk write happens outside b.mu so concurrent DNS queries
 // (which take mu.RLock in ServeDNS) are not blocked during I/O.
 func (b *BlockList) Set(key string) bool {
+	if b.compact != nil {
+		return b.compactMutate([]string{key}, true) == 1
+	}
 	b.mu.Lock()
 	ok := b.setLocked(key)
 	if !ok {
@@ -433,6 +462,9 @@ func (b *BlockList) Set(key string) bool {
 // the number actually added (excluding duplicates and whitelisted
 // entries).
 func (b *BlockList) SetBatch(keys []string) int {
+	if b.compact != nil {
+		return b.compactMutate(keys, true)
+	}
 	if len(keys) == 0 {
 		return 0
 	}
@@ -458,6 +490,9 @@ func (b *BlockList) SetBatch(keys []string) int {
 // mutation and a single disk write. Returns the number actually
 // removed (excluding entries that weren't present).
 func (b *BlockList) RemoveBatch(keys []string) int {
+	if b.compact != nil {
+		return b.compactMutate(keys, false)
+	}
 	if len(keys) == 0 {
 		return 0
 	}
@@ -527,6 +562,10 @@ func (b *BlockList) Exists(key string) bool {
 	defer b.mu.RUnlock()
 
 	key = dns.CanonicalName(key)
+
+	if b.compact != nil {
+		return b.compactMatch([]byte(key))
+	}
 
 	// Whitelist overrides every block (exact, parent, or wildcard). It is
 	// matched across the full hierarchy, exact name plus every parent,
@@ -599,7 +638,13 @@ func matchHierarchy(name string, m map[string]bool) bool {
 func (b *BlockList) Length() int {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+	return b.lengthLocked()
+}
 
+func (b *BlockList) lengthLocked() int {
+	if b.compact != nil {
+		return b.compact.length
+	}
 	return len(b.m) + len(b.wild)
 }
 

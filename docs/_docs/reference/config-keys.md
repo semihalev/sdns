@@ -67,8 +67,12 @@ The page that explains each top-level key is listed under
 | `bearertoken` | *(commented)* | Requires `Authorization: Bearer` on API requests |
 | `loglevel` | `"info"` | `error`, `warn`, `info`, `debug`; omitted means `"info"` |
 | `accesslog` | *(commented)* | CLF query log path; empty disables |
-| `blocklists` | `[]` | Blocklist URLs, downloaded once at startup; restart to refresh |
-| `blocklistdir` | `""` | Deprecated; created under `directory` |
+| `blocklists` | `[]` | Remote blocklist URLs; compact mode can refresh them periodically |
+| `blocklistdir` | `""` | Deprecated; defaults to `blacklists/` under `directory`. Compact mode treats its files as local inputs |
+| `blocklist_compact` | `false` | Use the persistent, disk-backed blocklist on Linux or Darwin; restart required |
+| `blocklist_compact_dir` | `""` | Compact index directory; empty uses `<directory>/blocklist-compact`. Must not overlap `blocklistdir`; restart required |
+| `blocklist_refresh_interval` | `"0s"` | `"0s"` limits refresh to startup; a positive duration waits this long after each pass. Periodic refresh requires remote URLs. Must be nonnegative; a positive value requires compact mode. Restart required |
+| `blocklist_checkpoint_window` | *(commented)* | Compact mode defaults to `"24h"` when omitted; `"0s"` makes uncheckpointed policy eligible for capture immediately. Must be nonnegative; a positive value requires compact mode. Restart required |
 | `blocklist` | `[]` | Manually blocked names |
 | `whitelist` | `[]` | Names the blocklist never blocks; RPZ policy still applies to them |
 | `nullroute` | `"0.0.0.0"` | Answer for blocked A queries |
@@ -141,6 +145,9 @@ The page that explains each top-level key is listed under
   keys, `blocklists`, `blocklist`, `whitelist`, `nullroute`, `nullroutev6`,
   `blocklistdir`, `block_aaaa`, `hostsfile`, `hostsfilechecknames`,
   `hostsfilezones`, `domainmetrics`, `domainmetricslimit`.
+- [Compact blocklists]({{ '/docs/configuration/compact-blocklists/' | relative_url }}):
+  `blocklist_compact`, `blocklist_compact_dir`, `blocklist_refresh_interval`,
+  `blocklist_checkpoint_window`.
 - [Views and forwarding]({{ '/docs/features/views/' | relative_url }}):
   `fallbackservers`, `forwarderservers`.
 - [Local root zone]({{ '/docs/features/hyperlocal-root/' | relative_url }}):
