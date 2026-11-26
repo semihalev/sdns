@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/miekg/dns"
 
@@ -429,6 +430,24 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 		}
 	}
 
+	if _, err := c.validateCompactBlocklist(true); err != nil {
+		add("%v", err)
+	}
+
+	for _, setting := range [...]struct {
+		key   string
+		value Duration
+	}{
+		{"blocklist_refresh_interval", c.BlocklistRefreshInterval},
+		{"blocklist_checkpoint_window", c.BlocklistCheckpointWindow},
+	} {
+		if setting.value.Duration < 0 {
+			add("%s must be nonnegative", setting.key)
+		} else if setting.value.Duration > 0 && !c.BlocklistCompact {
+			add("%s requires blocklist_compact", setting.key)
+		}
+	}
+
 	// An empty blocklistdir is the normal case, not an unset one: the
 	// middleware fills it in under the working directory, and a plain file
 	// or an unwritable directory there leaves both the downloaded and the
@@ -445,25 +464,22 @@ func (c *Config) validateTrustAndIdentity(add func(string, ...any)) {
 	// download into it, so a read-only mount carrying nothing but local
 	// lists is a working setup, and refusing it would stop a server that
 	// runs today.
-	//
-	// Whether it has to be written depends on what is being loaded into it:
-	// a remote list is downloaded into the directory with os.Create, so with
-	// one configured a read-only mount loads nothing at all.
-	dirCheck := usableDir
-	if len(c.BlockLists) > 0 {
-		dirCheck = writableDir
-	}
-
-	switch {
-	case c.BlockListDir != "":
-		if err := dirCheck(c.BlockListDir, pending); err != nil {
-			add("blocklistdir = %q: %v", c.BlockListDir, err)
+	if !c.BlocklistCompact {
+		dirCheck := usableDir
+		if len(c.BlockLists) > 0 {
+			dirCheck = writableDir
 		}
-	case c.Directory != "":
-		derived := filepath.Join(c.Directory, "blacklists")
-		if _, err := os.Lstat(derived); err == nil {
-			if err := dirCheck(derived, ""); err != nil {
-				add("blocklistdir defaults to %q: %v", derived, err)
+		switch {
+		case c.BlockListDir != "":
+			if err := dirCheck(c.BlockListDir, pending); err != nil {
+				add("blocklistdir = %q: %v", c.BlockListDir, err)
+			}
+		case c.Directory != "":
+			derived := filepath.Join(c.Directory, "blacklists")
+			if _, err := os.Lstat(derived); err == nil {
+				if err := dirCheck(derived, ""); err != nil {
+					add("blocklistdir defaults to %q: %v", derived, err)
+				}
 			}
 		}
 	}
@@ -966,6 +982,215 @@ func (c *Config) forwardsRoot() bool {
 		}
 	}
 	return false
+}
+
+// ValidateCompactBlocklist checks compact mode constraints and returns the resolved state directory.
+func (c *Config) ValidateCompactBlocklist() (string, error) {
+	return c.validateCompactBlocklist(false)
+}
+
+func (c *Config) validateCompactBlocklist(probe bool) (string, error) {
+	if !c.BlocklistCompact {
+		return "", nil
+	}
+	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+		return "", errors.New("compact blocklist requires Linux or macOS")
+	}
+	seen := make(map[string]struct{})
+	for _, uri := range c.BlockLists {
+		seen[uri] = struct{}{}
+		if len(seen) > 61 {
+			return "", errors.New("blocklist_compact supports at most 61 distinct remote blocklists")
+		}
+	}
+	dir := c.BlocklistCompactDir
+	if dir == "" {
+		dir = joinKeepingComponents(c.Directory, "blocklist-compact")
+	}
+	local := c.BlockListDir
+	if local == "" {
+		local = filepath.Join(c.Directory, "blacklists")
+	}
+	state, _, err := resolveCompactBlocklistPaths(dir, local, probe, false)
+	return state.path, err
+}
+
+// ResolveCompactBlocklistRoots checks the existing state directory and returns
+// the resolved local root and both identities. When existingLocalOnly is
+// true, an absent local root does not participate in the overlap check.
+func ResolveCompactBlocklistRoots(state, local string, existingLocalOnly bool) (string, os.FileInfo, os.FileInfo, error) {
+	a, b, err := resolveCompactBlocklistPaths(state, local, false, existingLocalOnly)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	if a.path != a.ancestor {
+		return "", nil, nil, fmt.Errorf("blocklist_compact_dir %q: %w", state, os.ErrNotExist)
+	}
+	if b.path != b.ancestor {
+		return "", nil, a.info, nil
+	}
+	return b.path, b.info, a.info, nil
+}
+
+func resolveCompactBlocklistPaths(state, local string, probe, existingLocalOnly bool) (blocklistPath, blocklistPath, error) {
+	a, stateErr := resolveBlocklistPath(state, true)
+	b, localErr := resolveBlocklistPath(local, false)
+	if stateErr != nil {
+		stateErr = fmt.Errorf("blocklist_compact_dir: %w", stateErr)
+	}
+	if localErr != nil {
+		localErr = fmt.Errorf("blocklistdir = %q: %w", local, localErr)
+	}
+	if err := errors.Join(stateErr, localErr); err != nil {
+		return blocklistPath{}, blocklistPath{}, err
+	}
+	if b.path != "" && (!existingLocalOnly || b.path == b.ancestor) {
+		for _, pair := range [...]struct {
+			path, parent blocklistPath
+			setting      string
+		}{{a, b, "blocklist_compact_dir"}, {b, a, "blocklistdir"}} {
+			within, err := blocklistPathWithin(pair.path, pair.parent)
+			if err != nil {
+				return blocklistPath{}, blocklistPath{}, fmt.Errorf("%s: %w", pair.setting, err)
+			}
+			if within {
+				return blocklistPath{}, blocklistPath{}, fmt.Errorf("blocklist_compact_dir: must be separate from blocklistdir with neither directory nested inside the other")
+			}
+		}
+	}
+	if probe {
+		if err := probeCompactStateDir(a); err != nil {
+			stateErr = fmt.Errorf("blocklist_compact_dir: %w", err)
+		}
+		if b.path != "" && b.path == b.ancestor {
+			if err := readable(b.path); err != nil {
+				localErr = fmt.Errorf("blocklistdir = %q: %w", local, err)
+			}
+		}
+	}
+	return a, b, errors.Join(stateErr, localErr)
+}
+
+func probeCompactStateDir(state blocklistPath) error {
+	exists := state.path == state.ancestor
+	if exists {
+		if err := readable(state.path); err != nil {
+			return err
+		}
+	}
+	// MkdirAll starts in the existing ancestor, which may be above a
+	// pending working directory. For an existing store, admission owns
+	// capacity failures; the server may be able to recover by sweeping it.
+	err := creatable(state.ancestor)
+	if exists && (errors.Is(err, syscall.ENOSPC) || errors.Is(err, syscall.EDQUOT)) {
+		return nil
+	}
+	return err
+}
+
+type blocklistPath struct {
+	path     string
+	ancestor string
+	info     os.FileInfo
+}
+
+func resolveBlocklistPath(path string, create bool) (blocklistPath, error) {
+	if !filepath.IsAbs(path) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return blocklistPath{}, err
+		}
+		path = joinKeepingComponents(cwd, path)
+	}
+	ancestor, tail, err := resolveBlocklistPrefix(path)
+	if err != nil {
+		return blocklistPath{}, err
+	}
+	end := 0
+	for component := range strings.SplitSeq(tail, string(os.PathSeparator)) {
+		end += len(component)
+		if component == ".." {
+			if !create {
+				// The local walker treats a missing literal prefix as absent.
+				return blocklistPath{}, nil
+			}
+			// Cancel only the first unresolved "..". The remainder can
+			// now reach a symlink and must be resolved before cleaning it.
+			return resolveBlocklistPath(filepath.Join(ancestor, tail[:end])+tail[end:], true)
+		}
+		end++
+	}
+	info, err := statBlocklistDir(ancestor)
+	if err != nil {
+		return blocklistPath{}, err
+	}
+	return blocklistPath{path: filepath.Join(ancestor, tail), ancestor: ancestor, info: info}, nil
+}
+
+func statBlocklistDir(path string) (os.FileInfo, error) {
+	info, err := os.Stat(path)
+	if err == nil && !info.IsDir() {
+		return nil, fmt.Errorf("%q is not a directory", path)
+	}
+	return info, err
+}
+
+func resolveBlocklistPrefix(path string) (string, string, error) {
+	// Preserve literal components until symlinks have been resolved.
+	path = trimTrailingSeparators(path)
+	for prefix := path; ; {
+		resolved, err := filepath.EvalSymlinks(prefix)
+		if err == nil {
+			return resolved, path[len(prefix):], nil
+		}
+		if !os.IsNotExist(err) {
+			return "", "", err
+		}
+		if info, statErr := os.Lstat(prefix); statErr == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return "", "", fmt.Errorf("dangling symlink %q: %w", prefix, err)
+			}
+			return "", "", err
+		} else if !os.IsNotExist(statErr) {
+			return "", "", statErr
+		}
+		parent := literalParent(prefix)
+		if parent == "." && prefix != "." {
+			return ".", path, nil
+		}
+		if len(parent) >= len(prefix) {
+			return "", "", err
+		}
+		prefix = parent
+	}
+}
+
+func blocklistPathWithin(path, parent blocklistPath) (bool, error) {
+	for ancestor, info := path.ancestor, path.info; ; {
+		if os.SameFile(info, parent.info) {
+			if parent.path == parent.ancestor {
+				return true, nil
+			}
+			// Compare the not-yet-existing part using the same spelling for
+			// the existing ancestor, without folding case on other volumes.
+			rel, err := filepath.Rel(ancestor, path.path)
+			if err != nil {
+				return false, err
+			}
+			p := filepath.Join(parent.ancestor, rel)
+			return p == parent.path || strings.HasPrefix(p, parent.path+string(os.PathSeparator)), nil
+		}
+		next := filepath.Dir(ancestor)
+		if next == ancestor {
+			return false, nil
+		}
+		var err error
+		info, err = os.Stat(next)
+		if err != nil {
+			return false, err
+		}
+		ancestor = next
+	}
 }
 
 // localAddress reports whether ip is one this machine holds. The resolver

@@ -32,6 +32,19 @@ type Config struct {
 	Directory    string
 	BlockLists   []string
 	BlockListDir string
+
+	// BlocklistCompact enables disk-backed blocklist storage.
+	BlocklistCompact bool `toml:"blocklist_compact"`
+
+	// BlocklistCompactDir overrides the persistent store directory.
+	BlocklistCompactDir string `toml:"blocklist_compact_dir"`
+
+	// BlocklistRefreshInterval is the delay between compact refresh passes.
+	BlocklistRefreshInterval Duration `toml:"blocklist_refresh_interval"`
+
+	// BlocklistCheckpointWindow delays checkpoint capture after activation.
+	BlocklistCheckpointWindow Duration `toml:"blocklist_checkpoint_window"`
+
 	RootServers  []string
 	Root6Servers []string
 	DNSSEC       string
@@ -960,7 +973,7 @@ loglevel = "info"
 # ============================
 
 # Remote blocklist sources
-# These URLs are downloaded once at startup; restart to fetch them again
+# These URLs are downloaded at startup; opt-in compact mode can repeat downloads.
 blocklists = [
     # Popular blocklist examples:
     # "https://raw.githubusercontent.com/StevenBlack/hosts/master/hosts",
@@ -971,6 +984,16 @@ blocklists = [
 
 # [DEPRECATED] Blocklist directory, created automatically under the working directory
 blocklistdir = ""
+
+# Enable compact on-disk blocklist storage on Linux or macOS.
+blocklist_compact = false
+# Persistent store path; defaults to <directory>/blocklist-compact, separate from blocklistdir.
+blocklist_compact_dir = ""
+# Compact feed refresh delay between passes; zero fetches only at startup.
+blocklist_refresh_interval = "0s"
+# Compact checkpoint delay; omitted defaults to 24h. Zero makes capture eligible
+# immediately; checkpointing remains asynchronous.
+# blocklist_checkpoint_window = "24h"
 
 # Response IP for blocked A queries (IPv4)
 nullroute = "0.0.0.0"
@@ -1715,6 +1738,9 @@ func Parse(path string, ipv6 func() bool) (*Config, error) {
 	}
 	if !metadata.IsDefined("serve_stale_max_ttl") {
 		config.ServeStaleMaxTTL.Duration = defaultServeStaleMaxTTL
+	}
+	if config.BlocklistCompact && !metadata.IsDefined("blocklist_checkpoint_window") {
+		config.BlocklistCheckpointWindow.Duration = 24 * time.Hour
 	}
 
 	// Before the gate, like the DNSSEC default below, because the checks read

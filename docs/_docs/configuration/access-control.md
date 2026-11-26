@@ -123,9 +123,10 @@ nullroute   = "0.0.0.0"
 nullroutev6 = "::0"
 ```
 
-`blocklists` are URLs downloaded once at startup, into the `blacklists`
-directory under `directory`; there is no periodic refresh, so restart sdns to
-fetch newer copies. `blocklist` is a manual list in the configuration file;
+With the default backend, `blocklists` are downloaded once at startup into
+`blacklists` under `directory`; there is no periodic refresh. Restart sdns to
+fetch newer copies, or enable [compact blocklists]({{ '/docs/configuration/compact-blocklists/' | relative_url }}).
+`blocklist` is a manual list in the configuration file;
 `whitelist` wins over both. It exempts names from this blocklist only: RPZ
 policy still applies to a whitelisted name. A blocked A query answers
 `nullroute` and a blocked AAAA answers `nullroutev6`.
